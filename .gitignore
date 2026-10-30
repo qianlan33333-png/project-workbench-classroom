@@ -9,3 +9,5 @@ bin/
 *.sqlite*
 *.log
 artifacts/
+__pycache__/
+*.pyc

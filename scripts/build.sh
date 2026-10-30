@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 "$GO" vet ./...
 "$PNPM" --dir web install --frozen-lockfile
 "$PNPM" --dir web run build
+./scripts/stage-cli.sh
 "$PNPM" --dir runtime install --frozen-lockfile
 "$PNPM" --dir runtime run check
 mkdir -p bin

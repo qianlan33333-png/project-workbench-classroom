@@ -42,6 +42,8 @@ sudo APT_MIRROR=mirrors.tencentyun.com bash install-release.sh project-workbench
 
 ## 日常检查与重启
 
+独立 CLI 下载为站点 `/cli/pwb.py`，说明为 `/cli/README.md`。`scripts/stage-cli.sh` 将源码复制进 `web/dist/cli`，构建和发行打包均会执行它。CLI 使用当前工作台密码直接鉴权，不依赖登录表，无需定期刷新凭证；不要将个人 `~/.config/project-workbench/cli.json` 放入发行包。
+
 ```sh
 sudo systemctl status project-workbench project-workbench-channels
 sudo journalctl -u project-workbench -u project-workbench-channels --since '10 minutes ago'

@@ -65,15 +65,16 @@ type FileReference struct {
 	Path      string `json:"path"`
 }
 type Message struct {
-	ID         string          `json:"id"`
-	Incoming   Incoming        `json:"incoming"`
-	State      string          `json:"state"`
-	SessionID  string          `json:"sessionId,omitempty"`
-	RunID      string          `json:"runId,omitempty"`
-	Question   string          `json:"question,omitempty"`
-	Candidates []Candidate     `json:"candidates,omitempty"`
-	References []FileReference `json:"references,omitempty"`
-	CreatedAt  int64           `json:"createdAt"`
+	ID           string          `json:"id"`
+	Incoming     Incoming        `json:"incoming"`
+	State        string          `json:"state"`
+	SessionID    string          `json:"sessionId,omitempty"`
+	RunID        string          `json:"runId,omitempty"`
+	Question     string          `json:"question,omitempty"`
+	Candidates   []Candidate     `json:"candidates,omitempty"`
+	References   []FileReference `json:"references,omitempty"`
+	CreatedAt    int64           `json:"createdAt"`
+	IncomingHash string          `json:"incomingHash,omitempty"`
 }
 type Candidate struct {
 	ProjectID string `json:"projectId"`

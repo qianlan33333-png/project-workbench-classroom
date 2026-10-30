@@ -45,6 +45,16 @@ func verifyPassword(hash, password string) bool {
 	return err == nil && subtle.ConstantTimeCompare(key, expected) == 1
 }
 func (a *API) authenticated(c *gin.Context) bool {
+	// Personal automation uses the current password directly, without a session
+	// token or expiry. An explicit Authorization header never falls back to cookies.
+	if c.GetHeader("Authorization") != "" {
+		user, password, ok := c.Request.BasicAuth()
+		if !ok || user != "owner" {
+			return false
+		}
+		hash, err := a.passwordHash()
+		return err == nil && verifyPassword(hash, password)
+	}
 	token, err := c.Cookie("pw_session")
 	if err != nil {
 		return false
@@ -52,6 +62,13 @@ func (a *API) authenticated(c *gin.Context) bool {
 	var expiry int64
 	err = a.Store.DB.QueryRow("SELECT expires FROM logins WHERE hash=?", digest([]byte(token))).Scan(&expiry)
 	return err == nil && expiry > now()
+}
+func (a *API) passwordHash() (string, error) {
+	hash, err := a.Store.Setting("password_hash")
+	if hash == "" {
+		hash = a.Config.PasswordHash
+	}
+	return hash, err
 }
 func (a *API) authMiddleware(c *gin.Context) {
 	if !a.authenticated(c) {
@@ -102,13 +119,10 @@ func (a *API) login(c *gin.Context) {
 		c.JSON(429, gin.H{"error": "请稍后重试"})
 		return
 	}
-	hash, e := a.Store.Setting("password_hash")
+	hash, e := a.passwordHash()
 	if e != nil {
 		reply(c, nil, e)
 		return
-	}
-	if hash == "" {
-		hash = a.Config.PasswordHash
 	}
 	if !verifyPassword(hash, body.Password) {
 		a.loginAfter = time.Now().Add(time.Second * 2)

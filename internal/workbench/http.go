@@ -111,6 +111,10 @@ func (a *API) Mount(r *gin.Engine) {
 	owner.PUT("/projects/:id", func(c *gin.Context) {
 		bind(c, func(v Project) (any, error) { return s.UpdateProject(c.Param("id"), v) })
 	})
+	owner.PATCH("/projects/:id", func(c *gin.Context) {
+		bind(c, func(v map[string]json.RawMessage) (any, error) { return s.PatchProject(c.Param("id"), v) })
+	})
+	owner.DELETE("/projects/:id", func(c *gin.Context) { reply(c, nil, s.DeleteProject(c.Param("id"))) })
 	owner.GET("/projects/:id/files", func(c *gin.Context) { v, e := s.Files(c.Param("id")); reply(c, v, e) })
 	owner.GET("/projects/:id/file", a.getFile)
 	owner.PUT("/projects/:id/file", func(c *gin.Context) {

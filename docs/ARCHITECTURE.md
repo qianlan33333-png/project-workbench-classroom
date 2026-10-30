@@ -31,7 +31,9 @@ SSE 使用持久化的全局递增 seq，支持 Last-Event-ID 和 after 参数�
 
 ## API
 
-所有接口在配置 BasePath 下的 `/api/v1`。网页使用 HttpOnly 会话 Cookie；渠道传输使用独立 Bearer，Agent 无法得到渠道凭证。
+所有接口在配置 BasePath 下的 `/api/v1`。网页使用 HttpOnly 会话 Cookie；渠道传输使用独立 Bearer，Agent 无法得到渠道凭证。外部 CLI 使用 HTTP Basic `owner:<工作台密码>`，每次直接校验当前密码，不创建登录记录、不设到期时间；显式的无效 Authorization 不会回退到浏览器 Cookie。
+
+`PATCH /projects/:id` 只更新提供的可编辑字段，不改变默认助手与身份；`DELETE /projects/:id` 在同一事务内清除项目业务记录并持久化文件清理意图，启动时恢复尚未完成的清理。运行中的写入和发送会阻止删除；排队执行随项目删除。保留原消息 ID 与摘要阻止迟到消息重放，共享内容寻址版本库不在单项目删除时回收。项目文件读写继续使用原有写锁、CAS 和修订机制。
 
 | 能力 | 路径 |
 |---|---|

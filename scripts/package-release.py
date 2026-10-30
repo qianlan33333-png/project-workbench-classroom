@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Package already verified builds; never fetch or change dependency versions."""
-import argparse, hashlib, json, os, pathlib, tarfile
+import argparse, hashlib, json, os, pathlib, subprocess, tarfile
 
 root = pathlib.Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -17,6 +17,7 @@ for link in harness.rglob('*'):
     if link.is_symlink():
         assert link.resolve().is_relative_to(harness.resolve()) and link.exists(), f'Non-portable dependency: {link}; run portable-harness.py'
 assert (root / 'web/dist/index.html').is_file(), 'Build the web app first'
+subprocess.run(['sh', str(root/'scripts/stage-cli.sh')], check=True)
 
 def include(info):
     if '/__pycache__/' in info.name or info.name.endswith('.pyc') or '__MACOSX' in info.name or '/.git/' in info.name or info.name.endswith('.DS_Store'):
@@ -35,7 +36,7 @@ with tarfile.open(out, 'w:gz', compresslevel=3) as tar:
                (root/'runtime/entrypoint.sh','entrypoint.sh'),
                (root/'vendor-src/deepseek-harness/native/system/packages/linux-x64','native-linux'),
                (root/'vendor-src/deepseek-harness/native/system/packages/entry/src','native-src'),
-               (root/'docs','docs'), (root/'scripts','scripts'),
+               (root/'docs','docs'), (root/'scripts','scripts'), (root/'cli','cli'),
                (node,'node'), (root/'README.md','README.md')]
     for source, destination in entries:
         tar.add(source, arcname=destination, filter=include)

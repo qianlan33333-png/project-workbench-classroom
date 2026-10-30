@@ -81,8 +81,26 @@ func (s *Store) QueueReply(m Message, run, session, kind, text string) error {
 	if run != "" {
 		key = run + ":" + kind
 	}
-	_, err := s.DB.Exec("INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?)", d.ID, key, d.ConnectionID, d.State, d.CreatedAt, encode(d))
-	return err
+	return s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if session != "" {
+			var exists int
+			if e := tx.QueryRow("SELECT count(*) FROM sessions WHERE id=?", session).Scan(&exists); e != nil {
+				return e
+			}
+			if exists == 0 {
+				return nil
+			}
+		}
+		var deleted int
+		if e := tx.QueryRow("SELECT count(*) FROM inbox WHERE id=? AND state='deleted'", m.ID).Scan(&deleted); e != nil {
+			return e
+		}
+		if deleted > 0 {
+			return nil
+		}
+		_, err := tx.Exec("INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?)", d.ID, key, d.ConnectionID, d.State, d.CreatedAt, encode(d))
+		return err
+	})
 }
 func (s *Store) ClaimDelivery(connection string) (*Delivery, error) {
 	var out *Delivery

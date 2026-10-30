@@ -41,7 +41,7 @@ func (s *Store) saveRun(r Run) error {
 	return s.Emit(r.SessionID, r.ID, "run.updated", r)
 }
 func (s *Store) saveMessage(m Message) error {
-	_, err := s.DB.Exec("UPDATE inbox SET state=?,session_id=?,data=? WHERE id=?", m.State, m.SessionID, encode(m), m.ID)
+	_, err := s.DB.Exec("UPDATE inbox SET state=?,session_id=?,data=? WHERE id=? AND state<>'deleted'", m.State, m.SessionID, encode(m), m.ID)
 	return err
 }
 
@@ -84,6 +84,9 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 	if err != nil {
 		old, e := getJSON[Message](s.DB, "SELECT data FROM inbox WHERE source=? AND connection_id=? AND event_id=?", in.Source, in.ConnectionID, in.EventID)
 		if e == nil {
+			if old.State == "deleted" && old.IncomingHash == digest([]byte(encode(in))) {
+				return old, nil
+			}
 			if encode(old.Incoming) != encode(in) {
 				return old, errors.New("同一事件标识对应了不同内容")
 			}
@@ -186,6 +189,9 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		old, err := decodeJSON[Message](existing)
 		if err != nil {
 			return err
+		}
+		if old.State == "deleted" {
+			return ErrNotFound
 		}
 		if old.RunID != "" {
 			m = old

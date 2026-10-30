@@ -3,6 +3,7 @@ package workbench
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -63,6 +64,9 @@ func (s *Store) ensureProject(id, name, description string, aliases []string) (P
 func (s *Store) UpdateProject(id string, update Project) (Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.updateProject(id, update)
+}
+func (s *Store) updateProject(id string, update Project) (Project, error) {
 	p, err := s.Project(id)
 	if err != nil {
 		return p, err
@@ -98,6 +102,26 @@ func (s *Store) UpdateProject(id string, update Project) (Project, error) {
 		return p, err
 	}
 	return p, s.Emit("", "", "project.updated", p)
+}
+
+func (s *Store) PatchProject(id string, fields map[string]json.RawMessage) (Project, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, err := s.Project(id)
+	if err != nil {
+		return p, err
+	}
+	for key := range fields {
+		switch key {
+		case "name", "description", "aliases", "expertIds", "defaultExpertId", "pluginIds", "archived":
+		default:
+			return p, errors.New("不支持修改项目字段：" + key)
+		}
+	}
+	if err = json.Unmarshal([]byte(encode(fields)), &p); err != nil {
+		return p, err
+	}
+	return s.updateProject(id, p)
 }
 func (s *Store) Sessions(project string) ([]Session, error) {
 	return listJSON[Session](s.DB, "SELECT data FROM sessions WHERE project_id=? AND kind<>'automation' ORDER BY kind='assistant' DESC,updated_at DESC", project)

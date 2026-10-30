@@ -59,6 +59,9 @@ func (w *Worker) Recover(ctx context.Context) error {
 	if err = w.Store.RecoverFileIntents(); err != nil {
 		return err
 	}
+	if err = w.Store.RecoverProjectDeletions(); err != nil {
+		return err
+	}
 	return w.Store.RecoverDeliveries()
 }
 func (w *Worker) Start(ctx context.Context) {
@@ -88,7 +91,7 @@ func (w *Worker) Start(ctx context.Context) {
 					stop()
 				}
 				if e != nil {
-					if current, readErr := w.Store.Message(m.ID); readErr == nil && current.RunID != "" {
+					if current, readErr := w.Store.Message(m.ID); readErr == nil && (current.RunID != "" || current.State == "deleted") {
 						continue
 					}
 					m.State = "error"
