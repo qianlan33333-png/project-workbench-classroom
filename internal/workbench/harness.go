@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,12 +21,13 @@ import (
 )
 
 type RuntimeInput struct {
-	Run      Run
-	Session  Session
-	Project  Project
-	Prompt   string
-	Routing  bool
-	ExtraEnv []string
+	Run           Run
+	Session       Session
+	Project       Project
+	Prompt        string
+	Routing       bool
+	NativeCommand bool
+	ExtraEnv      []string
 }
 type RuntimeResult struct {
 	Text       string
@@ -106,12 +108,23 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 	}
 	skillDirs := []string{}
 	mounts := []string{}
-	for _, id := range input.Project.ExpertIDs {
+	expertIDs := input.Project.ExpertIDs
+	if input.Run.ExpertVersions != nil {
+		expertIDs = []string{}
+		for id := range input.Run.ExpertVersions {
+			expertIDs = append(expertIDs, id)
+		}
+		sort.Strings(expertIDs)
+	}
+	for _, id := range expertIDs {
 		ex, e := h.Store.Expert(id)
 		if e != nil {
 			return nil, nil, "", e
 		}
 		version := ex.Digest
+		if fixed := input.Run.ExpertVersions[id]; fixed != "" {
+			version = fixed
+		}
 		if id == input.Run.ExpertID && input.Run.ExpertDigest != "" {
 			version = input.Run.ExpertDigest
 		}
@@ -160,6 +173,16 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		patch = append(patch, extra...)
 	}
 	if !input.Routing {
+		if c.RuntimeMode == "podman" || c.RuntimeDir != "" {
+			runtimeDir := c.RuntimeDir
+			socket := bridgeSocket(input)
+			if c.RuntimeMode == "podman" {
+				runtimeDir = "/opt/workbench-runtime"
+				socket = "/bridge.sock"
+				mounts = append(mounts, "--volume", bridgeSocket(input)+":/bridge.sock:rw")
+			}
+			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "project-workbench", "name": "@deepseek-ai/dsh-mcp-client", "config": map[string]any{"serverName": "workbench", "transport": "stdio", "command": "node", "args": []string{filepath.Join(runtimeDir, "app-mcp.mjs")}, "env": map[string]string{"PW_APP_SOCKET": socket}, "failOnStartupError": true}}}})
+		}
 		if c.RuntimeMode == "podman" {
 			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "project-browser", "name": "@deepseek-ai/dsh-mcp-client", "config": map[string]any{"serverName": "browser", "transport": "stdio", "command": "node", "args": []string{"/opt/workbench-runtime/browser-mcp.mjs"}, "cwd": "/workspace", "env": map[string]string{"DISPLAY": ":99", "PW_CHROMIUM": "/usr/bin/chromium", "PW_BROWSER_PROFILE": "/runtime/browser-profile"}}}}})
 		}
@@ -255,8 +278,15 @@ func (h *Harness) CleanupOrphans(ctx context.Context) error {
 	return nil
 }
 
-func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks RuntimeHooks) (RuntimeResult, error) {
+func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks RuntimeHooks) (resultOut RuntimeResult, executeErr error) {
 	args, env, cwd, err := h.prepare(input)
+	if err == nil && !input.Routing && (h.Config.RuntimeMode == "podman" || h.Config.RuntimeDir != "") {
+		var closeBridge func()
+		closeBridge, err = h.startBridge(input)
+		if err == nil {
+			defer closeBridge()
+		}
+	}
 	if err != nil {
 		return RuntimeResult{}, err
 	}
@@ -304,7 +334,35 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 		defer stop()
 		_ = h.Cleanup(cleanupCtx, input.Run.ID)
 	}()
-	go func() { _, _ = io.Copy(io.Discard, stderr); cancel() }()
+	var stderrMu sync.Mutex
+	stderrTail := ""
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, e := stderr.Read(buf)
+			if n > 0 {
+				stderrMu.Lock()
+				stderrTail += string(buf[:n])
+				if len(stderrTail) > 2048 {
+					stderrTail = stderrTail[len(stderrTail)-2048:]
+				}
+				stderrMu.Unlock()
+			}
+			if e != nil {
+				return
+			}
+		}
+	}()
+	defer func() {
+		if executeErr != nil && parent.Err() == nil {
+			stderrMu.Lock()
+			tail := strings.TrimSpace(stderrTail)
+			stderrMu.Unlock()
+			if tail != "" {
+				executeErr = fmt.Errorf("%w: %s", executeErr, safeRuntimeError(tail))
+			}
+		}
+	}()
 	var mu sync.Mutex
 	var writeMu sync.Mutex
 	pending := map[int64]chan rpcResult{}
@@ -491,9 +549,42 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 			return RuntimeResult{}, err
 		}
 	}
-	accepted, err := rpc("session/prompt", map[string]any{"sessionId": input.Session.HarnessID, "contentBlocks": []map[string]string{{"type": "text", "text": input.Prompt}}})
+	method := "session/prompt"
+	if input.NativeCommand {
+		method = "session/query"
+	}
+	accepted, err := rpc(method, map[string]any{"sessionId": input.Session.HarnessID, "contentBlocks": []map[string]string{{"type": "text", "text": input.Prompt}}})
 	if err != nil {
 		return RuntimeResult{}, err
+	}
+	if input.NativeCommand {
+		var command struct {
+			Kind      string `json:"kind"`
+			Execution struct {
+				Result struct {
+					Kind string `json:"kind"`
+					Text string `json:"text"`
+				} `json:"result"`
+			} `json:"execution"`
+		}
+		if e := json.Unmarshal(accepted, &command); e != nil {
+			return RuntimeResult{}, e
+		}
+		if command.Kind != "command" {
+			return RuntimeResult{}, errors.New("运行时没有识别此命令")
+		}
+		if command.Execution.Result.Kind == "error" {
+			return RuntimeResult{}, errors.New(safeRuntimeError(command.Execution.Result.Text))
+		}
+		if _, e := rpc("session/wait", map[string]string{"sessionId": input.Session.HarnessID}); e != nil {
+			return RuntimeResult{}, e
+		}
+		_, _ = rpc("shutdown", nil)
+		text := command.Execution.Result.Text
+		if text == "" {
+			text = "原生对话命令已完成。"
+		}
+		return RuntimeResult{Text: text, StopReason: "completed"}, nil
 	}
 	var receipt struct {
 		MessageID string `json:"messageId"`
@@ -517,7 +608,7 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 		return result, errors.New("Harness 已结束但没有产生可显示的答复")
 	}
 	_, _ = rpc("shutdown", nil)
-	if terminal != "" && terminal != "stop" && terminal != "end-turn" && terminal != "completed" && terminal != "end_turn" {
+	if terminal != "stop" && terminal != "end-turn" && terminal != "completed" && terminal != "end_turn" {
 		return result, fmt.Errorf("执行没有正常完成（%s）", terminal)
 	}
 	return result, nil

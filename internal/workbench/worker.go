@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,14 +16,15 @@ import (
 // Worker has one business executor. Routing is separate so a long task never
 // prevents receiving, attributing or stopping another request.
 type Worker struct {
-	Store    *Store
-	Executor Executor
-	Router   SemanticRouter
-	mu       sync.Mutex
-	active   string
-	cancel   context.CancelFunc
-	answers  map[string]chan json.RawMessage
-	wg       sync.WaitGroup
+	Store        *Store
+	Executor     Executor
+	Router       SemanticRouter
+	mu           sync.Mutex
+	active       string
+	cancel       context.CancelFunc
+	answers      map[string]chan json.RawMessage
+	pendingStops map[string]bool
+	wg           sync.WaitGroup
 }
 
 func NewWorker(s *Store, e Executor, router SemanticRouter) *Worker {
@@ -86,6 +88,9 @@ func (w *Worker) Start(ctx context.Context) {
 					stop()
 				}
 				if e != nil {
+					if current, readErr := w.Store.Message(m.ID); readErr == nil && current.RunID != "" {
+						continue
+					}
 					m.State = "error"
 					m.Question = safeRuntimeError(e.Error())
 					_ = w.Store.saveMessage(m)
@@ -154,6 +159,10 @@ func (w *Worker) execute(parent context.Context, r Run) {
 	w.mu.Lock()
 	w.active = r.ID
 	w.cancel = cancel
+	if w.pendingStops[r.ID] {
+		delete(w.pendingStops, r.ID)
+		cancel()
+	}
 	w.mu.Unlock()
 	defer func() { cancel(); w.mu.Lock(); w.active = ""; w.cancel = nil; w.mu.Unlock() }()
 	s := w.Store
@@ -161,6 +170,9 @@ func (w *Worker) execute(parent context.Context, r Run) {
 	baseline, err := s.Snapshot(r.ProjectID)
 	if err == nil {
 		_, err = s.DB.Exec("INSERT INTO baselines VALUES(?,?)", r.ID, encode(baseline))
+	}
+	if err == nil {
+		err = ctx.Err()
 	}
 	if err == nil {
 		err = s.MaterializeAttachments(&r)
@@ -200,7 +212,11 @@ func (w *Worker) execute(parent context.Context, r Run) {
 				},
 				CancelInteraction: func(requestID string) { w.expireNativeQuestion(r.ID, requestID) },
 			}
-			result, err = w.Executor.Execute(ctx, RuntimeInput{Run: r, Session: ss, Project: p, Prompt: prompt}, hooks)
+			nativeCommand := strings.TrimSpace(r.Text) == "/compact"
+			if nativeCommand {
+				prompt = "/compact"
+			}
+			result, err = w.Executor.Execute(ctx, RuntimeInput{Run: r, Session: ss, Project: p, Prompt: prompt, NativeCommand: nativeCommand}, hooks)
 		}
 	}
 	// Cleanup is a hard prerequisite to recording a final snapshot and unlocking.
@@ -280,10 +296,16 @@ func (w *Worker) prompt(r Run, p Project) string {
 	var b strings.Builder
 	b.WriteString("[本轮工作范围]\n项目：" + p.Name + "\n项目编号：" + p.ID + "\n当前对话：" + r.SessionID + "\n任务编号：#T" + r.ID[:8] + "\n来源：" + r.Source + "\n")
 	if r.ExpertID != "" {
-		if ex, e := w.Store.Expert(r.ExpertID); e == nil {
-			b.WriteString("本轮专家：" + ex.Name + "；版本：" + r.ExpertDigest + "。请按需读取其 SKILL.md。\n")
+		if raw, e := os.ReadFile(filepath.Join(w.Store.Root, "experts", r.ExpertID, r.ExpertDigest, "SKILL.md")); e == nil {
+			if ex, e := expertManifest(raw); e == nil {
+				b.WriteString("本轮专家：" + ex.Name + "；Skill 标识：" + ex.SkillName + "；版本：" + r.ExpertDigest + "。请使用其方法并读取 SKILL.md。\n")
+			}
 		}
 	}
+	if m, e := w.Store.Message(r.MessageID); e == nil && len(m.References) > 0 {
+		b.WriteString("本次明确授权的跨项目资料，请通过 workbench 的 list_references/read_reference 按需读取并标明来源：" + encode(m.References) + "\n")
+	}
+	b.WriteString("指代对象不唯一时应提一个必要问题；本渠道最近回复只是线索，不能当成用户明确引用。原始历史可通过工作台工具搜索，不能把猜测写成既有事实。\n")
 	if r.ReplyAnchor != "" {
 		if prior, e := w.Store.Run(r.ReplyAnchor); e == nil && prior.ProjectID == r.ProjectID {
 			label := "该来源渠道最近成功送达的回复，仅作歧义判断线索；不代表用户明确引用"
@@ -406,7 +428,14 @@ func validateAnswer(i Interaction, raw json.RawMessage) error {
 	}
 	var p struct {
 		Questions []struct {
-			ID string `json:"id"`
+			ID      string `json:"id"`
+			Options []struct {
+				Label string `json:"label"`
+			} `json:"options"`
+			MultiSelect bool `json:"multiSelect"`
+			Intent      struct {
+				Kind string `json:"kind"`
+			} `json:"intent"`
 		} `json:"questions"`
 	}
 	if err := json.Unmarshal(i.Payload, &p); err != nil {
@@ -425,6 +454,31 @@ func validateAnswer(i Interaction, raw json.RawMessage) error {
 	for _, q := range p.Questions {
 		if !seen[q.ID] {
 			return errors.New("回答的问题不匹配")
+		}
+		for _, answer := range a.Answers {
+			if answer.ID != q.ID {
+				continue
+			}
+			if !q.MultiSelect && len(answer.Selected) > 1 {
+				return errors.New("此问题只能选择一项")
+			}
+			labels := map[string]bool{}
+			for _, o := range q.Options {
+				labels[o.Label] = true
+			}
+			chosen := map[string]bool{}
+			for _, label := range answer.Selected {
+				if !labels[label] || chosen[label] {
+					return errors.New("所选选项无效或重复")
+				}
+				chosen[label] = true
+			}
+			if q.Intent.Kind == "approval" && (answer.Custom != "" || len(answer.Selected) != 1) {
+				return errors.New("请明确选择权限问题的一个选项")
+			}
+			if len(answer.Selected) == 0 && strings.TrimSpace(answer.Custom) == "" {
+				return errors.New("请填写答案或选择选项")
+			}
 		}
 	}
 	return nil
@@ -476,6 +530,20 @@ func (w *Worker) Stop(id string) error {
 	if err != nil {
 		return err
 	}
+	if r.State == "running" || r.State == "waiting" {
+		// A run can be claimed just before execute installs its cancel function.
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.active == id && w.cancel != nil {
+			w.cancel()
+		} else {
+			if w.pendingStops == nil {
+				w.pendingStops = map[string]bool{}
+			}
+			w.pendingStops[id] = true
+		}
+		return nil
+	}
 	if r.State != "queued" {
 		return errors.New("任务未在执行或排队")
 	}
@@ -489,6 +557,28 @@ func (w *Worker) handleControl(m Message) (bool, error) {
 		return false, nil
 	}
 	if text == "停止" || strings.HasPrefix(text, "停止 #T") {
+		if strings.HasPrefix(text, "停止 #T") {
+			prefix := strings.TrimSpace(strings.TrimPrefix(text, "停止 #T"))
+			if len(prefix) < 8 {
+				return true, errors.New("请使用至少 8 位任务编号")
+			}
+			runs, e := listJSON[Run](w.Store.DB, "SELECT data FROM runs WHERE id LIKE ? LIMIT 2", prefix+"%")
+			if e != nil {
+				return true, e
+			}
+			if len(runs) != 1 {
+				return true, errors.New("任务编号不唯一或不存在")
+			}
+			r := runs[0]
+			if e = w.Stop(r.ID); e != nil {
+				return true, e
+			}
+			m.State = "handled"
+			if e = w.Store.saveMessage(m); e != nil {
+				return true, e
+			}
+			return true, w.Store.QueueReply(m, r.ID, r.SessionID, "stopped", "已请求停止任务 #T"+r.ID[:8])
+		}
 		focus, err := w.Store.Focus(m.Incoming)
 		if err != nil {
 			return true, err
@@ -543,14 +633,26 @@ func (w *Worker) handleControl(m Message) (bool, error) {
 		} else {
 			var p struct {
 				Questions []struct {
-					ID string `json:"id"`
+					ID      string `json:"id"`
+					Options []struct {
+						Label string `json:"label"`
+					} `json:"options"`
 				} `json:"questions"`
 			}
 			_ = json.Unmarshal(i.Payload, &p)
 			if len(p.Questions) != 1 {
 				return true, errors.New("这组问题有多项，请在网页逐项回答")
 			}
-			answer = map[string]any{"answers": []map[string]any{{"id": p.Questions[0].ID, "selected": []string{}, "custom": parts[1]}}}
+			selected := []string{}
+			custom := strings.TrimSpace(parts[1])
+			for n, opt := range p.Questions[0].Options {
+				if custom == opt.Label || custom == fmt.Sprint(n+1) {
+					selected = []string{opt.Label}
+					custom = ""
+					break
+				}
+			}
+			answer = map[string]any{"answers": []map[string]any{{"id": p.Questions[0].ID, "selected": selected, "custom": custom}}}
 		}
 		if e = w.Answer(i.ID, json.RawMessage(encode(answer))); e != nil {
 			return true, e

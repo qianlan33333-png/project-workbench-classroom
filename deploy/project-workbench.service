@@ -9,9 +9,11 @@ User=projectwb
 Group=projectwb
 WorkingDirectory=/opt/project-workbench/current
 Environment=HOME=/home/projectwb
-Environment=PATH=/opt/node-v24.22.0-linux-x64/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/opt/project-workbench/current/node/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=/etc/project-workbench/service.env
-ExecStart=/opt/project-workbench/current/bin/workbench -config /etc/project-workbench/config.json
+ExecStartPre=-/usr/bin/systemctl --user stop project-workbench-runtime.service
+ExecStart=/usr/bin/systemd-run --user --wait --pipe --collect --unit=project-workbench-runtime --property=Delegate=yes --property=KillMode=control-group --property=TimeoutStopSec=60 --working-directory=/opt/project-workbench/current --setenv=HOME=/home/projectwb --setenv=PATH=/opt/project-workbench/current/node/bin:/usr/local/bin:/usr/bin:/bin /opt/project-workbench/current/bin/workbench -config /etc/project-workbench/config.json
+ExecStop=/usr/bin/systemctl --user stop project-workbench-runtime.service
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=60

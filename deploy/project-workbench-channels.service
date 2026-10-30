@@ -2,7 +2,7 @@
 Description=Project Workbench WeChat and Feishu transport
 After=network-online.target project-workbench.service
 Requires=project-workbench.service
-Conflicts=workbench-wechat.service workbench-feishu.service
+Conflicts=workbench-wechat.service workbench-feishu.service deepseek-harness.service
 
 [Service]
 Type=simple
@@ -11,7 +11,7 @@ Group=projectwb
 WorkingDirectory=/opt/project-workbench/current/runtime
 Environment=WORKBENCH_CHANNEL_CONFIG=/etc/project-workbench/channels.json
 Environment=HOME=/home/projectwb
-ExecStart=/opt/node-v24.22.0-linux-x64/bin/node /opt/project-workbench/current/runtime/channels.mjs
+ExecStart=/opt/project-workbench/current/node/bin/node /opt/project-workbench/current/runtime/channels.mjs
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=60

@@ -13,3 +13,8 @@ test "$(git rev-parse HEAD)" = "$task_commit"
 "$PNPM" install --frozen-lockfile
 "$PNPM" run build:artifacts
 "$PNPM" run build:check
+"$PNPM" --filter @deepseek-ai/dsh deploy --prod --legacy --offline --frozen-lockfile ../../.var/harness-deploy-offline
+cd ../..
+python3 scripts/portable-harness.py
+python3 scripts/prepare-linux-addon.py
+node .var/harness-deploy-offline/lib/bin.js --version

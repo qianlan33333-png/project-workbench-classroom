@@ -1,17 +1,17 @@
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
-import { fileURLToPath } from "node:url";
 import * as lark from "@larksuiteoapi/node-sdk";
 
 // No inbound history is assembled here. The app persists and attributes each
 // event before acknowledging it, and replies come exclusively from the outbox.
 export function normalizeWechat(c, msg) {
-  if (msg.from_user_id !== c.ownerId || msg.message_type !== 1) return null;
+  if (msg.from_user_id !== c.ownerId || msg.message_type !== 1 || msg.group_id)
+    return null;
   const id = msg.message_id;
   if (id === undefined || id === null) return null;
   const text = (msg.item_list ?? [])
-    .filter((i) => i.type === 1)
-    .map((i) => i.text_item?.text ?? "")
+    .filter((i) => i.type === 1 || i.type === 3)
+    .map((i) => i.text_item?.text ?? i.voice_item?.text ?? "")
     .join("")
     .trim();
   const unsupported = (msg.item_list ?? []).some((i) => i.type !== 1);
@@ -24,10 +24,71 @@ export function normalizeWechat(c, msg) {
     text:
       text ||
       (unsupported
-        ? "[收到暂不支持解析的微信媒体，请通过网页上传文件，或在微信中发送文字说明。]"
+        ? "[收到微信附件，请结合当前对话判断处理要求；不明确时询问本人。]"
         : ""),
     replyTo: "",
   };
+}
+export function parseWechatJSON(text) {
+  return JSON.parse(text, (key, value, context) =>
+    key === "message_id" && typeof value === "number" && context?.source
+      ? context.source
+      : value,
+  );
+}
+export function decryptWechatMedia(bytes, key, hexKey) {
+  let decoded = hexKey
+    ? Buffer.from(hexKey, "hex")
+    : Buffer.from(key || "", "base64");
+  if (decoded.length === 32 && /^[a-f0-9]{32}$/i.test(decoded.toString()))
+    decoded = Buffer.from(decoded.toString(), "hex");
+  if (decoded.length !== 16) throw new Error("Invalid media key");
+  const decipher = crypto.createDecipheriv("aes-128-ecb", decoded, null);
+  return Buffer.concat([decipher.update(bytes), decipher.final()]);
+}
+export async function downloadWechatMedia(msg, signal) {
+  const files = [];
+  for (const [index, item] of (msg.item_list || []).entries()) {
+    const data =
+        item.image_item || item.voice_item || item.file_item || item.video_item,
+      media = data?.media;
+    if (!media) continue;
+    const url = new URL(
+      media.full_url ||
+        `https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=${encodeURIComponent(media.encrypt_query_param || "")}`,
+    );
+    if (
+      url.protocol !== "https:" ||
+      !url.hostname.endsWith(".weixin.qq.com") ||
+      url.username ||
+      url.password
+    )
+      throw new Error("Unsupported media CDN");
+    const response = await fetch(url, {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(45000)]),
+      redirect: "error",
+    });
+    if (!response.ok) throw new Error("Media download failed");
+    let size = 0;
+    const chunks = [];
+    for await (const chunk of response.body) {
+      size += chunk.length;
+      if (size > 128 * 1024 * 1024 + 16) throw new Error("Media exceeds 128MB");
+      chunks.push(chunk);
+    }
+    const encrypted = Buffer.concat(chunks),
+      key = media.aes_key,
+      hexKey = item.image_item?.aeskey;
+    const content =
+      key || hexKey ? decryptWechatMedia(encrypted, key, hexKey) : encrypted;
+    files.push({
+      name:
+        data.file_name ||
+        `wechat-${msg.message_id}-${index}.${item.type === 2 ? "jpg" : item.type === 5 ? "mp4" : item.type === 3 ? "silk" : "bin"}`,
+      content,
+    });
+  }
+  return files;
 }
 export function normalizeFeishu(c, event) {
   const { sender, message: m } = event;
@@ -142,30 +203,31 @@ export class Bridge {
           if (!item.connection.enabled) continue;
           const id = item.connection.id;
           enabled.add(id);
-          const fingerprint = crypto
-            .createHash("sha256")
-            .update(JSON.stringify(item))
-            .digest("hex");
           const existing = this.controllers.get(id);
           if (
             existing &&
             existing.credentials === JSON.stringify(item.secrets) &&
-            existing.ownerId === item.connection.ownerId
+            existing.ownerId === item.connection.ownerId &&
+            existing.kind === item.connection.kind
           )
             continue;
-          if (existing) existing.abort.abort();
+          if (existing) {
+            existing.abort.abort();
+            await existing.done;
+          }
           const abort = new AbortController();
           const record = {
             abort,
             credentials: JSON.stringify(item.secrets),
             ownerId: item.connection.ownerId,
+            kind: item.connection.kind,
           };
           this.controllers.set(id, record);
           const run =
             item.connection.kind === "wechat"
               ? this.wechat(item, abort.signal)
               : this.feishu(item, abort.signal);
-          run
+          record.done = run
             .catch(() => this.status(item.connection, "disconnected"))
             .finally(() => {
               if (this.controllers.get(id) === record)
@@ -248,7 +310,7 @@ export class Bridge {
         signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
       });
       if (!res.ok) throw new Error("WeChat HTTP failure");
-      return res.json();
+      return parseWechatJSON(await res.text());
     };
     const outbox = this.outbox(c, signal, async (d) => {
       const context = state.contextTokens[d.actorId];
@@ -276,7 +338,10 @@ export class Bridge {
           },
           20000,
         );
-        if (result.ret && result.ret !== 0)
+        if (
+          (result.ret && result.ret !== 0) ||
+          (result.errcode && result.errcode !== 0)
+        )
           return {
             state: i === 0 ? "failed" : "unknown",
             receipt: "",
@@ -286,17 +351,21 @@ export class Bridge {
       return { state: "accepted", receipt: `client:${d.id}`, error: "" };
     });
     try {
+      await platform("msg/notifystart", {}, 10000).catch(() => {});
       while (!signal.aborted && !this.stopped) {
         try {
           const result = await platform("getupdates", {
             get_updates_buf: state.get_updates_buf ?? "",
           });
-          if (result.ret === -14) {
+          if (result.ret === -14 || result.errcode === -14) {
             await this.status(c, "login-required");
             await delay(5000);
             continue;
           }
-          if (result.ret && result.ret !== 0)
+          if (
+            (result.ret && result.ret !== 0) ||
+            (result.errcode && result.errcode !== 0)
+          )
             throw new Error("WeChat polling failure");
           for (const msg of result.msgs ?? []) {
             const incoming = normalizeWechat(c, msg);
@@ -304,11 +373,23 @@ export class Bridge {
             if (msg.context_token)
               state.contextTokens[msg.from_user_id] = msg.context_token;
             if (state.seen.includes(incoming.eventId)) continue;
+            const attachments = await downloadWechatMedia(msg, signal);
+            for (const file of attachments) {
+              const form = new FormData();
+              form.append("file", new Blob([file.content]), file.name);
+              form.append("connectionId", c.id);
+              form.append("actorId", c.ownerId);
+              const upload = await this.call("/upload", form);
+              (incoming.attachments ??= []).push(upload.path);
+            }
             await this.call("/messages", incoming);
             state.seen.push(incoming.eventId);
             state.seen = state.seen.slice(-5000);
           }
-          if (typeof result.get_updates_buf === "string")
+          if (
+            typeof result.get_updates_buf === "string" &&
+            result.get_updates_buf
+          )
             state.get_updates_buf = result.get_updates_buf;
           await this.call(`/connections/${c.id}/state`, state, "PUT");
           await this.status(c, "connected");
@@ -338,6 +419,36 @@ export class Bridge {
     state.seen ??= [];
     let serial = Promise.resolve();
     const handler = async (event) => {
+      if (c.ownerId.startsWith("pairing:")) {
+        const code = c.ownerId.slice(8),
+          msg = event.message;
+        let body;
+        try {
+          body = JSON.parse(msg?.content || "{}");
+        } catch {
+          return;
+        }
+        if (
+          msg?.chat_type !== "p2p" ||
+          msg?.message_type !== "text" ||
+          body.text?.trim() !== `绑定 ${code}` ||
+          event.sender?.sender_type !== "user"
+        )
+          return;
+        const actor = event.sender?.sender_id?.open_id;
+        if (!actor) return;
+        const bound = await this.call(`/connections/${c.id}/bind`, {
+          code,
+          actor,
+        });
+        c.ownerId = bound.ownerId;
+        // The verified private message also establishes a future notification target.
+        body.text = "项目列表";
+        event = {
+          ...event,
+          message: { ...msg, content: JSON.stringify(body) },
+        };
+      }
       const normalized = normalizeFeishu(c, event);
       if (!normalized) return;
       const { incoming, attachment } = normalized;
@@ -429,9 +540,10 @@ export class Bridge {
   async stop() {
     this.stopped = true;
     for (const c of this.controllers.values()) c.abort.abort();
+    await Promise.allSettled([...this.controllers.values()].map((c) => c.done));
   }
 }
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const config = JSON.parse(
     await fs.readFile(
       process.env.WORKBENCH_CHANNEL_CONFIG ||

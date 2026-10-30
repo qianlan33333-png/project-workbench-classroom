@@ -41,32 +41,39 @@ type Session struct {
 type Expert struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
+	SkillName   string   `json:"skillName"`
 	Description string   `json:"description"`
 	Digest      string   `json:"digest"`
 	Tools       []string `json:"tools"`
 	CreatedAt   int64    `json:"createdAt"`
 }
 type Incoming struct {
-	Source         string   `json:"source"`
-	ConnectionID   string   `json:"connectionId"`
-	ActorID        string   `json:"actorId"`
-	ConversationID string   `json:"conversationId"`
-	EventID        string   `json:"eventId"`
-	ReplyTo        string   `json:"replyTo,omitempty"`
-	SessionID      string   `json:"sessionId,omitempty"`
-	Text           string   `json:"text"`
-	Attachments    []string `json:"attachments,omitempty"`
-	ExpertID       string   `json:"expertId,omitempty"`
+	Source         string          `json:"source"`
+	ConnectionID   string          `json:"connectionId"`
+	ActorID        string          `json:"actorId"`
+	ConversationID string          `json:"conversationId"`
+	EventID        string          `json:"eventId"`
+	ReplyTo        string          `json:"replyTo,omitempty"`
+	SessionID      string          `json:"sessionId,omitempty"`
+	Text           string          `json:"text"`
+	Attachments    []string        `json:"attachments,omitempty"`
+	ExpertID       string          `json:"expertId,omitempty"`
+	References     []FileReference `json:"references,omitempty"`
+}
+type FileReference struct {
+	ProjectID string `json:"projectId"`
+	Path      string `json:"path"`
 }
 type Message struct {
-	ID         string      `json:"id"`
-	Incoming   Incoming    `json:"incoming"`
-	State      string      `json:"state"`
-	SessionID  string      `json:"sessionId,omitempty"`
-	RunID      string      `json:"runId,omitempty"`
-	Question   string      `json:"question,omitempty"`
-	Candidates []Candidate `json:"candidates,omitempty"`
-	CreatedAt  int64       `json:"createdAt"`
+	ID         string          `json:"id"`
+	Incoming   Incoming        `json:"incoming"`
+	State      string          `json:"state"`
+	SessionID  string          `json:"sessionId,omitempty"`
+	RunID      string          `json:"runId,omitempty"`
+	Question   string          `json:"question,omitempty"`
+	Candidates []Candidate     `json:"candidates,omitempty"`
+	References []FileReference `json:"references,omitempty"`
+	CreatedAt  int64           `json:"createdAt"`
 }
 type Candidate struct {
 	ProjectID string `json:"projectId"`
@@ -74,24 +81,25 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
-	ID             string   `json:"id"`
-	ProjectID      string   `json:"projectId"`
-	SessionID      string   `json:"sessionId"`
-	MessageID      string   `json:"messageId"`
-	State          string   `json:"state"`
-	Source         string   `json:"source"`
-	Text           string   `json:"text"`
-	ExpertID       string   `json:"expertId"`
-	ExpertDigest   string   `json:"expertDigest"`
-	Attachments    []string `json:"attachments,omitempty"`
-	ReplyAnchor    string   `json:"replyAnchor,omitempty"`
-	AnchorExplicit bool     `json:"anchorExplicit"`
-	Result         string   `json:"result"`
-	Error          string   `json:"error,omitempty"`
-	ScheduleID     string   `json:"scheduleId,omitempty"`
-	CreatedAt      int64    `json:"createdAt"`
-	StartedAt      int64    `json:"startedAt"`
-	FinishedAt     int64    `json:"finishedAt"`
+	ID             string            `json:"id"`
+	ProjectID      string            `json:"projectId"`
+	SessionID      string            `json:"sessionId"`
+	MessageID      string            `json:"messageId"`
+	State          string            `json:"state"`
+	Source         string            `json:"source"`
+	Text           string            `json:"text"`
+	ExpertID       string            `json:"expertId"`
+	ExpertDigest   string            `json:"expertDigest"`
+	ExpertVersions map[string]string `json:"expertVersions,omitempty"`
+	Attachments    []string          `json:"attachments,omitempty"`
+	ReplyAnchor    string            `json:"replyAnchor,omitempty"`
+	AnchorExplicit bool              `json:"anchorExplicit"`
+	Result         string            `json:"result"`
+	Error          string            `json:"error,omitempty"`
+	ScheduleID     string            `json:"scheduleId,omitempty"`
+	CreatedAt      int64             `json:"createdAt"`
+	StartedAt      int64             `json:"startedAt"`
+	FinishedAt     int64             `json:"finishedAt"`
 }
 type Event struct {
 	Seq       int64           `json:"seq"`
@@ -183,4 +191,5 @@ type Config struct {
 	RuntimeImage   string
 	RuntimeMode    string
 	BrowserURL     string
+	RuntimeDir     string
 }

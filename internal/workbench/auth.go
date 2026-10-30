@@ -22,8 +22,8 @@ func secretToken() string {
 	return hex.EncodeToString(b)
 }
 func PasswordHash(password string) (string, error) {
-	if len(password) < 10 {
-		return "", errors.New("密码至少需要 10 个字符")
+	if len(password) < 8 {
+		return "", errors.New("密码至少需要 8 个字符")
 	}
 	salt := secretToken()[:32]
 	key, err := scrypt.Key([]byte(password), []byte(salt), 16384, 8, 1, 32)

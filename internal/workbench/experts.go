@@ -30,6 +30,7 @@ func expertManifest(b []byte) (Expert, error) {
 	}
 	var meta struct {
 		Name        string   `yaml:"name"`
+		DisplayName string   `yaml:"display-name"`
 		Description string   `yaml:"description"`
 		Tools       []string `yaml:"tools"`
 	}
@@ -39,7 +40,14 @@ func expertManifest(b []byte) (Expert, error) {
 	if strings.TrimSpace(meta.Name) == "" || strings.TrimSpace(meta.Description) == "" {
 		return Expert{}, errors.New("专家需要 name 和 description")
 	}
-	return Expert{Name: meta.Name, Description: meta.Description, Tools: meta.Tools}, nil
+	if !regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`).MatchString(meta.Name) {
+		return Expert{}, errors.New("SKILL.md 的 name 需要英文小写、数字或连字符；中文名称可放在 display-name")
+	}
+	name := meta.DisplayName
+	if name == "" {
+		name = meta.Name
+	}
+	return Expert{Name: name, SkillName: meta.Name, Description: meta.Description, Tools: meta.Tools}, nil
 }
 func (s *Store) installExpertDir(root, id string) (Expert, error) {
 	b, err := os.ReadFile(filepath.Join(root, "SKILL.md"))
@@ -154,7 +162,14 @@ func (s *Store) CreateExpert(name, description, instructions string) (Expert, er
 		return Expert{}, err
 	}
 	defer os.RemoveAll(dir)
-	meta, err := yaml.Marshal(map[string]string{"name": name, "description": description})
+	if strings.TrimSpace(name) == "" {
+		return Expert{}, errors.New("请填写专家名称")
+	}
+	skillName := name
+	if !regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`).MatchString(name) {
+		skillName = "expert-" + newID()[:8]
+	}
+	meta, err := yaml.Marshal(map[string]string{"name": skillName, "display-name": name, "description": description})
 	if err != nil {
 		return Expert{}, err
 	}

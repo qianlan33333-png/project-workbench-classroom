@@ -26,11 +26,17 @@ func (s *Store) ProjectRoot(id string) (string, error) {
 	return filepath.Join(s.Root, "projects", p.ID, "files"), nil
 }
 func (s *Store) CreateProject(name, description string, aliases []string) (Project, error) {
+	return s.ensureProject(newID(), name, description, aliases)
+}
+func (s *Store) ensureProject(id, name, description string, aliases []string) (Project, error) {
+	if p, e := s.Project(id); e == nil {
+		return p, nil
+	}
 	name = strings.TrimSpace(name)
 	if name == "" || len([]rune(name)) > 80 {
 		return Project{}, errors.New("项目名称需为 1–80 个字")
 	}
-	p := Project{ID: newID(), Name: name, Description: description, Aliases: aliases, ExpertIDs: []string{}, PluginIDs: []string{}, CreatedAt: now()}
+	p := Project{ID: id, Name: name, Description: description, Aliases: aliases, ExpertIDs: []string{}, PluginIDs: []string{}, CreatedAt: now()}
 	sess := Session{ID: newID(), ProjectID: p.ID, Title: "项目助手", Kind: "assistant", CreatedAt: now(), UpdatedAt: now()}
 	sess.HarnessID = "pw-" + sess.ID
 	p.DefaultSessionID = sess.ID
@@ -46,6 +52,9 @@ func (s *Store) CreateProject(name, description string, aliases []string) (Proje
 		return err
 	})
 	if err != nil {
+		if existing, e := s.Project(id); e == nil {
+			return existing, nil
+		}
 		os.RemoveAll(filepath.Dir(root))
 		return p, err
 	}
@@ -67,6 +76,11 @@ func (s *Store) UpdateProject(id string, update Project) (Project, error) {
 	for _, id := range update.ExpertIDs {
 		if _, err = s.Expert(id); err != nil {
 			return p, errors.New("专家不存在")
+		}
+	}
+	for _, id := range update.PluginIDs {
+		if _, err = s.Plugin(id); err != nil {
+			return p, errors.New("插件不存在")
 		}
 	}
 	if update.DefaultExpertID != "" && !contains(update.ExpertIDs, update.DefaultExpertID) {
@@ -99,7 +113,7 @@ func (s *Store) CreateSession(project, title, kind, expert string) (Session, err
 	if p.Archived {
 		return Session{}, errors.New("项目已归档")
 	}
-	if expert != "" && !contains(p.ExpertIDs, expert) {
+	if expert != "" && expert != "general" && !contains(p.ExpertIDs, expert) {
 		return Session{}, errors.New("此专家尚未加入项目")
 	}
 	if kind != "topic" && kind != "automation" {
@@ -125,7 +139,7 @@ func (s *Store) UpdateSession(id, title, expert string) (Session, error) {
 	if err != nil {
 		return sess, err
 	}
-	if expert != "" && !contains(p.ExpertIDs, expert) {
+	if expert != "" && expert != "general" && !contains(p.ExpertIDs, expert) {
 		return sess, errors.New("此专家尚未加入项目")
 	}
 	if strings.TrimSpace(title) != "" {

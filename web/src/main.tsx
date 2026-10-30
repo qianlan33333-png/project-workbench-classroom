@@ -57,6 +57,7 @@ type Field = {
   type?: string;
   hint?: string;
   required?: boolean;
+  options?: { value: string; label: string }[];
 };
 type Dialog = {
   title: string;
@@ -66,13 +67,16 @@ type Dialog = {
   action?: (data: Record<string, string>) => Promise<void>;
   content?: React.ReactNode;
 };
+const initialLocation = new URLSearchParams(location.hash.slice(1));
 function App() {
   const [auth, setAuth] = useState<boolean | null>(null),
-    [page, setPage] = useState("projects"),
+    [page, setPage] = useState(
+      initialLocation.get("project") ? "project" : "projects",
+    ),
     [projects, setProjects] = useState<Project[]>([]),
     [experts, setExperts] = useState<Expert[]>([]),
-    [projectId, setProjectId] = useState(""),
-    [sessionId, setSessionId] = useState(""),
+    [projectId, setProjectId] = useState(initialLocation.get("project") || ""),
+    [sessionId, setSessionId] = useState(initialLocation.get("session") || ""),
     [sessions, setSessions] = useState<Session[]>([]),
     [runs, setRuns] = useState<Run[]>([]),
     [inbox, setInbox] = useState<Message[]>([]),
@@ -87,12 +91,17 @@ function App() {
     [content, setContent] = useState(""),
     [saved, setSaved] = useState(""),
     [hash, setHash] = useState(""),
+    [binary, setBinary] = useState(false),
     [preview, setPreview] = useState(false),
     [find, setFind] = useState(""),
     [tab, setTab] = useState("files"),
     [mobileNav, setMobileNav] = useState(false),
     [attachments, setAttachments] = useState<string[]>([]),
+    [references, setReferences] = useState<
+      { projectId: string; path: string }[]
+    >([]),
     [searchResult, setSearchResult] = useState<any[] | null>(null);
+  const historyCursors = useRef<Record<string, string>>({});
   const chatEnd = useRef<HTMLDivElement>(null),
     projectRef = useRef(projectId),
     sessionRef = useRef(sessionId),
@@ -129,7 +138,9 @@ function App() {
     ]);
     setProjects(ps);
     setExperts(es);
-    setRuns(rs);
+    setRuns((old) => [
+      ...new Map([...old, ...rs].map((r) => [r.id, r])).values(),
+    ]);
     setInbox(ib);
     setInteractions(ints);
     if (projectRef.current) {
@@ -139,6 +150,15 @@ function App() {
       ]);
       setSessions(ss);
       setFiles(fs);
+      if (sessionRef.current) {
+        const history = await api<Run[]>(
+          `/runs?sessionId=${sessionRef.current}`,
+        );
+        historyCursors.current[sessionRef.current] ??= history.at(-1)?.id || "";
+        setRuns((old) => [
+          ...new Map([...old, ...history].map((r) => [r.id, r])).values(),
+        ]);
+      }
     }
   }, []);
   useEffect(() => {
@@ -179,6 +199,11 @@ function App() {
   useEffect(() => {
     if (!sessionId || !auth) return;
     act(async () => {
+      const history = await api<Run[]>(`/runs?sessionId=${sessionId}`);
+      historyCursors.current[sessionId] ??= history.at(-1)?.id || "";
+      setRuns((old) => [
+        ...new Map([...old, ...history].map((r) => [r.id, r])).values(),
+      ]);
       let after = 0;
       const all: WorkEvent[] = [];
       for (;;) {
@@ -203,9 +228,26 @@ function App() {
     const t = setTimeout(() => setToast(""), 7000);
     return () => clearTimeout(t);
   }, [toast]);
+  useEffect(() => {
+    const hash =
+      page === "project"
+        ? new URLSearchParams({
+            project: projectId,
+            session: sessionId,
+          }).toString()
+        : "";
+    history.replaceState(
+      null,
+      "",
+      location.pathname + location.search + (hash ? "#" + hash : ""),
+    );
+  }, [page, projectId, sessionId]);
   const openProject = (p: Project) => {
     if (content !== saved && !window.confirm("文档有未保存的修改，仍然切换？"))
       return;
+    setReferences([]);
+    setAttachments([]);
+    setText("");
     setProjectId(p.id);
     setSessionId(p.defaultSessionId);
     setFilePath("");
@@ -225,7 +267,58 @@ function App() {
     setContent(v.content);
     setSaved(v.content);
     setHash(v.hash);
-    setPreview(/\.(png|jpe?g|gif|webp|pdf|mp4|webm)$/i.test(path));
+    setBinary(!!v.binary);
+    setPreview(
+      !!v.binary || /\.(png|jpe?g|gif|webp|pdf|mp4|webm)$/i.test(path),
+    );
+  };
+  const openLinkedFile = async (link: string) => {
+    const target = link.split("#")[0];
+    const parts = (
+      filePath.split("/").slice(0, -1).join("/") +
+      "/" +
+      target
+    ).split("/");
+    const normalized: string[] = [];
+    for (const part of parts) {
+      if (part === "..") normalized.pop();
+      else if (part && part !== ".") normalized.push(part);
+    }
+    const relative = normalized.join("/");
+    const candidates = files.filter(
+      (f) =>
+        !f.directory &&
+        (f.path === relative ||
+          f.path === target ||
+          f.path.endsWith("/" + target)),
+    );
+    const local =
+      candidates.find((f) => f.path === relative) ||
+      candidates.find((f) => f.path === target);
+    if (local) return openFile(local.path);
+    if (candidates.length === 1) return openFile(candidates[0].path);
+    if (candidates.length > 1) {
+      setDialog({
+        title: "选择链接资料",
+        content: (
+          <div>
+            {candidates.map((f) => (
+              <button
+                key={f.path}
+                onClick={() => {
+                  setDialog(null);
+                  act(() => openFile(f.path));
+                }}
+              >
+                {f.path}
+              </button>
+            ))}
+          </div>
+        ),
+      });
+      return;
+    }
+    throw new Error("找不到链接资料：" + target);
   };
   const newProject = () =>
     setDialog({
@@ -347,9 +440,11 @@ function App() {
         sessionId,
         text: value,
         attachments,
+        references,
       });
       setText("");
       setAttachments([]);
+      setReferences([]);
       await refresh();
     } catch (e) {
       notify((e as Error).message);
@@ -1002,6 +1097,7 @@ function App() {
                   <div>
                     <button
                       className={preview ? "selected" : ""}
+                      disabled={binary}
                       onClick={() => setPreview(!preview)}
                     >
                       {preview ? "编辑" : "预览"}
@@ -1011,7 +1107,7 @@ function App() {
                     </button>
                     <button
                       className="primary small"
-                      disabled={locked || content === saved}
+                      disabled={binary || locked || content === saved}
                       onClick={() =>
                         act(async () => {
                           const v = await api(
@@ -1065,10 +1161,19 @@ function App() {
                           `/projects/${projectId}/file?raw=1&path=${encodeURIComponent(filePath)}`,
                         )}
                       />
+                    ) : /\.(mp4|webm)$/i.test(filePath) ? (
+                      <video
+                        controls
+                        src={endpoint(
+                          `/projects/${projectId}/file?raw=1&path=${encodeURIComponent(filePath)}`,
+                        )}
+                      />
+                    ) : binary ? (
+                      <p>此附件可下载查看，不能作为文本编辑。</p>
                     ) : (
                       <RichText
                         text={content}
-                        onFile={(p) => act(() => openFile(p))}
+                        onFile={(p) => act(() => openLinkedFile(p))}
                       />
                     )}
                   </div>
@@ -1082,7 +1187,9 @@ function App() {
                   />
                 )}
                 <footer>
-                  <span>{content.length} 字符</span>
+                  <span>
+                    {binary ? "附件只读预览" : `${content.length} 字符`}
+                  </span>
                   <a
                     href={endpoint(
                       `/projects/${projectId}/file?raw=1&download=1&path=${encodeURIComponent(filePath)}`,
@@ -1152,7 +1259,14 @@ function App() {
                       })
                     }
                   >
-                    <option value="">通用助手</option>
+                    <option value="">
+                      项目默认：
+                      {experts.find((e) => e.id === project.defaultExpertId)
+                        ?.name || "通用助手"}
+                    </option>
+                    {project.defaultExpertId && (
+                      <option value="general">通用助手</option>
+                    )}
                     {experts
                       .filter((e) => project.expertIds?.includes(e.id))
                       .map((e) => (
@@ -1194,6 +1308,28 @@ function App() {
                     </div>
                   </div>
                 )}
+                {sessionRuns.length >= 100 && (
+                  <button
+                    className="panel-action"
+                    onClick={() =>
+                      act(async () => {
+                        const older = await api<Run[]>(
+                          `/runs?sessionId=${sessionId}&before=${historyCursors.current[sessionId] || sessionRuns[0].id}`,
+                        );
+                        if (!older.length) notify("已到最早的记录");
+                        else
+                          historyCursors.current[sessionId] = older.at(-1)!.id;
+                        setRuns((old) => [
+                          ...new Map(
+                            [...old, ...older].map((r) => [r.id, r]),
+                          ).values(),
+                        ]);
+                      })
+                    }
+                  >
+                    加载更早的工作记录
+                  </button>
+                )}
                 {sessionRuns.map((r) => (
                   <article className="turn" key={r.id}>
                     <div className="user-message">
@@ -1233,7 +1369,7 @@ function App() {
                       {r.result && (
                         <RichText
                           text={r.result}
-                          onFile={(p) => act(() => openFile(p))}
+                          onFile={(p) => act(() => openLinkedFile(p))}
                         />
                       )}{" "}
                       {!r.result && r.state === "running" && (
@@ -1282,6 +1418,22 @@ function App() {
                 <div ref={chatEnd} />
               </div>
               <div className="composer-wrap">
+                {references.length > 0 && (
+                  <div className="attachment-chips">
+                    {references.map((r, i) => (
+                      <button
+                        key={i}
+                        onClick={() =>
+                          setReferences(references.filter((_, n) => n !== i))
+                        }
+                      >
+                        引用 {projects.find((p) => p.id === r.projectId)?.name}/
+                        {r.path}
+                        <X size={12} />
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {attachments.length > 0 && (
                   <div className="attachment-chips">
                     {attachments.map((p) => (
@@ -1327,6 +1479,45 @@ function App() {
                         }}
                       />
                     </label>
+                    <button
+                      type="button"
+                      title="引用其他项目的指定资料"
+                      onClick={() =>
+                        setDialog({
+                          title: "引用项目资料",
+                          description: "仅授权读取本次指定的文件，并保留来源。",
+                          fields: [
+                            {
+                              key: "projectId",
+                              label: "来源项目",
+                              required: true,
+                              options: projects
+                                .filter(
+                                  (p) => !p.archived && p.id !== projectId,
+                                )
+                                .map((p) => ({ value: p.id, label: p.name })),
+                            },
+                            {
+                              key: "path",
+                              label: "文件相对路径",
+                              required: true,
+                              hint: "例如：品牌/定位.md",
+                            },
+                          ],
+                          action: async (v) => {
+                            await api(
+                              `/projects/${v.projectId}/file?path=${encodeURIComponent(v.path)}`,
+                            );
+                            setReferences((old) => [
+                              ...old,
+                              { projectId: v.projectId, path: v.path },
+                            ]);
+                          },
+                        })
+                      }
+                    >
+                      <FileText size={16} />
+                    </button>
                     <span>
                       {locked
                         ? "新指令将按顺序继续执行"
@@ -1447,6 +1638,26 @@ function App() {
                   <p>{e.description}</p>
                   <div>
                     <small>版本 {e.digest.slice(0, 10)}</small>
+                    <label className="button">
+                      更新 ZIP
+                      <input
+                        type="file"
+                        accept=".zip"
+                        onChange={(event) => {
+                          const f = event.target.files?.[0];
+                          if (f)
+                            act(async () => {
+                              const form = new FormData();
+                              form.append("file", f);
+                              form.append("id", e.id);
+                              await api("/experts/import", form);
+                              await refresh();
+                              notify("专家已更新；正在执行的任务保持原版本");
+                            });
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
                     <button
                       onClick={() =>
                         act(async () => {
@@ -1569,9 +1780,12 @@ function RichText({
   onFile?: (p: string) => void;
 }) {
   const transformed = text.replace(
-    /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-    (_, path, label) =>
-      `[${label || path}](project:${encodeURIComponent(path.endsWith(".md") ? path : path + ".md")})`,
+    /!?\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+    (_, path, label) => {
+      const [file, anchor] = path.split("#");
+      const target = /\.[^/]+$/.test(file) ? file : file + ".md";
+      return `[${label || path}](project:${encodeURIComponent(target + (anchor ? "#" + anchor : ""))})`;
+    },
   );
   return (
     <div className="markdown">
@@ -1723,7 +1937,22 @@ function Modal({
             {dialog.fields?.map((f, i) => (
               <label key={f.key}>
                 {f.label}
-                {f.type === "textarea" ? (
+                {f.options ? (
+                  <select
+                    required={f.required}
+                    value={values[f.key] ?? ""}
+                    onChange={(e) =>
+                      setValues({ ...values, [f.key]: e.target.value })
+                    }
+                  >
+                    <option value="">请选择</option>
+                    {f.options.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : f.type === "textarea" ? (
                   <textarea
                     rows={5}
                     required={f.required}
@@ -1769,7 +1998,9 @@ function Question({
   onAnswer: (a: any) => Promise<void>;
   notify: (s: string) => void;
 }) {
-  const [answers, setAnswers] = useState<Record<string, string>>({}),
+  const [answers, setAnswers] = useState<
+      Record<string, { selected: string[]; custom: string }>
+    >({}),
     [busy, setBusy] = useState(false);
   const send = async (a: any) => {
     setBusy(true);
@@ -1809,8 +2040,10 @@ function Question({
             send({
               answers: questions.map((q: any) => ({
                 id: q.id,
-                selected: [],
-                custom: answers[q.id] ?? "",
+                selected: answers[q.id]?.selected ?? [],
+                ...(answers[q.id]?.custom
+                  ? { custom: answers[q.id].custom }
+                  : {}),
               })),
             });
           }}
@@ -1818,26 +2051,52 @@ function Question({
           {questions.map((q: any) => (
             <label key={q.id}>
               {q.question ?? q.title ?? q.prompt}
+              {q.detail && <RichText text={q.detail} />}
               <div className="options">
                 {q.options?.map((o: any) => (
                   <button
                     type="button"
                     key={o.id ?? o.label}
-                    onClick={() =>
-                      setAnswers({ ...answers, [q.id]: o.label ?? o.value })
+                    className={
+                      answers[q.id]?.selected.includes(o.label) ? "primary" : ""
                     }
+                    onClick={() => {
+                      const selected = answers[q.id]?.selected ?? [];
+                      setAnswers({
+                        ...answers,
+                        [q.id]: {
+                          selected: q.multiSelect
+                            ? selected.includes(o.label)
+                              ? selected.filter((v) => v !== o.label)
+                              : [...selected, o.label]
+                            : [o.label],
+                          custom: "",
+                        },
+                      });
+                    }}
                   >
                     {o.label ?? o.title}
                   </button>
                 ))}
               </div>
-              <input
-                required
-                value={answers[q.id] ?? ""}
-                onChange={(e) =>
-                  setAnswers({ ...answers, [q.id]: e.target.value })
-                }
-              />
+              {q.intent?.kind !== "approval" && (
+                <input
+                  placeholder="也可以填写补充说明"
+                  required={!answers[q.id]?.selected.length}
+                  value={answers[q.id]?.custom ?? ""}
+                  onChange={(e) =>
+                    setAnswers({
+                      ...answers,
+                      [q.id]: {
+                        selected: q.multiSelect
+                          ? (answers[q.id]?.selected ?? [])
+                          : [],
+                        custom: e.target.value,
+                      },
+                    })
+                  }
+                />
+              )}
             </label>
           ))}
           <button className="primary small" disabled={busy}>
@@ -1943,6 +2202,10 @@ function Schedules({
   act: (f: () => Promise<any>) => Promise<any>;
 }) {
   const [list, setList] = useState<any[]>([]);
+  const [targets, setTargets] = useState<any[]>([]);
+  useEffect(() => {
+    act(async () => setTargets(await api("/notification-targets")));
+  }, []);
   const load = () =>
     api<any[]>(`/schedules?projectId=${project.id}`).then(setList);
   useEffect(() => {
@@ -1973,6 +2236,25 @@ function Schedules({
           label: "时区",
           value: v.timezone ?? "Asia/Shanghai",
         },
+        {
+          key: "expertId",
+          label: "使用专家（留空为通用助手）",
+          value: v.expertId,
+          options: experts
+            .filter((e) => project.expertIds.includes(e.id))
+            .map((e) => ({ value: e.id, label: e.name })),
+        },
+        {
+          key: "notifyTarget",
+          label: "完成通知（留空仅保存结果）",
+          value: v.notifyConnectionId
+            ? `${v.notifyConnectionId}|${v.notifyConversationId}`
+            : "",
+          options: targets.map((t) => ({
+            value: `${t.connectionId}|${t.conversationId}`,
+            label: t.label,
+          })),
+        },
       ],
       action: async (fields) => {
         await api(
@@ -1980,6 +2262,8 @@ function Schedules({
           {
             ...v,
             ...fields,
+            notifyConnectionId: fields.notifyTarget?.split("|")[0] || "",
+            notifyConversationId: fields.notifyTarget?.split("|")[1] || "",
             projectId: project.id,
             enabled: v.enabled ?? true,
           },
@@ -2148,7 +2432,11 @@ function SettingsPage({
                     required: true,
                   },
                   { key: "label", label: "连接名称", required: true },
-                  { key: "ownerId", label: "本人渠道账号 ID", required: true },
+                  {
+                    key: "ownerId",
+                    label: "本人渠道账号 ID",
+                    hint: "飞书可留空，启用后通过一次性绑定码确认本人。",
+                  },
                   {
                     key: "secrets",
                     label: "渠道配置（JSON）",
@@ -2181,6 +2469,12 @@ function SettingsPage({
           <div className="setting-row" key={c.id}>
             <div>
               <strong>{c.label || labels[c.kind]}</strong>
+              {c.ownerId.startsWith("pairing:") && (
+                <p>
+                  启用后，在飞书私聊机器人发送：
+                  <code>绑定 {c.ownerId.slice(8)}</code>
+                </p>
+              )}
               <p>
                 {c.status} ·{" "}
                 {c.lastHeartbeat
@@ -2305,7 +2599,7 @@ function SettingsPage({
                     label: "新密码",
                     type: "password",
                     required: true,
-                    hint: "至少 10 个字符",
+                    hint: "至少 8 个字符",
                   },
                 ],
                 action: async (v) => {

@@ -57,6 +57,8 @@ func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
 		if p.Headers == nil {
 			p.Headers = old.Headers
 		}
+	} else {
+		return p, ErrNotFound
 	}
 	_, e := s.DB.Exec("INSERT INTO plugins VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", p.ID, encode(p))
 	p.HasSecrets = len(p.Env) > 0 || len(p.Headers) > 0

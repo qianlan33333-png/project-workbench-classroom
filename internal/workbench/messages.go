@@ -19,7 +19,16 @@ func (s *Store) Inbox() ([]Message, error) {
 	return listJSON[Message](s.DB, "SELECT data FROM inbox WHERE state IN ('unrouted','clarify','error') ORDER BY created_at")
 }
 func (s *Store) Runs(session string) ([]Run, error) {
-	return listJSON[Run](s.DB, "SELECT data FROM runs WHERE (?='' OR session_id=?) ORDER BY created_at DESC LIMIT 100", session, session)
+	return s.RunPage(session, "")
+}
+func (s *Store) RunPage(session, before string) ([]Run, error) {
+	if before != "" {
+		return listJSON[Run](s.DB, "SELECT data FROM runs WHERE (?='' OR session_id=?) AND rowid<(SELECT rowid FROM runs WHERE id=?) ORDER BY rowid DESC LIMIT 100", session, session, before)
+	}
+	if session != "" {
+		return listJSON[Run](s.DB, "SELECT data FROM runs WHERE session_id=? ORDER BY rowid DESC LIMIT 100", session)
+	}
+	return listJSON[Run](s.DB, "SELECT data FROM runs WHERE (?='' OR session_id=?) ORDER BY state IN ('running','waiting','stopping') DESC,rowid DESC LIMIT 100", session, session)
 }
 func (s *Store) Run(id string) (Run, error) {
 	return getJSON[Run](s.DB, "SELECT data FROM runs WHERE id=?", id)
@@ -59,9 +68,19 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 		}
 		in.SessionID = ""
 		in.ExpertID = ""
+		in.References = nil // Only a parsed, explicit text command may grant channel references.
 	}
 	m := Message{ID: newID(), Incoming: in, State: "unrouted", CreatedAt: now()}
-	_, err := s.DB.Exec("INSERT INTO inbox VALUES(?,?,?,?,?,'unrouted','',?,?)", m.ID, in.Source, in.ConnectionID, in.EventID, entryKey(in), m.CreatedAt, encode(m))
+	if in.Source == "wechat" || in.Source == "feishu" {
+		var count int
+		if e := s.DB.QueryRow("SELECT count(*) FROM legacy_consumed WHERE hash=?", digest([]byte(in.Source+":"+in.EventID))).Scan(&count); e != nil {
+			return m, e
+		}
+		if count > 0 {
+			m.State = "handled"
+		}
+	}
+	_, err := s.DB.Exec("INSERT INTO inbox VALUES(?,?,?,?,?,?,'',?,?)", m.ID, in.Source, in.ConnectionID, in.EventID, entryKey(in), m.State, m.CreatedAt, encode(m))
 	if err != nil {
 		old, e := getJSON[Message](s.DB, "SELECT data FROM inbox WHERE source=? AND connection_id=? AND event_id=?", in.Source, in.ConnectionID, in.EventID)
 		if e == nil {
@@ -90,6 +109,9 @@ func (s *Store) SetFocus(in Incoming, session string) error {
 }
 
 func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool) (Message, error) {
+	if current, e := s.Message(m.ID); e == nil && current.RunID != "" {
+		return current, nil
+	}
 	sess, err := s.Session(sessionID)
 	if err != nil {
 		return m, err
@@ -108,6 +130,9 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 	if expert == "" {
 		expert = p.DefaultExpertID
 	}
+	if expert == "general" {
+		expert = ""
+	}
 	version := ""
 	if expert != "" {
 		if !contains(p.ExpertIDs, expert) {
@@ -120,6 +145,28 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		version = e.Digest
 	}
 	run := Run{ID: newID(), ProjectID: p.ID, SessionID: sess.ID, MessageID: m.ID, State: "queued", Source: m.Incoming.Source, Text: m.Incoming.Text, ExpertID: expert, ExpertDigest: version, ReplyAnchor: anchor, AnchorExplicit: explicit, CreatedAt: now()}
+	run.ExpertVersions = map[string]string{}
+	for _, id := range p.ExpertIDs {
+		ex, e := s.Expert(id)
+		if e != nil {
+			return m, e
+		}
+		run.ExpertVersions[id] = ex.Digest
+	}
+	if m.References == nil {
+		m.References = m.Incoming.References
+	}
+	if len(m.References) > 20 {
+		return m, errors.New("一次最多引用 20 份资料")
+	}
+	for _, ref := range m.References {
+		if _, e := s.Project(ref.ProjectID); e != nil {
+			return m, e
+		}
+		if e := validPath(ref.Path); e != nil {
+			return m, e
+		}
+	}
 	m.State = "queued"
 	m.SessionID = sess.ID
 	m.RunID = run.ID
@@ -129,7 +176,22 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 	if run.Source == "automation" {
 		priority = 10
 	}
+	alreadyQueued := false
 	err = s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		var existing string
+		err := tx.QueryRow("SELECT data FROM inbox WHERE id=?", m.ID).Scan(&existing)
+		if err != nil {
+			return err
+		}
+		old, err := decodeJSON[Message](existing)
+		if err != nil {
+			return err
+		}
+		if old.RunID != "" {
+			m = old
+			alreadyQueued = true
+			return nil
+		}
 		if _, err := tx.Exec("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)", run.ID, p.ID, sess.ID, m.ID, run.State, priority, run.CreatedAt, encode(run)); err != nil {
 			return err
 		}
@@ -146,6 +208,9 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 	if err != nil {
 		return m, err
 	}
+	if alreadyQueued {
+		return m, nil
+	}
 	if err = s.Emit(sess.ID, run.ID, "message.user", map[string]any{"text": run.Text, "source": run.Source, "messageId": m.ID, "attachments": m.Incoming.Attachments}); err != nil {
 		return m, err
 	}
@@ -155,8 +220,14 @@ func (s *Store) Clarify(m Message, question string, candidates []Candidate) (Mes
 	m.State = "clarify"
 	m.Question = question
 	m.Candidates = candidates
-	if err := s.saveMessage(m); err != nil {
+	res, err := s.DB.Exec("UPDATE inbox SET state='clarify',data=? WHERE id=? AND state IN ('unrouted','clarify','error')", encode(m), m.ID)
+	if err != nil {
 		return m, err
+	}
+	if n, e := res.RowsAffected(); e != nil {
+		return m, e
+	} else if n == 0 {
+		return s.Message(m.ID)
 	}
 	if err := s.Emit("", "", "message.clarify", m); err != nil {
 		return m, err
@@ -213,6 +284,62 @@ func (s *Store) Route(ctx context.Context, id string, semantic SemanticRouter) (
 		}
 	}
 	text := strings.TrimSpace(in.Text)
+	// A deliberately explicit grammar grants exactly one external file, never a whole project.
+	if parts := regexp.MustCompile(`^引用项目「([^」]+)」文件「([^」]+)」到项目「([^」]+)」[：:]([\s\S]+)$`).FindStringSubmatch(text); len(parts) > 0 {
+		var sources, targets []Project
+		for _, p := range active {
+			if p.Name == parts[1] {
+				sources = append(sources, p)
+			}
+			if p.Name == parts[3] {
+				targets = append(targets, p)
+			}
+		}
+		if len(sources) != 1 || len(targets) != 1 {
+			return s.Clarify(m, "引用的来源或目标项目不唯一，请使用完整项目名。", projectCandidates(active))
+		}
+		m.References = []FileReference{{ProjectID: sources[0].ID, Path: parts[2]}}
+		return s.queue(m, targets[0].DefaultSessionID, "", true)
+	}
+	if match := regexp.MustCompile(`^(?:新建项目|创建项目|/新建)\s+([^\n]{1,80})$`).FindStringSubmatch(text); len(match) > 0 {
+		p, e := s.ensureProject("from-"+m.ID, strings.TrimSpace(match[1]), "", nil)
+		if e != nil {
+			return m, e
+		}
+		m.State = "handled"
+		m.SessionID = p.DefaultSessionID
+		if e = s.saveMessage(m); e != nil {
+			return m, e
+		}
+		if e = s.SetFocus(in, p.DefaultSessionID); e != nil {
+			return m, e
+		}
+		return m, s.QueueReply(m, "", p.DefaultSessionID, "created", "已新建项目「"+p.Name+"」，当前进入项目助手。对话编号 #S"+p.DefaultSessionID[:8])
+	}
+	if text == "任务状态" || text == "/任务" || text == "当前任务" {
+		focus, _ := s.Focus(in)
+		runs, e := s.Runs(focus.ID)
+		if e != nil {
+			return m, e
+		}
+		var lines []string
+		for _, r := range runs {
+			if len(lines) >= 8 {
+				break
+			}
+			p, _ := s.Project(r.ProjectID)
+			lines = append(lines, fmt.Sprintf("%s · #T%s · %s", p.Name, r.ID[:8], stateLabel(r.State)))
+		}
+		answer := "目前没有任务记录。"
+		if len(lines) > 0 {
+			answer = strings.Join(lines, "\n")
+		}
+		m.State = "handled"
+		if e = s.saveMessage(m); e != nil {
+			return m, e
+		}
+		return m, s.QueueReply(m, "", "", "status", answer)
+	}
 	if text == "项目列表" || text == "有哪些项目" || text == "/项目" {
 		var names []string
 		for _, p := range active {
@@ -297,10 +424,34 @@ func (s *Store) Route(ctx context.Context, id string, semantic SemanticRouter) (
 		}
 	}
 	if referred.ID != "" {
+		if referred.Kind == "automation" {
+			p, e := s.Project(referred.ProjectID)
+			if e != nil {
+				return m, e
+			}
+			target := p.DefaultSessionID
+			if focus, e := s.Focus(in); e == nil && focus.ProjectID == p.ID {
+				target = focus.ID
+			}
+			referred, e = s.Session(target)
+			if e != nil {
+				return m, e
+			}
+		}
 		if len(matches) > 0 && (len(matches) != 1 || matches[0].ID != referred.ProjectID) {
 			return s.Clarify(m, "引用的对话与消息中的项目不同，请选择这次要进入的项目。", projectCandidates(active))
 		}
 		return s.queue(m, referred.ID, anchorRun, explicit)
+	}
+	if match := regexp.MustCompile(`(?i)(?:#S|[&#]session=)([a-f0-9-]{8,36})`).FindStringSubmatch(text); len(match) > 0 {
+		ss, e := listJSON[Session](s.DB, "SELECT data FROM sessions WHERE id LIKE ? AND kind<>'automation' LIMIT 2", strings.ToLower(match[1])+"%")
+		if e != nil {
+			return m, e
+		}
+		if len(ss) != 1 {
+			return s.Clarify(m, "对话编号不唯一或已不存在，请从项目内选择对话。", projectCandidates(active))
+		}
+		return s.queue(m, ss[0].ID, "", true)
 	}
 	if len(matches) > 1 {
 		return s.Clarify(m, "这条消息涉及多个项目，请选择本次工作的项目；跨项目资料需要明确指定引用。", projectCandidates(matches))

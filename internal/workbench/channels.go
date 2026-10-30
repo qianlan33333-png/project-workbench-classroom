@@ -19,7 +19,11 @@ func (s *Store) SaveConnection(c Connection, secrets map[string]any) (Connection
 		return c, errors.New("仅支持微信和飞书")
 	}
 	if strings.TrimSpace(c.OwnerID) == "" {
-		return c, errors.New("请填写绑定的本人账号 ID")
+		if c.Kind == "feishu" {
+			c.OwnerID = "pairing:" + strings.ReplaceAll(newID(), "-", "")[:12]
+		} else {
+			return c, errors.New("请填写绑定的本人账号 ID")
+		}
 	}
 	if c.ID == "" {
 		c.ID = newID()
@@ -42,6 +46,21 @@ func (s *Store) SaveConnection(c Connection, secrets map[string]any) (Connection
 		return nil
 	})
 	return c, err
+}
+func (s *Store) BindConnection(id, code, actor string) (Connection, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, e := s.Connection(id)
+	if e != nil {
+		return c, e
+	}
+	if c.Kind != "feishu" || !c.Enabled || c.OwnerID != "pairing:"+code || strings.TrimSpace(actor) == "" {
+		return c, errors.New("绑定码无效或已使用")
+	}
+	c.OwnerID = actor
+	c.Status = "connected"
+	_, e = s.DB.Exec("UPDATE connections SET data=? WHERE id=?", encode(c), c.ID)
+	return c, e
 }
 func (s *Store) Heartbeat(id, status string) error {
 	c, err := s.Connection(id)
@@ -158,8 +177,12 @@ func stateLabel(state string) string {
 		return "失败"
 	case "interrupted":
 		return "已中断"
-	case "waiting_user":
+	case "waiting_user", "waiting":
 		return "等待你的回复"
+	case "running":
+		return "执行中"
+	case "completed":
+		return "已完成"
 	case "queued":
 		return "已排队"
 	default:

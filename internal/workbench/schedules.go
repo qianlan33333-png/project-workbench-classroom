@@ -29,6 +29,9 @@ func (s *Store) Schedules(project string) ([]Schedule, error) {
 	return listJSON[Schedule](s.DB, "SELECT data FROM schedules WHERE (?='' OR project_id=?) ORDER BY next_at", project, project)
 }
 func (s *Store) SaveSchedule(v Schedule) (Schedule, error) {
+	return s.saveSchedule(v, "")
+}
+func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
 	p, err := s.Project(v.ProjectID)
 	if err != nil {
 		return v, err
@@ -63,6 +66,9 @@ func (s *Store) SaveSchedule(v Schedule) (Schedule, error) {
 	}
 	if v.ID == "" {
 		v.ID = newID()
+		if creationID != "" {
+			v.ID = creationID
+		}
 		v.CreatedAt = now()
 	} else {
 		old, err := getJSON[Schedule](s.DB, "SELECT data FROM schedules WHERE id=?", v.ID)
@@ -100,6 +106,14 @@ func (s *Store) FireSchedules(at time.Time) error {
 			continue
 		}
 		planned := schedule.NextAt
+		versions := map[string]string{}
+		for _, id := range p.ExpertIDs {
+			ex, e := s.Expert(id)
+			if e != nil {
+				return e
+			}
+			versions[id] = ex.Digest
+		}
 		next, e := nextSchedule(schedule, at)
 		if e != nil {
 			return e
@@ -117,6 +131,7 @@ func (s *Store) FireSchedules(at time.Time) error {
 			ss.HarnessID = "pw-" + ss.ID
 			m := Message{ID: newID(), Incoming: Incoming{Source: "automation", EventID: schedule.ID + ":" + time.UnixMilli(planned).UTC().Format(time.RFC3339Nano), SessionID: ss.ID, Text: schedule.Instruction, ExpertID: schedule.ExpertID}, State: "queued", SessionID: ss.ID, CreatedAt: now()}
 			r := Run{ID: newID(), ProjectID: p.ID, SessionID: ss.ID, MessageID: m.ID, State: "queued", Source: "automation", Text: schedule.Instruction, ExpertID: schedule.ExpertID, ScheduleID: schedule.ID, CreatedAt: now()}
+			r.ExpertVersions = versions
 			m.RunID = r.ID
 			if r.ExpertID != "" {
 				var raw string

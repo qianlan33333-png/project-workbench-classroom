@@ -456,3 +456,93 @@ func TestExpertReuseNeverImportsAnotherProjectsNotes(t *testing.T) {
 		t.Fatal("prompt copied another project")
 	}
 }
+
+func TestChineseExpertHasValidNativeSkillID(t *testing.T) {
+	s := testStore(t)
+	e, err := s.CreateExpert("新媒体专家", "选题与内容方法", "读取项目资料后工作")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Name != "新媒体专家" || !strings.HasPrefix(e.SkillName, "expert-") {
+		t.Fatal(e)
+	}
+	b, err := os.ReadFile(filepath.Join(s.Root, "experts", e.ID, e.Digest, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := expertManifest(b)
+	if err != nil || parsed.SkillName != e.SkillName || parsed.Name != e.Name {
+		t.Fatal(parsed, err)
+	}
+}
+
+func TestDuplicateRoutingAfterUserResolutionKeepsChosenProject(t *testing.T) {
+	s := testStore(t)
+	a := testProject(t, s, "甲")
+	b := testProject(t, s, "乙")
+	wx := channel(t, s, "wechat")
+	m, e := s.Submit(incoming(wx, "做选题"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	chosen, e := s.ResolveMessage(m.ID, a.DefaultSessionID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	late, e := s.queue(m, b.DefaultSessionID, "", false)
+	if e != nil || late.RunID != chosen.RunID || late.SessionID != a.DefaultSessionID {
+		t.Fatal("late router overrode user choice", late, e)
+	}
+	late, e = s.Clarify(m, "属于哪里", nil)
+	if e != nil || late.State != "queued" {
+		t.Fatal("late clarification overwrote queue", late, e)
+	}
+}
+
+func TestNativeAnswerPreservesExplicitPermissionChoices(t *testing.T) {
+	i := Interaction{Kind: "question", Payload: json.RawMessage(`{"questions":[{"id":"permission","question":"允许吗","options":[{"label":"允许"},{"label":"拒绝"}],"intent":{"kind":"approval"}}]}`)}
+	if e := validateAnswer(i, json.RawMessage(`{"answers":[{"id":"permission","selected":[],"custom":"允许"}]}`)); e == nil {
+		t.Fatal("free text was treated as permission")
+	}
+	if e := validateAnswer(i, json.RawMessage(`{"answers":[{"id":"permission","selected":["允许"]}]}`)); e != nil {
+		t.Fatal(e)
+	}
+}
+
+func TestStopBetweenClaimAndExecute(t *testing.T) {
+	s := testStore(t)
+	p := testProject(t, s, "抢占窗口")
+	m := submitRoute(t, s, Incoming{Source: "web", SessionID: p.DefaultSessionID, EventID: newID(), Text: "生成文件"})
+	ex := &fakeExecutor{store: s}
+	w := NewWorker(s, ex, nil)
+	r, e := w.claim()
+	if e != nil || r.ID != m.RunID {
+		t.Fatal(r, e)
+	}
+	if e = w.Stop(r.ID); e != nil {
+		t.Fatal(e)
+	}
+	w.execute(context.Background(), r)
+	result, e := s.Run(r.ID)
+	if e != nil || result.State != "cancelled" || ex.calls.Load() != 0 {
+		t.Fatal(result, e, ex.calls.Load())
+	}
+	var locks int
+	s.DB.QueryRow("SELECT count(*) FROM project_locks").Scan(&locks)
+	if locks != 0 {
+		t.Fatal("cancel left lock")
+	}
+}
+func TestConversationURLRoutesOriginalTopic(t *testing.T) {
+	s := testStore(t)
+	p := testProject(t, s, "链接项目")
+	ss, e := s.CreateSession(p.ID, "既有专题", "topic", "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	c := channel(t, s, "wechat")
+	m := submitRoute(t, s, incoming(c, "继续 https://workbench.test/#project="+p.ID+"&session="+ss.ID))
+	if m.SessionID != ss.ID {
+		t.Fatal(m)
+	}
+}

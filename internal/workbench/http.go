@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,6 +25,7 @@ type API struct {
 	Store      *Store
 	Worker     *Worker
 	Config     Config
+	Shutdown   <-chan struct{}
 	loginMu    sync.Mutex
 	loginAfter time.Time
 }
@@ -182,7 +185,7 @@ func (a *API) Mount(r *gin.Engine) {
 			return s.ResolveMessage(c.Param("id"), v.SessionID)
 		})
 	})
-	owner.GET("/runs", func(c *gin.Context) { v, e := s.Runs(c.Query("sessionId")); reply(c, v, e) })
+	owner.GET("/runs", func(c *gin.Context) { v, e := s.RunPage(c.Query("sessionId"), c.Query("before")); reply(c, v, e) })
 	owner.GET("/runs/:id", func(c *gin.Context) { v, e := s.Run(c.Param("id")); reply(c, v, e) })
 	owner.POST("/runs/:id/stop", func(c *gin.Context) { reply(c, nil, a.Worker.Stop(c.Param("id"))) })
 	owner.GET("/interactions", func(c *gin.Context) { v, e := s.PendingInteractions(); reply(c, v, e) })
@@ -238,6 +241,26 @@ func (a *API) Mount(r *gin.Engine) {
 		reply(c, v, e)
 	})
 	owner.GET("/connections", func(c *gin.Context) { v, e := s.Connections(); reply(c, v, e) })
+	owner.GET("/notification-targets", func(c *gin.Context) {
+		rows, e := s.DB.Query("SELECT DISTINCT i.connection_id,json_extract(i.data,'$.incoming.conversationId'),json_extract(c.data,'$.label') FROM inbox i JOIN connections c ON c.id=i.connection_id WHERE json_extract(c.data,'$.enabled')=1 AND json_extract(i.data,'$.incoming.actorId')=json_extract(c.data,'$.ownerId')")
+		if e != nil {
+			reply(c, nil, e)
+			return
+		}
+		defer rows.Close()
+		out := []map[string]string{}
+		for rows.Next() {
+			var id, chat, label string
+			if e = rows.Scan(&id, &chat, &label); e != nil {
+				break
+			}
+			out = append(out, map[string]string{"connectionId": id, "conversationId": chat, "label": label})
+		}
+		if e == nil {
+			e = rows.Err()
+		}
+		reply(c, out, e)
+	})
 	owner.POST("/connections", func(c *gin.Context) {
 		bind(c, func(v struct {
 			Connection Connection     `json:"connection"`
@@ -266,6 +289,14 @@ func (a *API) Mount(r *gin.Engine) {
 	owner.DELETE("/plugins/:id", func(c *gin.Context) { reply(c, nil, s.DeletePlugin(c.Param("id"))) })
 	channel := g.Group("/channel")
 	channel.Use(a.channelMiddleware)
+	channel.POST("/connections/:id/bind", func(c *gin.Context) {
+		bind(c, func(v struct {
+			Code  string `json:"code"`
+			Actor string `json:"actor"`
+		}) (any, error) {
+			return s.BindConnection(c.Param("id"), v.Code, v.Actor)
+		})
+	})
 	channel.GET("/connections", func(c *gin.Context) {
 		cs, e := s.Connections()
 		if e != nil {
@@ -387,7 +418,12 @@ func (a *API) getFile(c *gin.Context) {
 		c.Data(200, typ, b)
 		return
 	}
-	reply(c, gin.H{"path": c.Query("path"), "content": string(b), "hash": h, "size": len(b)}, nil)
+	binary := !utf8.Valid(b) || bytes.ContainsRune(b, 0)
+	content := ""
+	if !binary {
+		content = string(b)
+	}
+	reply(c, gin.H{"path": c.Query("path"), "content": content, "binary": binary, "hash": h, "size": len(b)}, nil)
 }
 func (a *API) upload(c *gin.Context, archive bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 512<<20)
@@ -477,6 +513,8 @@ func (a *API) events(c *gin.Context) {
 			}
 		}
 		select {
+		case <-a.Shutdown:
+			return
 		case <-c.Request.Context().Done():
 			return
 		case <-ticker.C:

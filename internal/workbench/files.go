@@ -150,9 +150,6 @@ func (s *Store) Files(project string) ([]FileInfo, error) {
 		if strings.HasPrefix(d.Name(), ".pw-write-") {
 			return nil
 		}
-		if d.IsDir() && (d.Name() == "node_modules" || d.Name() == ".git" || d.Name() == ".cache") {
-			return fs.SkipDir
-		}
 		info, e := d.Info()
 		if e != nil {
 			return e
@@ -528,9 +525,17 @@ func (s *Store) ImportZip(project string, reader io.ReaderAt, size int64) error 
 		return err
 	}
 	files := []string{}
+	dirs := []string{}
 	err = filepath.WalkDir(stage, func(p string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return e
+		}
+		if d.IsDir() && p != stage {
+			rel, e := filepath.Rel(stage, p)
+			if e != nil {
+				return e
+			}
+			dirs = append(dirs, filepath.ToSlash(rel))
 		}
 		if !d.IsDir() {
 			rel, e := filepath.Rel(stage, p)
@@ -551,8 +556,13 @@ func (s *Store) ImportZip(project string, reader io.ReaderAt, size int64) error 
 	defer r.Close()
 	for _, p := range files {
 		if _, e := r.Stat(p); e == nil {
-			return fmt.Errorf("已有同名文件 %s，导入不会覆盖", p)
+			return fmt.Errorf("%w: 已有同名文件 %s，导入不会覆盖", ErrConflict, p)
 		} else if !errors.Is(e, os.ErrNotExist) {
+			return e
+		}
+	}
+	for _, dir := range dirs {
+		if e := r.MkdirAll(dir, 0700); e != nil {
 			return e
 		}
 	}
@@ -586,6 +596,10 @@ func (s *Store) ExportZip(project string, w io.Writer) error {
 	z := zip.NewWriter(w)
 	for _, f := range files {
 		if f.Directory {
+			if _, err := z.Create(strings.TrimSuffix(f.Path, "/") + "/"); err != nil {
+				z.Close()
+				return err
+			}
 			continue
 		}
 		b, err := readRoot(r, f.Path)
