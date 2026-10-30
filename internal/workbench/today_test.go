@@ -376,3 +376,107 @@ func TestDailyFailureKeepsPreviousAndRejectsChangedEvidence(t *testing.T) {
 		t.Fatal(d)
 	}
 }
+
+type yieldingSummaryExecutor struct {
+	started  chan struct{}
+	cleaning chan struct{}
+	release  chan struct{}
+}
+
+func (f *yieldingSummaryExecutor) Execute(ctx context.Context, _ RuntimeInput, _ RuntimeHooks) (RuntimeResult, error) {
+	close(f.started)
+	<-ctx.Done()
+	return RuntimeResult{}, ctx.Err()
+}
+func (f *yieldingSummaryExecutor) Cleanup(ctx context.Context, _ string) error {
+	close(f.cleaning)
+	select {
+	case <-f.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func waitSignal(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("maintenance did not yield promptly")
+	}
+}
+func TestInteractiveTaskCancelsSummaryAndPreservesCheckpoint(t *testing.T) {
+	s := testStore(t)
+	p := testProject(t, s, "交互优先")
+	_ = s.RequestContext(p.ID, false)
+	f := &yieldingSummaryExecutor{make(chan struct{}), make(chan struct{}), make(chan struct{})}
+	w := NewWorker(s, f, nil)
+	done := make(chan struct{})
+	go func() { w.maintainContext(context.Background()); close(done) }()
+	waitSignal(t, f.started)
+	m := submitRoute(t, s, Incoming{Source: "web", EventID: newID(), SessionID: p.DefaultSessionID, Text: "现在执行"})
+	waitSignal(t, f.cleaning)
+	if _, e := w.claim(); !errors.Is(e, ErrNotFound) {
+		t.Fatal("claimed before subprocess cleanup", e)
+	}
+	close(f.release)
+	waitSignal(t, done)
+	c, _ := s.ProjectContext(p.ID)
+	if c.State == "failed" || c.Error != "" {
+		t.Fatal("yield was treated as failure", c)
+	}
+	var checkpoint string
+	_ = s.DB.QueryRow("SELECT data FROM context_jobs WHERE project_id=?", p.ID).Scan(&checkpoint)
+	if checkpoint != "{}" {
+		t.Fatal("unfinished chunk was consumed", checkpoint)
+	}
+	r, e := w.claim()
+	if e != nil || r.ID != m.RunID {
+		t.Fatal(e, r)
+	}
+	// Even after the lock is released, a waiting interactive run wins the race
+	// between idle detection and maintenance admission.
+	r.State = "queued"
+	_ = s.saveRun(r)
+	_, _ = s.DB.Exec("DELETE FROM project_locks WHERE run_id=?", r.ID)
+	if _, e = w.compactCall(context.Background(), "daily", "unused"); !errors.Is(e, errMaintenanceYield) {
+		t.Fatal("background admitted ahead of queued run", e)
+	}
+	r.State = "completed"
+	_ = s.saveRun(r)
+	_ = s.RequestContext(p.ID, false)
+	resume := NewWorker(s, &summaryExecutor{}, nil)
+	for i := 0; i < 10; i++ {
+		if !resume.maintainContext(context.Background()) {
+			break
+		}
+	}
+	c, _ = s.ProjectContext(p.ID)
+	if c.State != "ready" {
+		t.Fatal("summary did not resume", c)
+	}
+}
+func TestDailyYieldRetainsRefreshRequest(t *testing.T) {
+	s := testStore(t)
+	p, _ := s.PersonalSpace()
+	_ = s.SetSetting("today_enabled", "true")
+	_ = s.RequestToday()
+	f := &yieldingSummaryExecutor{make(chan struct{}), make(chan struct{}), make(chan struct{})}
+	w := NewWorker(s, f, nil)
+	done := make(chan struct{})
+	go func() { w.maintainToday(context.Background()); close(done) }()
+	waitSignal(t, f.started)
+	submitRoute(t, s, Incoming{Source: "web", EventID: newID(), SessionID: p.DefaultSessionID, Text: "先聊一下"})
+	waitSignal(t, f.cleaning)
+	close(f.release)
+	waitSignal(t, done)
+	req, _ := s.Setting("today_refresh")
+	if req == "" {
+		t.Fatal("lost refresh request")
+	}
+	var n int
+	_ = s.DB.QueryRow("SELECT count(*) FROM daily_contents").Scan(&n)
+	if n != 0 {
+		t.Fatal("cancelled daily published as failure")
+	}
+}

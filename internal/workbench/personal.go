@@ -430,6 +430,9 @@ func (w *Worker) maintainToday(ctx context.Context) bool {
 	memories, _ := s.Memories()
 	version := s.contextVersion()
 	r, e := w.compactCall(ctx, "daily", "你是本人的个人发展协作助手。仅基于下面明确个人理解和项目两块上下文，只输出JSON {\"text\":\"一项中文Markdown建议或空字符串\",\"decision\":null}。text给至多一项值得今天考虑的建议，说明理由和一个小行动。必要时decision可为 {\"question\":\"问题\",\"reason\":\"推荐理由\",\"options\":[{\"label\":\"选项\",\"tradeoff\":\"取舍\",\"recommended\":true,\"task\":{\"projectId\":\"明确的项目ID\",\"title\":\"标题\",\"description\":\"WHY与背景\"}},{\"label\":\"另一选项\",\"tradeoff\":\"取舍\",\"recommended\":false}]}，恰有一个推荐，task可省略。建议可以是学习、观察、取舍、减少投入，不只推任务。不要强行提问，不创建任务、不假称了解未覆盖资料。没有值得提出的新内容时输出空text和null decision。\n当前北京时间："+time.Now().In(loc).Format("2006-01-02 15:04:05 MST")+"\n个人理解："+encode(memories)+"\n项目："+encode(catalog)+"\n上次建议（无新变化时保持安静）："+previous.Text)
+	if errors.Is(e, errMaintenanceYield) {
+		return true
+	}
 	newDecisionID := ""
 	var generated struct {
 		Text     string            `json:"text"`

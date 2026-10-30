@@ -2,7 +2,7 @@
 # Run on the workbench host as root after isolated acceptance.
 set -euo pipefail
 base=/opt/project-workbench
-release=$base/releases/cloud-20261031-10-today
+release=$base/releases/${PW_RELEASE:-cloud-20261031-10-today}
 previous=$(readlink -f "$base/current")
 backup=$base/rollback-today-$(date +%Y%m%d-%H%M%S)
 test "$previous" != "$release"
@@ -12,7 +12,7 @@ python3 - <<'PY'
 import sqlite3
 c=sqlite3.connect('/var/lib/project-workbench/workbench.sqlite')
 assert c.execute("SELECT count(*) FROM runs WHERE state IN ('queued','running','waiting','stopping')").fetchone()[0]==0, 'Wait for active tasks'
-assert c.execute("SELECT count(*) FROM project_locks").fetchone()[0]==0, 'Wait for write/maintenance locks'
+assert c.execute("SELECT count(*) FROM project_locks WHERE run_id NOT LIKE 'maintenance:%'").fetchone()[0]==0, 'Wait for business write locks'
 assert c.execute("SELECT count(*) FROM tool_jobs WHERE state IN ('queued','running')").fetchone()[0]==0, 'Wait for tool operations'
 PY
 uid=$(id -u projectwb)
