@@ -118,7 +118,9 @@ func (a *API) Mount(r *gin.Engine) {
 	owner.POST("/projects/:id/directories", func(c *gin.Context) {
 		bind(c, func(v struct {
 			Path string `json:"path"`
-		}) (any, error) { return nil, s.CreateDirectory(c.Param("id"), v.Path) })
+		}) (any, error) {
+			return nil, s.CreateDirectory(c.Param("id"), v.Path)
+		})
 	})
 	owner.GET("/projects/:id/files", func(c *gin.Context) { v, e := s.Files(c.Param("id")); reply(c, v, e) })
 	owner.GET("/projects/:id/file", a.getFile)
@@ -178,6 +180,10 @@ func (a *API) Mount(r *gin.Engine) {
 	})
 	owner.GET("/sessions/:id/history", func(c *gin.Context) { v, e := s.History(c.Param("id")); reply(c, v, e) })
 	owner.GET("/inbox", func(c *gin.Context) { v, e := s.Inbox(); reply(c, v, e) })
+	owner.GET("/messages/by-event/:event", func(c *gin.Context) {
+		v, e := getJSON[Message](s.DB, "SELECT data FROM inbox WHERE source='web' AND connection_id='web' AND event_id=?", c.Param("event"))
+		reply(c, v, e)
+	})
 	owner.POST("/messages", func(c *gin.Context) {
 		bind(c, func(v Incoming) (any, error) {
 			v.Source = "web"

@@ -107,7 +107,7 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 		}
 		return m, err
 	}
-	if err = s.Emit("", "", "message.received", map[string]string{"id": m.ID}); err != nil {
+	if err = s.Emit("", "", "message.received", map[string]string{"id": m.ID, "eventId": in.EventID, "sessionId": in.SessionID, "source": in.Source}); err != nil {
 		return m, err
 	}
 	return m, nil
@@ -164,7 +164,7 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		version = e.Digest
 		expertName = e.Name
 	}
-	run := Run{ExpertName: expertName, ID: newID(), ProjectID: p.ID, SessionID: sess.ID, MessageID: m.ID, State: "queued", Source: m.Incoming.Source, Text: m.Incoming.Text, ExpertID: expert, ExpertDigest: version, ReplyAnchor: anchor, AnchorExplicit: explicit, CreatedAt: now()}
+	run := Run{ExpertName: expertName, ID: newID(), ProjectID: p.ID, SessionID: sess.ID, MessageID: m.ID, EventID: m.Incoming.EventID, State: "queued", Source: m.Incoming.Source, Text: m.Incoming.Text, ExpertID: expert, ExpertDigest: version, ReplyAnchor: anchor, AnchorExplicit: explicit, CreatedAt: now()}
 	run.ExpertVersions = map[string]string{}
 	for _, id := range p.ExpertIDs {
 		ex, e := s.Expert(id)

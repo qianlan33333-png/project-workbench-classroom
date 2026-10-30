@@ -47,6 +47,8 @@ import {
 import { RichText, FileContent, useUnsavedChanges } from "./file-ui";
 import { ProjectFiles } from "./project-files";
 import { ExpertDetail } from "./expert-detail";
+import { useMessageSubmissions } from "./message-submissions";
+import { mergeRuns } from "./chat-state";
 import "./style.css";
 
 type Field = {
@@ -110,6 +112,14 @@ function App() {
     [references, setReferences] = useState<
       { projectId: string; path: string }[]
     >([]);
+  const latestEvent = useRef(0);
+  const runEventSequences = useRef(new Map<string, number>());
+  const applyRun = useCallback(
+    (run: Run) => setRuns((old) => mergeRuns(old, [run])),
+    [],
+  );
+  const submissions = useMessageSubmissions(auth === true, runs, applyRun);
+  const submissionReceipt = submissions.receipt;
   const fileRequest = useRef(0);
   const expertGuard = useRef<(() => Promise<boolean>) | null>(null);
   const historyCursors = useRef<Record<string, string>>({});
@@ -140,6 +150,7 @@ function App() {
     [notify],
   );
   const refresh = useCallback(async () => {
+    const requestedAt = latestEvent.current;
     const [ps, es, rs, ib, ints] = await Promise.all([
       api<Project[]>("/projects"),
       api<Expert[]>("/experts"),
@@ -149,9 +160,9 @@ function App() {
     ]);
     setProjects(ps);
     setExperts(es);
-    setRuns((old) => [
-      ...new Map([...old, ...rs].map((r) => [r.id, r])).values(),
-    ]);
+    setRuns((old) =>
+      mergeRuns(old, rs, runEventSequences.current, requestedAt),
+    );
     setInbox(ib);
     setInteractions(ints);
     if (projectRef.current) {
@@ -166,9 +177,9 @@ function App() {
           `/runs?sessionId=${sessionRef.current}`,
         );
         historyCursors.current[sessionRef.current] ??= history.at(-1)?.id || "";
-        setRuns((old) => [
-          ...new Map([...old, ...history].map((r) => [r.id, r])).values(),
-        ]);
+        setRuns((old) =>
+          mergeRuns(old, history, runEventSequences.current, requestedAt),
+        );
       }
     }
   }, []);
@@ -187,6 +198,21 @@ function App() {
     const stream = new EventSource(endpoint("/events"));
     stream.onmessage = (e) => {
       const event = JSON.parse(e.data) as WorkEvent;
+      latestEvent.current = Math.max(latestEvent.current, event.seq);
+      if (
+        event.type === "message.received" &&
+        event.data.source === "web" &&
+        event.data.eventId
+      )
+        submissionReceipt(event.data.eventId, event.data.id);
+      if (
+        event.type === "run.updated" &&
+        event.data?.id &&
+        event.seq > (runEventSequences.current.get(event.data.id) || 0)
+      ) {
+        runEventSequences.current.set(event.data.id, event.seq);
+        applyRun(event.data as Run);
+      }
       setEvents((old) => {
         if (old.some((x) => x.seq === event.seq)) return old;
         return [...old, event].slice(-1800);
@@ -203,7 +229,7 @@ function App() {
       stream.close();
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
     };
-  }, [auth, refresh, act]);
+  }, [auth, refresh, act, applyRun, submissionReceipt]);
   useEffect(() => {
     if (auth && projectId) act(refresh);
   }, [projectId, auth, refresh, act]);
@@ -214,11 +240,12 @@ function App() {
   useEffect(() => {
     if (!sessionId || !auth) return;
     act(async () => {
+      const requestedAt = latestEvent.current;
       const history = await api<Run[]>(`/runs?sessionId=${sessionId}`);
       historyCursors.current[sessionId] ??= history.at(-1)?.id || "";
-      setRuns((old) => [
-        ...new Map([...old, ...history].map((r) => [r.id, r])).values(),
-      ]);
+      setRuns((old) =>
+        mergeRuns(old, history, runEventSequences.current, requestedAt),
+      );
       let after = 0;
       const all: WorkEvent[] = [];
       for (;;) {
@@ -237,7 +264,7 @@ function App() {
   }, [sessionId, auth, act]);
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [sessionId, runs.length, events.length]);
+  }, [sessionId, runs.length, events.length, submissions.items.length]);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(""), 7000);
@@ -492,26 +519,20 @@ function App() {
       setBusy(false);
     }
   };
-  const send = async () => {
-    if (!text.trim() || !sessionId || busy) return;
-    const value = text;
-    setBusy(true);
-    try {
-      await api("/messages", {
+  const send = () => {
+    if (!text.trim() || !sessionId || busy || submissions.sending) return;
+    if (
+      submissions.submit({
         eventId: crypto.randomUUID(),
         sessionId,
-        text: value,
+        text,
         attachments,
         references,
-      });
+      })
+    ) {
       setText("");
       setAttachments([]);
       setReferences([]);
-      await refresh();
-    } catch (e) {
-      notify((e as Error).message);
-    } finally {
-      setBusy(false);
     }
   };
   const versions = async () => {
@@ -629,6 +650,17 @@ function App() {
       .filter((r) => r.sessionId === sessionId)
       .sort((a, b) => a.createdAt - b.createdAt),
     activity = events.filter((e) => e.sessionId === sessionId);
+  const pendingSubmissions = submissions.items.filter(
+    (v) =>
+      v.input.sessionId === sessionId &&
+      !runs.some(
+        (r) =>
+          (v.messageId && r.messageId === v.messageId) ||
+          (r.source === "web" &&
+            r.sessionId === v.input.sessionId &&
+            r.eventId === v.input.eventId),
+      ),
+  );
   if (auth === null) return <div className="loading">正在打开工作台…</div>;
   if (!auth)
     return (
@@ -663,6 +695,7 @@ function App() {
           act(async () => {
             if (!(await canLeave())) return;
             await api("/logout", {});
+            submissions.clear();
             setAuth(false);
           })
         }
@@ -1063,29 +1096,30 @@ function App() {
                 </div>
               </header>
               <div className="chat-scroll">
-                {sessionRuns.length === 0 && (
-                  <div className="chat-welcome">
-                    <span>✦</span>
-                    <h2>一起推进这个项目</h2>
-                    <p>
-                      我会按需阅读项目资料、使用专家方法，
-                      <br />
-                      并把重要结果保存下来。
-                    </p>
-                    <div>
-                      <button
-                        onClick={() =>
-                          setText("看看项目里有哪些资料，帮我梳理下一步。")
-                        }
-                      >
-                        梳理项目资料
-                      </button>
-                      <button onClick={() => setText("帮我完成一个任务：")}>
-                        开始一项工作
-                      </button>
+                {sessionRuns.length === 0 &&
+                  pendingSubmissions.length === 0 && (
+                    <div className="chat-welcome">
+                      <span>✦</span>
+                      <h2>一起推进这个项目</h2>
+                      <p>
+                        我会按需阅读项目资料、使用专家方法，
+                        <br />
+                        并把重要结果保存下来。
+                      </p>
+                      <div>
+                        <button
+                          onClick={() =>
+                            setText("看看项目里有哪些资料，帮我梳理下一步。")
+                          }
+                        >
+                          梳理项目资料
+                        </button>
+                        <button onClick={() => setText("帮我完成一个任务：")}>
+                          开始一项工作
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
                 {sessionRuns.length >= 100 && (
                   <button
                     className="panel-action"
@@ -1109,7 +1143,11 @@ function App() {
                   </button>
                 )}
                 {sessionRuns.map((r) => (
-                  <article className="turn" key={r.id}>
+                  <article
+                    className="turn"
+                    key={r.id}
+                    data-message-id={r.messageId}
+                  >
                     <div className="user-message">
                       <span>
                         {labels[r.source]} · {stamp(r.createdAt)}
@@ -1174,7 +1212,25 @@ function App() {
                       )}{" "}
                       {!r.result && r.state === "running" && (
                         <p className="thinking">
-                          正在处理你的任务<span>…</span>
+                          {activity.some(
+                            (e) =>
+                              e.runId === r.id &&
+                              e.type === "harness.turn/start",
+                          )
+                            ? "正在处理你的任务"
+                            : "正在启动项目助手"}
+                          <span>…</span>
+                        </p>
+                      )}
+                      {r.state === "queued" && (
+                        <p className="thinking">
+                          {runs.some((x) =>
+                            ["running", "waiting", "stopping"].includes(
+                              x.state,
+                            ),
+                          )
+                            ? "消息已收到，前面的任务结束后会按顺序执行。"
+                            : "消息已收到，正在等待执行。"}
                         </p>
                       )}
                       {r.error && (
@@ -1212,6 +1268,67 @@ function App() {
                             notify={notify}
                           />
                         ))}
+                    </div>
+                  </article>
+                ))}
+                {pendingSubmissions.map((v) => (
+                  <article
+                    className="turn pending-turn"
+                    key={v.input.eventId}
+                    data-event-id={v.input.eventId}
+                  >
+                    <div className="user-message">
+                      <span>网页 · {stamp(v.createdAt)}</span>
+                      <p>{v.input.text}</p>
+                    </div>
+                    <div className="submission-status" role="status">
+                      <span className={`state ${v.state}`}>
+                        {
+                          {
+                            sending: "发送中",
+                            received: "已接收",
+                            unknown: "待确认",
+                            failed: "未能提交",
+                          }[v.state]
+                        }
+                      </span>
+                      <span>
+                        {v.state === "sending"
+                          ? "正在送达当前对话…"
+                          : v.state === "received"
+                            ? "已送达当前对话，正在准备执行。"
+                            : v.error}
+                      </span>
+                      {v.state === "unknown" && (
+                        <button
+                          disabled={
+                            submissions.sending ||
+                            submissions.checking.has(v.input.eventId)
+                          }
+                          onClick={() => void submissions.retry(v)}
+                        >
+                          核对并重试
+                        </button>
+                      )}
+                      {v.state === "failed" && (
+                        <button
+                          onClick={() => {
+                            setText((old) =>
+                              old ? old + "\n\n" + v.input.text : v.input.text,
+                            );
+                            setAttachments((old) => [
+                              ...new Set([...old, ...v.input.attachments]),
+                            ]);
+                            setReferences((old) => [
+                              ...old,
+                              ...v.input.references,
+                            ]);
+                            submissions.dismiss(v.input.eventId);
+                          }}
+                        >
+                          恢复到输入框
+                        </button>
+                      )}
                     </div>
                   </article>
                 ))}
@@ -1326,7 +1443,7 @@ function App() {
                     <button
                       className="send"
                       aria-label="发送"
-                      disabled={!text.trim() || busy}
+                      disabled={!text.trim() || busy || submissions.sending}
                       onClick={send}
                     >
                       <ArrowUp size={18} />

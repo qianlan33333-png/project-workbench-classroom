@@ -61,3 +61,11 @@ SSE 使用持久化的全局递增 seq，支持 Last-Event-ID 和 after 参数�
 - 现有专家 ZIP／Git 更新同样必须提供 baseDigest；新导入不需要。已排队和运行任务使用提交时 ExpertVersions，运行器不再依赖最新专家目录记录。
 
 导航收起、文档、详情类型、尺寸和编辑草稿属于界面状态，不参与 Session/Harness ID。布局断点只改变 CSS；对话节点不会因详情开合重新挂载。专家详情通过 `#expert=ID` 恢复，专题仍通过 `#project=ID&session=ID` 定位。
+
+## 网页发送回执与即时回显
+
+`POST /messages` 返回已持久化的 Message，不承诺已开始运行。`GET /messages/by-event/:eventId` 使用同一所有者鉴权，仅查询网页来源的对应事件，404 表示尚无该消息；不能读取同名渠道事件。`message.received` 事件包含 id、eventId、source、sessionId，新 Run 带原始 eventId 用于界面去重，原 Session/Harness 身份不变。
+
+网页在本标签页 sessionStorage 暂存未对齐的输入，以 eventId 显示“发送中／已接收／待确认／未能提交”；真正执行状态来自 Run。传输结果未知时先只读核对，不自动重发。用户显式核对重试时，只有 404 才提交同一 ID 和原请求。客户端消息和 Run 以消息 ID／事件 ID 对齐，不用正文猜测身份。旧回执不能修改当前输入框。
+
+SSE 直接合并运行状态。全局 HTTP 刷新记下请求发起时的事件序号，拒绝覆盖此后收到的运行事件；迟到的旧记录也不能让完成的任务退回排队。待发送状态属于 UI，不改变服务端执行优先级。

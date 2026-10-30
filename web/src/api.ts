@@ -4,9 +4,11 @@ export async function api<T = any>(
   path: string,
   body?: unknown,
   method?: string,
+  signal?: AbortSignal,
 ): Promise<T> {
   const isForm = body instanceof FormData;
   const res = await fetch(endpoint(path), {
+    signal,
     method: method ?? (body === undefined ? "GET" : "POST"),
     headers:
       body !== undefined && !isForm
@@ -47,6 +49,7 @@ export type Run = {
   sessionId: string;
   projectId: string;
   messageId: string;
+  eventId?: string;
   text: string;
   result: string;
   state: string;
@@ -73,7 +76,13 @@ export type Expert = {
 export type Message = {
   id: string;
   state: string;
-  incoming: { text: string; source: string };
+  incoming: {
+    text: string;
+    source: string;
+    eventId?: string;
+    sessionId?: string;
+  };
+  createdAt?: number;
   sessionId: string;
   runId: string;
   question: string;

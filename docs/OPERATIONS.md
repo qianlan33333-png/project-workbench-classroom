@@ -88,3 +88,26 @@ sudo systemctl start project-workbench-channels
 ```
 
 旧界面不提供新增专家管理功能。不要直接恢复旧快照覆盖上线后的文件或回退平台游标；完整数据恢复前先保存当前状态并核对后续消息和发送回执，按前文“备份与恢复”处理。源码、验收脚本和配置说明随新发行一并保留。
+
+## 消息反馈修复版本
+
+当前运行版本为 `cloud-20261030-06-message-feedback`，上一版为 `cloud-20261030-05-workspace`；发布前完整数据与配置快照在 `/opt/project-workbench/rollback-message-feedback-20261030`。回滚只需在无活动任务时按前文步骤将 current 指回 05，并显式启动渠道桥；不要回退数据库和消息游标。新版仅增加回执读取与关联字段，没有变更执行队列或模型配置。
+
+
+### 实时事件流不能缓冲
+
+本机 Caddy 2.6.2 的默认 `encode zstd gzip` 曾将 SSE 编码，实测新增事件未及时送到浏览器，甚至后台完成后界面仍显示执行中。只在工作台事件流请求上排除压缩（JSON 事件历史及其他页面仍可压缩）：
+
+```caddyfile
+@workbench_compressible {
+    not {
+        path /api/v1/events /next/api/v1/events
+        header Accept *text/event-stream*
+    }
+}
+encode @workbench_compressible zstd gzip
+```
+
+完整独立站点示例见 `deploy/Caddyfile.example`；不要用示例覆盖现有公司官网路由。编辑后运行 `caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`，通过后 reload。实际修改前的 Caddyfile 保存在 `/opt/project-workbench/rollback-message-feedback-20261030/Caddyfile`。程序回滚时可继续保留这项事件流修复；只有确需恢复代理配置时才恢复该文件并再次 validate/reload。对照脚本通过新增临时文件产生一个真实事件，检查浏览器是否及时收到，不能只看连接为 200。
+
+配置依据：[Caddy encode](https://caddyserver.com/docs/caddyfile/directives/encode) 与 [请求匹配器](https://caddyserver.com/docs/caddyfile/matchers)。当前新版文档的增量流行为不能代表服务器已经安装的 2.6.2，必须以实际版本和浏览器测量为准。

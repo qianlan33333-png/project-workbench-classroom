@@ -90,3 +90,79 @@ func TestHTTPBinaryAndResumableEvents(t *testing.T) {
 		t.Fatal("SSE did not close on service shutdown")
 	}
 }
+
+func TestWebMessageReceiptAndRunCorrelation(t *testing.T) {
+	s := testStore(t)
+	project := testProject(t, s, "发送反馈验收")
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.New()
+	hash, _ := PasswordHash("receipt-test-password")
+	(&API{Store: s, Config: Config{PasswordHash: hash}}).Mount(router)
+	server := httptest.NewServer(router)
+	defer server.Close()
+	call := func(method, path, body string, auth bool, status int) []byte {
+		t.Helper()
+		req, _ := http.NewRequest(method, server.URL+"/api/v1"+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if auth {
+			req.SetBasicAuth("owner", "receipt-test-password")
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		if res.StatusCode != status {
+			t.Fatalf("%s %s: %d %s", method, path, res.StatusCode, b)
+		}
+		return b
+	}
+	body := encode(Incoming{EventID: "receipt-one", SessionID: project.DefaultSessionID, Text: "只执行一次"})
+	var message Message
+	json.Unmarshal(call("POST", "/messages", body, true, 200), &message)
+	if message.State != "unrouted" || message.RunID != "" {
+		t.Fatal("receipt must not pretend execution", message)
+	}
+	call("GET", "/messages/by-event/receipt-one", "", false, 401)
+	var receipt Message
+	json.Unmarshal(call("GET", "/messages/by-event/receipt-one", "", true, 200), &receipt)
+	if receipt.ID != message.ID || receipt.Incoming.EventID != "receipt-one" {
+		t.Fatal(receipt)
+	}
+	routed, err := s.Route(t.Context(), message.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _ := s.Run(routed.RunID)
+	if run.EventID != "receipt-one" || run.MessageID != message.ID {
+		t.Fatal("missing client correlation", run)
+	}
+	json.Unmarshal(call("POST", "/messages", body, true, 200), &receipt)
+	if receipt.RunID != run.ID {
+		t.Fatal("same request created another run", receipt)
+	}
+	rows, _ := s.Runs(project.DefaultSessionID)
+	if len(rows) != 1 {
+		t.Fatal("duplicate execution")
+	}
+	_, err = s.Submit(Incoming{Source: "automation", ConnectionID: "other", EventID: "non-web", Text: "隔离回执"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call("GET", "/messages/by-event/non-web", "", true, 404)
+	events, _ := s.Events(0, "")
+	found := false
+	for _, event := range events {
+		if event.Type == "message.received" {
+			var fields map[string]string
+			json.Unmarshal(event.Data, &fields)
+			if fields["id"] == message.ID && fields["eventId"] == "receipt-one" && fields["sessionId"] == project.DefaultSessionID {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("SSE receipt cannot reconcile pending input")
+	}
+}

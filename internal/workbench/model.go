@@ -88,6 +88,7 @@ type Run struct {
 	ProjectID      string            `json:"projectId"`
 	SessionID      string            `json:"sessionId"`
 	MessageID      string            `json:"messageId"`
+	EventID        string            `json:"eventId,omitempty"`
 	State          string            `json:"state"`
 	Source         string            `json:"source"`
 	Text           string            `json:"text"`

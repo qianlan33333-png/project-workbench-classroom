@@ -3086,3 +3086,20 @@ label input[type="file"] {
   overflow-wrap: anywhere;
   pointer-events: none;
 }
+.submission-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0 24px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.submission-status button {
+  font-size: 12px;
+}
+.submission-status .unknown,
+.submission-status .failed {
+  color: #98694e;
+  background: #f4ebe5;
+}

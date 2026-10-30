@@ -95,3 +95,14 @@ Chromium 脚本 `scripts/verify-workspace.mjs` 验证默认 80px 导航、216px 
 - 报告：`artifacts/workspace-ui/report.json`、`artifacts/cli-workspace-acceptance.json`、`artifacts/expert-runtime-acceptance.json`、`artifacts/workspace-deployment.json`。普通 Go 27 项、渠道 Node 6 项；本次重新运行三项原生真实模型测试，另两项云端浏览器／停止恢复专项沿用此前记录，运行镜像未更换。
 
 容量阈值由接口校验和小规模边界用例验证，没有向服务器上传 1GiB 压缩包做容量压力测试；未覆盖所有浏览器目录拖拽实现。
+
+## 发送消息即时反馈验收
+
+- 新增 Go 用例验证：未路由消息即可查询回执；密码鉴权与网页来源边界；SSE 回执包含关联标识；Run 保存事件 ID；同一输入重发只有一项运行。
+- `scripts/chat-state.test.mjs` 验证慢快照不能覆盖新 SSE，历史事件和迟到快照不能使完成任务倒退。
+- `scripts/verify-message-feedback.mjs` 在独立服务和临时项目中注入 5 秒发送延迟，实测用户气泡 39ms 可见；即使全局刷新阻塞，运行记录 1153ms 可见。覆盖回执丢失先核对不再 POST、确认未送达后以完全相同请求重试、跨项目草稿保护与刷新不重复。临时测试服务使用失败执行器，仅验证传输与 UI，不伪装成模型测试。
+- 记录保存在 `artifacts/message-feedback/report.json` 及同目录截图。真实服务器浏览器记录为 `production-report.json`；模型等待时间与用户消息回显时间分别记录，不将界面加速等同于模型加速。
+
+- 发现并验证生产代理差异：默认 zstd 连接在 4 秒内未收到新增的 file.changed，强制 identity 的对照连接 688ms 收到。正式站点只排除事件流压缩，`caddy validate` 通过后平滑 reload；后台的入队顺序没有改变。修复前的一次模型任务等待超过验收时限已停止并清理；另两次后台完成但页面未更新的结果帮助定位了压缩缓冲，未将这些失败记录当成通过。
+
+- 排除压缩后，两条默认／identity 连接分别在 524ms／635ms 收到同一个新事件。最终正式浏览器实测：用户气泡 40ms、运行状态 848ms；真实模型给出“收到”，完整显示用时 5384ms，服务端等待执行仅 101ms，且只有一个用户消息和一项运行。该时间为这条短验收任务，不是所有模型回复的时延保证。最终报告 `production-report.json` 为 passed；对照回归使用 `scripts/verify-live-events.mjs`。
