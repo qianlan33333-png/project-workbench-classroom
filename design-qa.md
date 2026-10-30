@@ -35,3 +35,5 @@ Implementation: `artifacts/today/desktop-full.png`, `mobile-chat.png`, `mobile-a
 final result: passed
 
 补验：中文Markdown成果链接原先被URI编码后匹配失败，已修正解码并通过右侧文件预览验证，见 `artifacts/today/task-result.png`。个人理解新增和纠正已实际保存。最新重启后的个人历史接续通过；模型措辞质量不等同于持久化故障。
+
+正式发布后桌面与390px再次验收通过：手机首次只展示对话，安排为可关闭覆盖面板；无横向溢出（390/390），输入底边776px小于844px视口。稳定页面控制台无warn/error。最终正式截图 `artifacts/today/production-today.png`，未包含测试任务。
