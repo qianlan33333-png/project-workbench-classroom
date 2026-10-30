@@ -89,6 +89,9 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 	if len(in.Text) > 100000 {
 		return Message{}, errors.New("消息过长")
 	}
+	if in.Source != "web" {
+		in.Capabilities = nil
+	}
 	if in.Source == "wechat" || in.Source == "feishu" {
 		c, err := s.Connection(in.ConnectionID)
 		if err != nil || !c.Enabled || c.Kind != in.Source || c.OwnerID != in.ActorID || in.ConversationID == "" {
@@ -97,6 +100,28 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 		in.SessionID = ""
 		in.ExpertID = ""
 		in.References = nil // Only a parsed, explicit text command may grant channel references.
+	}
+	if len(in.Capabilities) > 0 {
+		// A retry of a persisted input must still resolve to the original run
+		// after its selected integration is removed. Validate only new inputs;
+		// queueing validates again against the resolved project.
+		var existing string
+		e := s.DB.QueryRow("SELECT id FROM inbox WHERE source=? AND connection_id=? AND event_id=?", in.Source, in.ConnectionID, in.EventID).Scan(&existing)
+		if e != nil && e != sql.ErrNoRows {
+			return Message{}, e
+		}
+		if e == sql.ErrNoRows {
+			if in.SessionID == "" {
+				return Message{}, errors.New("选择能力需要指定对话")
+			}
+			ss, e := s.Session(in.SessionID)
+			if e != nil {
+				return Message{}, e
+			}
+			if _, e = s.selectCapabilities(ss.ProjectID, in.Capabilities); e != nil {
+				return Message{}, e
+			}
+		}
 	}
 	m := Message{ID: newID(), Incoming: in, State: "unrouted", CreatedAt: now()}
 	{
@@ -208,6 +233,10 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		expertName = e.Name
 	}
 	run := Run{ExpertName: expertName, ID: newID(), ProjectID: p.ID, SessionID: sess.ID, MessageID: m.ID, EventID: m.Incoming.EventID, State: "queued", Source: m.Incoming.Source, Text: m.Incoming.Text, ExpertID: expert, ExpertDigest: version, ReplyAnchor: anchor, AnchorExplicit: explicit, CreatedAt: now()}
+	run.Capabilities, err = s.selectCapabilities(p.ID, m.Incoming.Capabilities)
+	if err != nil {
+		return m, err
+	}
 	run.ExpertVersions = map[string]string{}
 	for _, id := range p.ExpertIDs {
 		ex, e := s.Expert(id)

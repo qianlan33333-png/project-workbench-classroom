@@ -55,6 +55,7 @@ export type Session = {
   harnessId: string;
 };
 export type Run = {
+  capabilities?: Capability[];
   kind?: string;
   id: string;
   sessionId: string;
@@ -83,6 +84,13 @@ export type Expert = {
   description: string;
   digest: string;
   tools: string[];
+};
+export type Capability = {
+  kind: "cli" | "skill" | "mcp";
+  id: string;
+  name: string;
+  description?: string;
+  command?: string;
 };
 export type Message = {
   id: string;

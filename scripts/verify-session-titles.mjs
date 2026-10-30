@@ -68,7 +68,7 @@ try {
   await page.getByLabel("密码", { exact: true }).fill(cfg.password);
   await page.getByRole("button", { name: "进入工作台" }).click();
   await composer.waitFor();
-  await page.locator(".session-list button").waitFor();
+  await page.locator(".session-list .session-select").waitFor();
   await composer.fill("默认助手里尚未发送的草稿");
   await openNew();
   await wait(
@@ -77,7 +77,7 @@ try {
   );
   const abandoned = await currentId();
   assert.equal(await page.getByRole("dialog").count(), 0);
-  assert.equal(await page.locator(".session-list button").count(), 1);
+  assert.equal(await page.locator(".session-list .session-select").count(), 1);
   assert.equal(await composer.inputValue(), "");
   await openNew();
   assert.equal(await currentId(), abandoned);
@@ -94,7 +94,7 @@ try {
   assert.equal(await currentId(), sessionId);
   await wait(
     async () =>
-      assert.equal(await page.locator(".session-list button").count(), 1),
+      assert.equal(await page.locator(".session-list .session-select").count(), 1),
     "sidebar loaded after reload",
   );
   const identity = (await api("GET", "/sessions/" + sessionId)).harnessId;
@@ -103,7 +103,7 @@ try {
     async () =>
       assert.equal(
         (await api("GET", "/sessions/" + sessionId)).expertId,
-        "general",
+        "",
       ),
     "expert selected",
   );
@@ -123,7 +123,7 @@ try {
   const started = Date.now();
   await send();
   await page
-    .locator(".session-list button")
+    .locator(".session-list .session-select")
     .filter({ hasText: "请帮我设计一份新员工" })
     .waitFor();
   report.provisionalTitleMs = Date.now() - started;
@@ -171,7 +171,7 @@ try {
     "first reply completed",
     60000,
   );
-  assert.equal(await page.locator(".session-list button").count(), 2);
+  assert.equal(await page.locator(".session-list .session-select").count(), 2);
   await page.unroute("**/api/v1/messages");
   report.checks.push(
     "Immediate provisional title before receipt, native AI title in same session, single run, live sidebar update",
@@ -190,7 +190,7 @@ try {
     "manual rename",
   );
   const manual = await api("GET", "/sessions/" + sessionId);
-  assert.equal(manual.expertId, "general");
+  assert.equal(manual.expertId, "");
   assert.equal(manual.harnessId, identity);
   await composer.fill(
     "刚才讨论的培训面向哪类人？根据上文只用一句话回答，不使用工具。",

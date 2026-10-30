@@ -228,7 +228,7 @@ try {
   if (live || url.endsWith(":3094")) {
     for (const id of ["lark", "aicrm"])
       assert(installedTools.some((t) => t.id === id && t.installed && t.enabled && t.authStatus === "ready"), "CLI login not ready: " + id);
-    await wait(async () => assert.equal(await globalTools.getByText(/已安装 · .* · 全局启用 · 已登录/).count(), 2), "installed CLI status visible");
+    await wait(async () => assert.equal(await globalTools.getByText(/已安装 · .* · 全局启用 · 已授权/).count(), 2), "installed CLI status visible");
   }
   await globalTools.screenshot({
     path: path.join(dir, (live ? "live-" : "") + "global-tools.png"),

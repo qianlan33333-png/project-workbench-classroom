@@ -110,6 +110,7 @@ func (a *API) Mount(r *gin.Engine) {
 		bind(c, func(v Project) (any, error) { return s.CreateProject(v.Name, v.Description, v.Aliases) })
 	})
 	owner.GET("/projects/:id", func(c *gin.Context) { v, e := s.Project(c.Param("id")); reply(c, v, e) })
+	owner.GET("/projects/:id/capabilities", func(c *gin.Context) { v, e := s.Capabilities(c.Param("id")); reply(c, v, e) })
 	owner.PUT("/projects/:id", func(c *gin.Context) {
 		bind(c, func(v Project) (any, error) { return s.UpdateProject(c.Param("id"), v) })
 	})

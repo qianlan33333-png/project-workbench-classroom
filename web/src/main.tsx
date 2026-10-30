@@ -40,6 +40,7 @@ import {
   type Message,
   type FileEntry,
   type WorkEvent,
+  type Capability,
 } from "./api";
 import {
   NavigationRail,
@@ -53,6 +54,7 @@ import { ExpertDetail } from "./expert-detail";
 import { useMessageSubmissions } from "./message-submissions";
 import { mergeRuns, mergeSessions, initialSessionTitle } from "./chat-state";
 import { RecycleBin, GlobalTools } from "./lifecycle-ui";
+import { CapabilityComposer, CapabilityBadges } from "./capability-composer";
 import "./style.css";
 
 type Field = {
@@ -114,6 +116,7 @@ function App() {
     [projectPanelOpen, setProjectPanelOpen] = useState(false),
     [mobileNav, setMobileNav] = useState(false),
     [attachments, setAttachments] = useState<string[]>([]),
+    [capabilities, setCapabilities] = useState<Capability[]>([]),
     [references, setReferences] = useState<
       { projectId: string; path: string }[]
     >([]);
@@ -125,11 +128,17 @@ function App() {
         text: string;
         attachments: string[];
         references: { projectId: string; path: string }[];
+        capabilities: Capability[];
       }
     >(),
   );
-  const composerCurrent = useRef({ text, attachments, references });
-  composerCurrent.current = { text, attachments, references };
+  const composerCurrent = useRef({
+    text,
+    attachments,
+    references,
+    capabilities,
+  });
+  composerCurrent.current = { text, attachments, references, capabilities };
   const latestEvent = useRef(0);
   const runEventSequences = useRef(new Map<string, number>());
   const applyRun = useCallback(
@@ -154,6 +163,7 @@ function App() {
     setText(draft?.text || "");
     setAttachments(draft?.attachments || []);
     setReferences(draft?.references || []);
+    setCapabilities(draft?.capabilities || []);
     setSessionId(id);
   };
   const visibleSessions = sessions
@@ -433,6 +443,7 @@ function App() {
     setText(nextDraft?.text || "");
     setAttachments(nextDraft?.attachments || []);
     setReferences(nextDraft?.references || []);
+    setCapabilities(nextDraft?.capabilities || []);
     setSessionId(targetSession || p.defaultSessionId);
     fileRequest.current++;
     setFilePath("");
@@ -557,7 +568,13 @@ function App() {
     });
   const newSession = () => {
     if (creatingSessionRef.current) return;
-    if (session?.draft && !text && !attachments.length && !references.length) {
+    if (
+      session?.draft &&
+      !text &&
+      !attachments.length &&
+      !references.length &&
+      !capabilities.length
+    ) {
       document
         .querySelector<HTMLTextAreaElement>('[aria-label="发送消息"]')
         ?.focus();
@@ -684,11 +701,13 @@ function App() {
         text,
         attachments,
         references,
+        capabilities,
       })
     ) {
       setText("");
       setAttachments([]);
       setReferences([]);
+      setCapabilities([]);
     }
   };
   const versions = async () => {
@@ -1340,23 +1359,26 @@ function App() {
                   </button>
                   <select
                     aria-label="当前专家"
-                    value={session?.expertId || ""}
+                    value={
+                      session?.expertId || project.defaultExpertId || "general"
+                    }
                     onChange={(e) =>
                       act(async () => {
                         const ss = await api<Session>(
                           `/sessions/${sessionId}`,
-                          { expertId: e.target.value },
+                          {
+                            expertId:
+                              e.target.value ===
+                              (project.defaultExpertId || "general")
+                                ? ""
+                                : e.target.value,
+                          },
                           "PUT",
                         );
                         setSessions((old) => mergeSessions(old, [ss]));
                       })
                     }
                   >
-                    <option value="">
-                      项目默认：
-                      {experts.find((e) => e.id === project.defaultExpertId)
-                        ?.name || "通用助手"}
-                    </option>
                     <option value="general">通用助手</option>
                     {experts
                       .filter((e) => project.expertIds?.includes(e.id))
@@ -1434,6 +1456,7 @@ function App() {
                         {labels[r.source]} · {stamp(r.createdAt)}
                       </span>
                       <p>{r.text}</p>
+                      <CapabilityBadges values={r.capabilities || []} />
                     </div>
                     <div className="assistant-message">
                       <div className="assistant-line">
@@ -1561,6 +1584,7 @@ function App() {
                     <div className="user-message">
                       <span>网页 · {stamp(v.createdAt)}</span>
                       <p>{v.input.text}</p>
+                      <CapabilityBadges values={v.input.capabilities || []} />
                     </div>
                     <div className="submission-status" role="status">
                       <span className={`state ${v.state}`}>
@@ -1603,6 +1627,13 @@ function App() {
                             setReferences((old) => [
                               ...old,
                               ...v.input.references,
+                            ]);
+                            setCapabilities((old) => [
+                              ...new Map(
+                                [...old, ...(v.input.capabilities || [])].map(
+                                  (c) => [c.kind + ":" + c.id, c],
+                                ),
+                              ).values(),
                             ]);
                             submissions.dismiss(v.input.eventId);
                           }}
@@ -1649,23 +1680,16 @@ function App() {
                   </div>
                 )}
                 <div className="composer">
-                  <textarea
-                    aria-label="发送消息"
-                    placeholder="描述任务，或补充新的指令…"
+                  <CapabilityComposer
+                    projectId={projectId}
+                    sessionId={sessionId}
                     value={text}
-                    onChange={(e) => setText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (
-                        e.key === "Enter" &&
-                        !e.shiftKey &&
-                        !e.nativeEvent.isComposing
-                      ) {
-                        e.preventDefault();
-                        send();
-                      }
-                    }}
+                    onChange={setText}
+                    selected={capabilities}
+                    onSelected={setCapabilities}
+                    send={send}
                   />
-                  <div>
+                  <div className="composer-actions">
                     <label title={locked ? "任务结束后可添加文件" : "添加附件"}>
                       <Paperclip size={18} />
                       <input

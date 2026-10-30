@@ -58,6 +58,7 @@ type Expert struct {
 	CreatedAt   int64    `json:"createdAt"`
 }
 type Incoming struct {
+	Capabilities   []CapabilityRef `json:"capabilities,omitempty"`
 	Source         string          `json:"source"`
 	ConnectionID   string          `json:"connectionId"`
 	ActorID        string          `json:"actorId"`
@@ -92,6 +93,7 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
+	Capabilities   []Capability      `json:"capabilities,omitempty"`
 	Kind           string            `json:"kind,omitempty"`
 	ExpertName     string            `json:"expertName,omitempty"`
 	ID             string            `json:"id"`

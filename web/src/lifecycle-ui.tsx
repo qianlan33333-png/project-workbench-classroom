@@ -68,6 +68,7 @@ export function GlobalTools({ notify }: { notify: (s: string) => void }) {
   const [tools, setTools] = useState<any[]>([]),
     [jobs, setJobs] = useState<any[]>([]),
     [error, setError] = useState(""),
+    [requestedJobs, setRequestedJobs] = useState<string[]>([]),
     [draft, setDraft] = useState<any>(null);
   const load = async () => {
     try {
@@ -88,7 +89,8 @@ export function GlobalTools({ notify }: { notify: (s: string) => void }) {
   }, []);
   const start = async (id: string, action: string) => {
     try {
-      await api(`/cli-tools/${id}/${action}`, {});
+      const job = await api(`/cli-tools/${id}/${action}`, {});
+      setRequestedJobs((old) => [...old, job.id]);
       void load();
       notify("操作已开始，登录链接和进度会显示在下方");
     } catch (e) {
@@ -162,7 +164,7 @@ export function GlobalTools({ notify }: { notify: (s: string) => void }) {
               {" · " +
                 ((
                   {
-                    ready: "已登录",
+                    ready: "已授权",
                     needs_login: "待登录",
                     expired: "授权已到期",
                   } as Record<string, string>
@@ -213,38 +215,44 @@ export function GlobalTools({ notify }: { notify: (s: string) => void }) {
           </div>
         </div>
       ))}
-      {jobs.slice(0, 8).map((j) => (
-        <details
-          className="tool-job"
-          key={j.id}
-          open={["queued", "running"].includes(j.state)}
-        >
-          <summary>
-            {tools.find((t) => t.id === j.toolId)?.name || j.toolId} ·{" "}
-            {j.action} ·{" "}
-            {j.state === "queued"
-              ? "等待空闲"
-              : j.state === "running"
-                ? "进行中"
-                : j.state === "completed"
-                  ? "已完成"
-                  : "失败"}
-          </summary>
-          {j.error && <p role="alert">{j.error}</p>}
-          {Array.from(
-            new Set<string>(
-              (j.output || "").match(/https?:\/\/[^\s"<>]+/g) || [],
-            ),
-          ).map((link) => (
-            <p key={link}>
-              <a href={link} target="_blank" rel="noreferrer">
-                打开授权链接
-              </a>
+      {jobs
+        .filter(
+          (j) =>
+            ["queued", "running"].includes(j.state) ||
+            (requestedJobs.includes(j.id) &&
+              ["failed", "interrupted"].includes(j.state)),
+        )
+        .map((j) => (
+          <div className="tool-current-operation" key={j.id} role="status">
+            <p>
+              {tools.find((t) => t.id === j.toolId)?.name || j.toolId} ·{" "}
+              {j.state === "queued"
+                ? "等待空闲"
+                : j.state === "running"
+                  ? (
+                      {
+                        install: "正在安装",
+                        check: "正在检查授权",
+                        auth: "等待完成授权",
+                        configure: "正在配置账号",
+                      } as Record<string, string>
+                    )[j.action] || "进行中"
+                  : "操作未完成"}
             </p>
-          ))}
-          <pre>{(j.output || "").replace(/\u001b\[[0-9;]*m/g, "")}</pre>
-        </details>
-      ))}
+            {j.error && <p role="alert">{j.error}</p>}
+            {Array.from(
+              new Set<string>(
+                (j.output || "").match(/https?:\/\/[^\s"<>]+/g) || [],
+              ),
+            ).map((link) => (
+              <p key={link}>
+                <a href={link} target="_blank" rel="noreferrer">
+                  打开授权链接
+                </a>
+              </p>
+            ))}
+          </div>
+        ))}
     </section>
   );
 }

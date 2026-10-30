@@ -324,6 +324,7 @@ func (w *Worker) prompt(r Run, p Project) string {
 		}
 	}
 	b.WriteString("[本轮工作范围]\n项目：" + p.Name + "\n项目编号：" + p.ID + "\n当前对话：" + r.SessionID + "\n任务编号：#T" + r.ID[:8] + "\n来源：" + r.Source + "\n")
+	b.WriteString(w.Store.capabilityPrompt(r))
 	if r.ExpertID != "" {
 		if raw, e := os.ReadFile(filepath.Join(w.Store.Root, "experts", r.ExpertID, r.ExpertDigest, "SKILL.md")); e == nil {
 			if ex, e := expertManifest(raw); e == nil {

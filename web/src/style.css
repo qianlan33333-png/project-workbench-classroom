@@ -1054,7 +1054,7 @@ label input[type="file"] {
   font-size: 12px;
   line-height: 1.7;
 }
-.composer > div {
+.composer > .composer-actions {
   display: flex;
   align-items: center;
   padding: 0 12px 10px;
@@ -1066,7 +1066,7 @@ label input[type="file"] {
   cursor: pointer;
   display: flex;
 }
-.composer > div > span {
+.composer > .composer-actions > span {
   font-size: 9px;
   color: #b0b7a6;
   flex: 1;
@@ -1871,7 +1871,7 @@ label input[type="file"] {
   .chat.compact .chat-header > div:nth-child(2) > select {
     display: none;
   }
-  .chat.compact .composer > div > span {
+  .chat.compact .composer > .composer-actions > span {
     font-size: 8px;
   }
   .chat.compact .chat-welcome > div {
@@ -2067,7 +2067,7 @@ label input[type="file"] {
     font-size: 11px;
     min-height: 65px;
   }
-  .composer > div > span {
+  .composer > .composer-actions > span {
     font-size: 7px;
     max-width: 90px;
   }
@@ -3197,4 +3197,28 @@ label input[type="file"] {
   .setting-row {
     flex-wrap: wrap;
   }
+}
+
+.composer-editor { position: relative; }
+.capability-menu { position: absolute; bottom: calc(100% + 10px); left: 0; right: 0; max-height: min(360px, 42vh); overflow-y: auto; padding: 7px; border: 1px solid #dfe5d4; border-radius: 12px; background: #fff; box-shadow: 0 8px 28px #243b261c; z-index: 25; }
+.capability-menu-hint { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; color: #7b8775; font-size: 12px; }
+.capability-menu-hint small { font-size: 10px; }
+.capability-menu > button { display: flex; align-items: center; width: 100%; gap: 10px; padding: 10px; border: 0; border-radius: 7px; background: transparent; text-align: left; color: #354337; }
+.capability-menu > button[aria-selected="true"], .capability-menu > button:hover { background: #eff3e9; }
+.capability-menu > button strong { font-size: 13px; font-weight: 500; flex-shrink: 0; max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.capability-menu > button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b9585; font-size: 12px; flex: 1; }
+.capability-menu > button small { font-size: 10px; color: #8b9585; }
+.capability-menu > button svg { flex-shrink: 0; }
+.capability-menu > p { padding: 8px 10px; color: #7b8775; font-size: 12px; }
+.capability-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 0; }
+.capability-chips button, .capability-chips > small { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #e1e7d9; background: #f5f7f0; border-radius: 6px; color: #59704a; padding: 4px 7px; font-size: 11px; }
+.capability-chips button span { color: #8a977e; font-size: 10px; }
+.user-message .capability-chips { padding: 6px 0 0; }
+.tool-current-operation { padding: 8px 0; color: #6d7d60; font-size: 12px; }
+.tool-current-operation p { margin: 6px 0; }
+@media (max-width: 767px) {
+ .capability-menu-hint small { display: none; }
+ .capability-menu > button { gap: 7px; }
+ .capability-menu > button strong { max-width: 48%; }
+ .capability-menu > button span { font-size: 11px; }
 }

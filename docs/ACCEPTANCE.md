@@ -140,3 +140,19 @@ Chromium 脚本 `scripts/verify-workspace.mjs` 验证默认 80px 导航、216px 
 - 再次重启正式应用和渠道桥后，两套 CLI 实际身份检查均为 ready，飞书 scope 仍为 223 项；微信／飞书均 connected。真实模型通过原生应用 MCP 的 manage_cli/list 读回两套版本。报告 `restart-report.json`。连接状态检查不代替新的收发消息验收。
 - 真实对话中的 manage_cli/install、jobs、list 完成飞书固定已安装版本的幂等安装，返回 `CLI_INSTALL_OK`，安装任务绑定发起 Run 并完成，登录仍 ready。修正了聊天安装等待自身运行锁的问题；其他运行锁仍阻止安装。脚本 `scripts/verify-chat-tool-install.mjs`、报告 `chat-install-report.json`。首次全新安装采用同一版本提取／原子入口逻辑，本轮二进制最初由官方校验后的发行包安装。
 - 独立空工具目录的全新安装通过：两套官方原始 tar.gz 经摘要校验缓存后，由应用 install 接口创建版本目录、命令入口及登记；实际运行版本命令分别为 1.0.98／0.6.1。报告 `fresh-install-report.json`。GitHub 直连下载曾出现 EOF／超时，没有将其记录为网络下载成功；使用随包缓存后不依赖现场外网下载。首次空目录还发现安装脚本中 tools 父目录所有权遗漏，修正后重复完整安装通过。
+
+## 2026-10-30 斜杠能力选择与三项界面优化
+
+`verify-composer.mjs` 使用独立项目、专家和预览 MCP：验证键盘／点击选择、Escape 关闭不提交、当前项目 Skill 范围、对话草稿隔离、发送后清空、同一 Session/Harness、有效专家默认值去重、URL 不唤起菜单、Shift+Enter 和 390px 布局。完成流水隐藏与授权中链接采用接口回放验证，不触发真实重新登录。
+
+普通 Go 42 项、race、vet 通过，4 项网页状态与 6 项渠道测试继续通过，TypeScript／Vite 构建通过。新增行为测试覆盖全局 CLI／MCP 与项目 Skill 的目录边界、停用过滤、提交前拒绝跨项目方法、重复选择去重、队列记录与 Skill 版本固定、能力删除后原消息仍去重、默认专家和 Harness 身份不变。
+
+本机真实 Harness 三轮完成：隔离 CLI 夹具版本、Skill 入口口令、MCP echo。夹具不是飞书客户端；云端正式 CLI 验收单独记录。报告与截图 `artifacts/composer/report.json`、`slash-menu.png`、`slash-mobile.png`、`clean-tool-settings.png`。
+
+云端隔离预览的 Chromium + rootless Podman 已通过相同交互流程，所选真实飞书 CLI 返回 1.0.98，指定 Skill 读取固定入口口令，指定 MCP echo 返回独立口令；原 Harness ID、默认专家均保持。`cloud-report.json` 及 `cloud-*.png` 保存证明。
+
+自动标题回归通过：新建不弹标题框、空会话不占列表、首句后显示、原生自动命名、人工名称不被覆盖、历史继续和移动控件均正常。首句临时标题显示 53ms，实际生成“新员工入职首周培训计划”。旧验收脚本曾把对话菜单按钮也计算成会话，已改为会话选择按钮；未为此改动产品行为。记录 `artifacts/session-titles/report.json`，该次 URL 为云端预览。
+
+正式发布 `cloud-20261030-09-composer` 后的 Chromium 验收通过：`/` 分别选择飞书 CLI、CRM CLI、Skill 并在同一会话执行，真实版本分别为 1.0.98／0.6.1，方法入口校验口令正确。正式模式未新建全局测试 MCP；MCP 真实调用在独立云端预览完成。授权状态、隐藏完成流水、授权中链接回放、默认模式去重与 390px 布局全部通过。记录 `artifacts/composer/live-report.json` 与 `live-*.png`。
+
+正式服务再次重启后，两套 CLI 的实际身份检查仍为 ready，微信和飞书均 connected；公司官网响应哈希不变。发布前后原有 5 个项目文件字节一致、7 个 Session/Harness 映射不变，临时验收项目／专家均已移除。连接状态检查没有发送新的平台消息。证明 `artifacts/composer/deployment-report.json`。
