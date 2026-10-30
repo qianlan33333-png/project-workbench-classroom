@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"unicode"
 )
@@ -32,6 +33,9 @@ func activateSession(tx *sql.Tx, id, text string) (*Session, error) {
 		return nil, err
 	}
 	ss, err := decodeJSON[Session](raw)
+	if err == nil && (ss.RecycledAt > 0 || ss.Lifecycle != "") {
+		return nil, errors.New("对话正在归档或已在回收站")
+	}
 	if err != nil || !ss.Draft {
 		return nil, err
 	}

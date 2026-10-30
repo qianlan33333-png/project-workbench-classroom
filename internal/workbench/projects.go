@@ -143,10 +143,14 @@ func (s *Store) PatchProject(id string, fields map[string]json.RawMessage) (Proj
 	return s.updateProject(id, p)
 }
 func (s *Store) Sessions(project string) ([]Session, error) {
-	return listJSON[Session](s.DB, "SELECT data FROM sessions WHERE project_id=? AND kind<>'automation' AND coalesce(json_extract(data,'$.draft'),0)=0 ORDER BY kind='assistant' DESC,updated_at DESC", project)
+	return listJSON[Session](s.DB, "SELECT data FROM sessions WHERE project_id=? AND kind<>'automation' AND coalesce(json_extract(data,'$.draft'),0)=0 AND coalesce(json_extract(data,'$.recycledAt'),0)=0 ORDER BY coalesce(json_extract(data,'$.pinnedAt'),0)>0 DESC,coalesce(json_extract(data,'$.pinnedAt'),0) DESC,updated_at DESC", project)
 }
 func (s *Store) Session(id string) (Session, error) {
-	return getJSON[Session](s.DB, "SELECT data FROM sessions WHERE id=?", id)
+	ss, e := s.rawSession(id)
+	if e == nil && ss.RecycledAt > 0 {
+		return Session{}, errors.New("对话已移入回收站，请先找回")
+	}
+	return ss, e
 }
 func (s *Store) CreateSession(project, title, kind, expert string) (Session, error) {
 	s.expertMu.RLock()
@@ -196,6 +200,9 @@ func (s *Store) UpdateSession(id string, title, expert *string) (Session, error)
 		sess, e = decodeJSON[Session](raw)
 		if e != nil {
 			return e
+		}
+		if sess.RecycledAt > 0 || sess.Lifecycle != "" {
+			return errors.New("对话正在归档或已在回收站")
 		}
 		if title != nil {
 			value := strings.TrimSpace(*title)

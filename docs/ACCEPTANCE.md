@@ -116,3 +116,27 @@ Chromium 脚本 `scripts/verify-workspace.mjs` 验证默认 80px 导航、216px 
 本地 Chromium + 真实模型：点击新建不弹框；首条消息前列表保持原数量；刷新原空会话 ID 不变；切换恢复原输入草稿；刻意阻塞 POST 时侧栏 39ms 显示首句；放行后实时变为“新员工入职第一周培训计划设计”；改名并继续下一轮后仍保留手动名称、专家及 Harness ID；刷新后保留，390px 页面操作可达。结果见 `artifacts/session-titles/report.json` 及同目录截图。
 
 正式站点 `PW_LIVE=1` 最终报告通过：临时侧栏标题 42ms 出现，真实生成“新员工入职首周培训计划”；改名后再次问答引用原培训内容，Harness ID 不变；刷新、390px 控件和截图通过。首轮脚本在刷新后过早断言列表数量（接口未加载完），调整为等待真实列表加载后复测通过；没有因此改变应用代码。记录 `artifacts/session-titles/live-report.json`，所有验收项目测试结束后删除。
+
+## 2026-10-30 对话生命周期与全局工具
+
+本轮普通 Go 行为用例 40 项（另 8 项真实测试默认按凭证条件跳过），race、vet 通过；网页状态用例 4 项、渠道用例 6 项通过；TypeScript／Vite 构建通过。实际运行的真实专项单独列出，不把默认跳过视为通过。
+
+- 生命周期行为：置顶刷新保留；忙碌／待澄清对话拒绝回收；归档冻结输入，成功后有 MD，失败保留原聊天；找回保持 Session/Harness ID，默认助手回收后使用全新身份；普通 API、历史和全局 SSE 均不能读回收站原文；到期清除及旧快照默认指向修复。
+- 备份脚本真实临时 SQLite 用例：只清除目标聊天原件和原生目录，其他项目和成果文件保留，VACUUM 后不含测试原文，重复执行幂等，独立清单可恢复。
+- 本机真实 Harness：提炼“松果314／8000元／培训待办”；两个项目调用同一 MCP echo 返回各自口令；挂起 MCP 时普通回复继续。最后专项中坏 MCP 的整轮普通回复用时 7.29s（包含模型等待），非固定时延承诺。
+- 云端隔离预览：真实 Chrome 登录、置顶、归档、找回、刷新、删除保留 MD、移动布局通过；原始历史未混入默认助手，维护运行不显示成聊天。最初测试发现历史 SSE 回放误清焦点、找回后显示维护消息，修正后重新完整通过。
+- 云端 rootless Podman：项目 A、B 均真实执行 `lark-cli calendar +agenda --as user --format json` 和 CRM `admin.listCustomers?limit=1`，校验命令退出码和响应状态，只记录数量、不显示明细。CRM 成功字段是字符串枚举，验收脚本按 HTTP 及 operation_id 校验，未把它误当布尔值。
+- 云端原生 MCP：两个无项目绑定的临时项目调用全局 echo，各返独立口令；再加入无响应 MCP，普通聊天 9.32s 完成。临时项目和插件均清理。凭证和登录状态在业务目录外，未复制到项目。
+- 飞书授权范围已扩展，实际 scope 字符串 223 项；组织管理员拒绝 `vc:meeting.realtime:read`。CRM 正确 origin 为 `https://www.youcangogogo.com`，本次 human session 有效期 24h。没有实测所有 223 项飞书写权限，也没有修改 CRM 服务端登录期限。
+
+复跑入口：`scripts/verify-lifecycle.mjs`、`scripts/verify-global-cli.mjs`、`scripts/verify-global-mcp.mjs`。`PW_UI_URL` 配合隔离密码测试；正式模式 `PW_LIVE=1` 从本机现有 CLI 配置读取密码，不写入报告。证据在 `artifacts/lifecycle/`，发行版中另提供证据包。正式切换结果见下方。
+
+正式版 `cloud-20261030-08-lifecycle-tools` 已上线：
+
+- 正式 Chromium 完整生命周期流程通过，归档 MD 有真实事实、找回保留原 Harness 与历史，未重新执行旧任务；删除后 MD 保留，390px 设置可访问。全局工具列表明确显示两项已安装、已登录，飞书 223 项授权。报告 `live-report.json` 与 `live-*.png`。
+- 正式 rootless Podman 的两个项目分别完成飞书日程和 CRM 客户读取，均输出真实脚本完成标识。报告 `live-cli-report.json`。本次没有新增渠道测试消息，也没有测试写入 CRM 或飞书业务数据。
+- 对独立空验收对话实际执行“移入回收站 → 彻底清除”，固定 sudo 清理链路成功，原记录不可再读，项目 MD 仍在；未触碰用户现有聊天。报告 `live-purge-report.json`。
+- 发布前快照比对：原有 5 个项目及文件字节一致，7 个应用 Session/Harness 映射保留；公司官网 SHA256 仍为 `674fd07879ef1afc40a33833365c92e7bc62073c4d8d868d887dbb42ab506f00`。全部临时验收项目清理。
+- 再次重启正式应用和渠道桥后，两套 CLI 实际身份检查均为 ready，飞书 scope 仍为 223 项；微信／飞书均 connected。真实模型通过原生应用 MCP 的 manage_cli/list 读回两套版本。报告 `restart-report.json`。连接状态检查不代替新的收发消息验收。
+- 真实对话中的 manage_cli/install、jobs、list 完成飞书固定已安装版本的幂等安装，返回 `CLI_INSTALL_OK`，安装任务绑定发起 Run 并完成，登录仍 ready。修正了聊天安装等待自身运行锁的问题；其他运行锁仍阻止安装。脚本 `scripts/verify-chat-tool-install.mjs`、报告 `chat-install-report.json`。首次全新安装采用同一版本提取／原子入口逻辑，本轮二进制最初由官方校验后的发行包安装。
+- 独立空工具目录的全新安装通过：两套官方原始 tar.gz 经摘要校验缓存后，由应用 install 接口创建版本目录、命令入口及登记；实际运行版本命令分别为 1.0.98／0.6.1。报告 `fresh-install-report.json`。GitHub 直连下载曾出现 EOF／超时，没有将其记录为网络下载成功；使用随包缓存后不依赖现场外网下载。首次空目录还发现安装脚本中 tools 父目录所有权遗漏，修正后重复完整安装通过。

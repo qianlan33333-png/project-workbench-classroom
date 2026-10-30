@@ -13,11 +13,13 @@ import (
 )
 
 type Store struct {
-	DB       *sql.DB
-	Root     string
-	mu       sync.Mutex
-	expertMu sync.RWMutex
-	notify   chan struct{}
+	BackupScrubCommand []string
+	DB                 *sql.DB
+	Root               string
+	mu                 sync.Mutex
+	expertMu           sync.RWMutex
+	notify             chan struct{}
+	toolManager        func(string, string, []string) (ToolJob, error)
 }
 
 const schema = `
@@ -49,6 +51,8 @@ CREATE TABLE IF NOT EXISTS schedule_occurrences(schedule_id TEXT NOT NULL, sched
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS logins(hash TEXT PRIMARY KEY, expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS tickets(hash TEXT PRIMARY KEY, expires INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS cli_tools(id TEXT PRIMARY KEY,data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tool_jobs(id TEXT PRIMARY KEY,tool_id TEXT NOT NULL,state TEXT NOT NULL,created_at INTEGER NOT NULL,data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS plugins(id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS documents(project_id TEXT NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(project_id,path));
 CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(project_id UNINDEXED,path,content,tokenize='trigram');
@@ -58,7 +62,7 @@ func OpenStore(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(root, "workbench.sqlite")+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_txlock=immediate")
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(root, "workbench.sqlite")+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=secure_delete(1)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +89,44 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 	if version != 1 {
 		return nil, fmt.Errorf("不支持数据库版本 %d", version)
 	}
-	return &Store{DB: db, Root: root, notify: make(chan struct{}, 1)}, nil
+	s := &Store{DB: db, Root: root, notify: make(chan struct{}, 1)}
+	if v, _ := s.Setting("global_mcp_migrated"); v == "" {
+		plugins, _ := listJSON[Plugin](db, "SELECT data FROM plugins")
+		projects, _ := s.Projects()
+		for _, p := range plugins {
+			if p.Enabled == nil {
+				enabled := false
+				for _, project := range projects {
+					if contains(project.PluginIDs, p.ID) {
+						enabled = true
+					}
+				}
+				p.Enabled = &enabled
+				_, _ = db.Exec("UPDATE plugins SET data=? WHERE id=?", encode(p), p.ID)
+			}
+		}
+		if e := s.SetSetting("global_mcp_migrated", "1"); e != nil {
+			return nil, e
+		}
+	}
+	tools, err := s.CLITools()
+	if err != nil {
+		return nil, err
+	}
+	for _, tool := range tools {
+		if tool.Installed {
+			if _, err = s.SaveCLITool(tool); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if _, err = db.Exec("UPDATE tool_jobs SET state='interrupted',data=json_set(data,'$.state','interrupted','$.error','服务重启，操作未重放，请检查工具状态') WHERE state IN ('queued','running')"); err != nil {
+		return nil, err
+	}
+	if _, err = db.Exec("DELETE FROM settings WHERE key='tool_install_running'"); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 func getJSON[T any](db *sql.DB, q string, args ...any) (T, error) {
 	var out T
@@ -136,7 +177,7 @@ func (s *Store) Emit(session, run, kind string, data any) error {
 	return err
 }
 func (s *Store) Events(after int64, session string) ([]Event, error) {
-	rows, err := s.DB.Query("SELECT seq,session_id,run_id,type,data,created_at FROM events WHERE seq>? AND (?='' OR session_id=?) ORDER BY seq LIMIT 500", after, session, session)
+	rows, err := s.DB.Query("SELECT seq,session_id,run_id,type,data,created_at FROM events WHERE seq>? AND NOT(type='run.updated' AND coalesce(json_extract(data,'$.kind'),'')='archive') AND (session_id='' OR session_id IN (SELECT id FROM sessions WHERE coalesce(json_extract(data,'$.recycledAt'),0)=0)) AND NOT EXISTS(SELECT 1 FROM inbox i JOIN sessions ss ON ss.id=coalesce(nullif(i.session_id,''),json_extract(i.data,'$.incoming.sessionId')) WHERE coalesce(json_extract(ss.data,'$.recycledAt'),0)>0 AND i.id=coalesce(json_extract(events.data,'$.id'),json_extract(events.data,'$.messageId'))) AND (?='' OR session_id=?) ORDER BY seq LIMIT 500", after, session, session)
 	if err != nil {
 		return nil, err
 	}

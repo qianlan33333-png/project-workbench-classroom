@@ -9,6 +9,7 @@ import (
 // MCP config remains the native Harness shape; credentials are stored outside
 // project files and never included in the owner-facing list.
 type Plugin struct {
+	Enabled     *bool             `json:"enabled,omitempty"`
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
@@ -48,6 +49,10 @@ func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
 	} else if p.Command == "" {
 		return p, errors.New("请填写执行环境内的命令")
 	}
+	if p.Enabled == nil {
+		enabled := true
+		p.Enabled = &enabled
+	}
 	if p.ID == "" {
 		p.ID = newID()
 	} else if old, e := s.Plugin(p.ID); e == nil {
@@ -67,15 +72,19 @@ func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
 	return p, e
 }
 func (s *Store) DeletePlugin(id string) error {
-	ps, e := s.Projects()
+	_, e := s.DB.Exec("DELETE FROM plugins WHERE id=?", id)
+	return e
+}
+func (s *Store) EnabledPlugins() ([]Plugin, error) {
+	vs, e := listJSON[Plugin](s.DB, "SELECT data FROM plugins ORDER BY id")
 	if e != nil {
-		return e
+		return nil, e
 	}
-	for _, p := range ps {
-		if contains(p.PluginIDs, id) {
-			return errors.New("请先从项目中停用这个插件")
+	out := []Plugin{}
+	for _, p := range vs {
+		if p.Enabled == nil || *p.Enabled {
+			out = append(out, p)
 		}
 	}
-	_, e = s.DB.Exec("DELETE FROM plugins WHERE id=?", id)
-	return e
+	return out, nil
 }

@@ -9,6 +9,7 @@ export function mergeRuns(
 ): Run[] {
   const rows = new Map(existing.map((r) => [r.id, r]));
   for (const run of incoming) {
+    if (run.kind === "archive") continue;
     if ((eventSequences?.get(run.id) || 0) > requestedAt) continue;
     const old = rows.get(run.id);
     if (
@@ -36,7 +37,8 @@ export function mergeSessions(
   }
   return [...rows.values()].sort(
     (a, b) =>
-      Number(b.kind === "assistant") - Number(a.kind === "assistant") ||
+      Number(!!b.pinnedAt) - Number(!!a.pinnedAt) ||
+      (b.pinnedAt || 0) - (a.pinnedAt || 0) ||
       (b.updatedAt || 0) - (a.updatedAt || 0),
   );
 }

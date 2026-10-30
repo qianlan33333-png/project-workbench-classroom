@@ -137,3 +137,5 @@ pwb api POST /projects/PROJECT_ID/upload --form path=附件/data.bin --form conf
 ```
 
 专家修改必须使用读取时的 digest；409 时重新读取并解决冲突，不直接重试覆盖。删除专家暂停显式绑定的定时任务，已提交任务继续使用固定版本。接口细节见仓库 `docs/ARCHITECTURE.md`。
+
+对话生命周期和全局工具也可通过现有 `pwb api` 调用，无需换登录方式，例如 `pwb api GET /recycle-bin`、`pwb api GET /cli-tools`、`pwb api GET /tool-jobs`。写操作与请求体见 [接口说明](../docs/ARCHITECTURE.md#对话生命周期与全局工具)。`pwb` 的工作台密码鉴权不设到期时间；飞书和 CRM 登录仍遵循各自服务端授权期限，两者不同。

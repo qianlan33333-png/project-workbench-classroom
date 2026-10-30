@@ -16,13 +16,25 @@ tar -xzf "$archive" -C "$release"
 test "$("$release/node/bin/node" --version)" = v24.22.0
 test -f "$release/node/include/node/node_api.h"
 chown -R projectwb:projectwb "$release"
+if test -d "$release/tool-artifacts"; then
+ install -d -o projectwb -g projectwb -m 700 /var/lib/project-workbench/tools /var/lib/project-workbench/tools/downloads
+ cp -a "$release/tool-artifacts/." /var/lib/project-workbench/tools/downloads/
+ chown -R projectwb:projectwb /var/lib/project-workbench/tools/downloads
+fi
 sudo -iu projectwb podman build --build-arg "APT_MIRROR=${APT_MIRROR:-deb.debian.org}" -t "localhost/project-workbench-runtime:$release_name" "$release"
 sudo -iu projectwb podman run --rm --userns=keep-id "localhost/project-workbench-runtime:$release_name" dsh --version
 test -f /etc/project-workbench/config.json || { echo 'Place configured deploy/config.example.json at /etc/project-workbench/config.json first.'; exit 1; }
+install -d -m 755 /usr/local/libexec
+install -o root -g root -m 755 "$release/scripts/scrub-session-backups.py" /usr/local/libexec/pwb-purge-backups.py
+printf '%s\n' 'projectwb ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/libexec/pwb-purge-backups.py' > /etc/sudoers.d/project-workbench-purge
+chmod 440 /etc/sudoers.d/project-workbench-purge
+visudo -cf /etc/sudoers.d/project-workbench-purge
 # Config RuntimeImage must match the built release; preserve other settings.
 python3 - "$release_name" <<'PY'
 import json,pathlib,sys,os,pwd
 p=pathlib.Path('/etc/project-workbench/config.json');v=json.loads(p.read_text());v['RuntimeImage']='localhost/project-workbench-runtime:'+sys.argv[1]
+v['RuntimeDir']='/opt/project-workbench/current/runtime'
+v['BackupScrubCommand']=['/usr/bin/sudo','-n','/usr/bin/python3','/usr/local/libexec/pwb-purge-backups.py']
 p.write_text(json.dumps(v,ensure_ascii=False,indent=2));u=pwd.getpwnam('projectwb');os.chown(p,u.pw_uid,u.pw_gid);os.chmod(p,0o600)
 env=pathlib.Path('/etc/project-workbench/service.env');env.write_text(f'XDG_RUNTIME_DIR=/run/user/{u.pw_uid}\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{u.pw_uid}/bus\n');os.chown(env,u.pw_uid,u.pw_gid);os.chmod(env,0o600)
 PY

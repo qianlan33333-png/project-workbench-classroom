@@ -22,6 +22,7 @@ import (
 )
 
 type API struct {
+	toolMu     sync.Mutex
 	Store      *Store
 	Worker     *Worker
 	Config     Config
@@ -61,6 +62,7 @@ func bind[T any](c *gin.Context, f func(T) (any, error)) {
 }
 func (a *API) Mount(r *gin.Engine) {
 	s := a.Store
+	s.toolManager = a.startToolJob
 	r.Use(a.sameOrigin)
 	r.MaxMultipartMemory = 8 << 20
 	base := strings.TrimRight(a.Config.BasePath, "/")
@@ -179,12 +181,40 @@ func (a *API) Mount(r *gin.Engine) {
 		bind(c, func(v struct {
 			Title    *string `json:"title"`
 			ExpertID *string `json:"expertId"`
-		}) (any, error) { return s.UpdateSession(c.Param("id"), v.Title, v.ExpertID) })
+		}) (any, error) {
+			return s.UpdateSession(c.Param("id"), v.Title, v.ExpertID)
+		})
 	})
+
+	owner.PUT("/sessions/:id/pin", func(c *gin.Context) {
+		bind(c, func(v struct {
+			Pinned bool `json:"pinned"`
+		}) (any, error) {
+			return s.PinSession(c.Param("id"), v.Pinned)
+		})
+	})
+	owner.POST("/sessions/:id/archive/stop", func(c *gin.Context) {
+		rows, e := listJSON[Run](s.DB, "SELECT data FROM runs WHERE session_id=? AND json_extract(data,'$.kind')='archive' AND state IN ('queued','running','waiting') LIMIT 1", c.Param("id"))
+		if e == nil && len(rows) > 0 {
+			e = a.Worker.Stop(rows[0].ID)
+		}
+		reply(c, nil, e)
+	})
+	owner.POST("/sessions/:id/archive", func(c *gin.Context) { v, e := s.QueueArchive(c.Param("id")); reply(c, v, e) })
+	owner.DELETE("/sessions/:id", func(c *gin.Context) { v, e := s.RecycleSession(c.Param("id"), "delete"); reply(c, v, e) })
+	owner.GET("/recycle-bin", func(c *gin.Context) { v, e := s.RecycleBin(); reply(c, v, e) })
+	owner.POST("/recycle-bin/:id/restore", func(c *gin.Context) { v, e := s.RestoreSession(c.Param("id")); reply(c, v, e) })
+	owner.DELETE("/recycle-bin/:id", func(c *gin.Context) { reply(c, nil, s.PurgeSession(c.Param("id"))) })
 	owner.GET("/sessions/:id/history", func(c *gin.Context) { v, e := s.History(c.Param("id")); reply(c, v, e) })
 	owner.GET("/inbox", func(c *gin.Context) { v, e := s.Inbox(); reply(c, v, e) })
 	owner.GET("/messages/by-event/:event", func(c *gin.Context) {
 		v, e := getJSON[Message](s.DB, "SELECT data FROM inbox WHERE source='web' AND connection_id='web' AND event_id=?", c.Param("event"))
+		if e == nil && v.SessionID != "" {
+			if _, err := s.Session(v.SessionID); err != nil {
+				reply(c, nil, err)
+				return
+			}
+		}
 		reply(c, v, e)
 	})
 	owner.POST("/messages", func(c *gin.Context) {
@@ -304,6 +334,12 @@ func (a *API) Mount(r *gin.Engine) {
 			return nil, s.SetSetting("password_hash", h)
 		})
 	})
+
+	owner.GET("/cli-tools", func(c *gin.Context) { v, e := s.CLITools(); reply(c, v, e) })
+	owner.POST("/cli-tools", func(c *gin.Context) { bind(c, func(v CLITool) (any, error) { return s.SaveCLITool(v) }) })
+	owner.DELETE("/cli-tools/:id", func(c *gin.Context) { reply(c, nil, s.RemoveCLITool(c.Param("id"))) })
+	owner.GET("/tool-jobs", func(c *gin.Context) { v, e := s.ToolJobs(); reply(c, v, e) })
+	owner.POST("/cli-tools/:id/:action", func(c *gin.Context) { v, e := a.startToolJob(c.Param("id"), c.Param("action"), nil); reply(c, v, e) })
 	owner.GET("/plugins", func(c *gin.Context) { v, e := s.Plugins(); reply(c, v, e) })
 	owner.POST("/plugins", func(c *gin.Context) { bind(c, func(v Plugin) (any, error) { return s.SavePlugin(v) }) })
 	owner.DELETE("/plugins/:id", func(c *gin.Context) { reply(c, nil, s.DeletePlugin(c.Param("id"))) })

@@ -73,6 +73,34 @@ func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any
 		}
 	}
 	switch tool {
+	case "manage_cli":
+		if in.Run.Source == "automation" {
+			return nil, errors.New("定时任务不能安装或授权全局工具")
+		}
+		var req struct {
+			ToolID string  `json:"toolId"`
+			Action string  `json:"action"`
+			Tool   CLITool `json:"tool"`
+		}
+		if err := json.Unmarshal(args, &req); err != nil {
+			return nil, err
+		}
+		switch req.Action {
+		case "list":
+			return s.CLITools()
+		case "jobs":
+			return s.ToolJobs()
+		case "save":
+			return s.SaveCLITool(req.Tool)
+		case "remove":
+			return nil, s.removeCLITool(req.ToolID, in.Run.ID)
+		case "install", "auth", "check", "configure":
+			if s.toolManager == nil {
+				return nil, errors.New("工具管理服务未启动")
+			}
+			return s.toolManager(req.ToolID, req.Action, []string{"requesting-run", in.Run.ID})
+		}
+		return nil, errors.New("不支持的工具管理动作")
 	case "search_history":
 		return s.SessionSearch(in.Project.ID, a.Query)
 	case "read_run":

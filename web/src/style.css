@@ -3103,3 +3103,98 @@ label input[type="file"] {
   color: #98694e;
   background: #f4ebe5;
 }
+.session-row {
+  display: flex;
+  align-items: flex-start;
+  border-radius: 9px;
+  position: relative;
+}
+.session-row.selected {
+  background: #e9eedf;
+  color: #4f6640;
+}
+.session-list .session-select {
+  flex: 1;
+  min-width: 0;
+}
+.session-select > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.session-menu {
+  flex: none;
+  margin: 10px 3px 0 0;
+}
+.session-menu > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 5px;
+}
+.session-menu > div {
+  position: absolute;
+  right: 4px;
+  top: 35px;
+  min-width: 115px;
+  background: var(--surface, #fff);
+  border: 1px solid #dce2d5;
+  box-shadow: 0 6px 24px #0002;
+  border-radius: 8px;
+  padding: 4px;
+  z-index: 20;
+}
+.session-list .session-menu button {
+  padding: 8px;
+  width: 100%;
+}
+.session-menu:not([open]) > summary {
+  opacity: 0;
+}
+.session-row:hover .session-menu > summary,
+.session-menu:focus-within > summary {
+  opacity: 1;
+}
+.tool-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.tool-form {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  background: #f3f5ed;
+}
+.tool-form label {
+  display: grid;
+  gap: 4px;
+}
+.tool-job {
+  padding: 10px;
+  border-top: 1px solid #e4e8dd;
+}
+.tool-job pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 280px;
+  overflow: auto;
+  font-size: 11px;
+}
+.tool-job a {
+  color: #587d43;
+}
+.tool-form input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.error {
+  color: #a15340;
+}
+@media (max-width: 767px) {
+  .session-menu:not([open]) > summary {
+    opacity: 1;
+  }
+  .setting-row {
+    flex-wrap: wrap;
+  }
+}

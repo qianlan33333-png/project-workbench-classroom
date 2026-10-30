@@ -106,7 +106,7 @@ func (s *Store) ClaimDelivery(connection string) (*Delivery, error) {
 	var out *Delivery
 	err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var raw string
-		err := tx.QueryRow("SELECT data FROM deliveries WHERE connection_id=? AND state='pending' ORDER BY created_at LIMIT 1", connection).Scan(&raw)
+		err := tx.QueryRow("SELECT data FROM deliveries WHERE connection_id=? AND state='pending' AND (json_extract(data,'$.sessionId')='' OR json_extract(data,'$.sessionId') IN (SELECT id FROM sessions WHERE coalesce(json_extract(data,'$.recycledAt'),0)=0)) ORDER BY created_at LIMIT 1", connection).Scan(&raw)
 		if err == sql.ErrNoRows {
 			return nil
 		}
@@ -157,7 +157,7 @@ func (s *Store) FinishDeliveryReceipts(id, state, receipt string, receipts []str
 	return s.Emit(d.SessionID, d.RunID, "delivery.updated", d)
 }
 func (s *Store) Deliveries() ([]Delivery, error) {
-	return listJSON[Delivery](s.DB, "SELECT data FROM deliveries ORDER BY created_at DESC LIMIT 100")
+	return listJSON[Delivery](s.DB, "SELECT data FROM deliveries WHERE coalesce(json_extract(data,'$.sessionId'),'')='' OR json_extract(data,'$.sessionId') IN (SELECT id FROM sessions WHERE coalesce(json_extract(data,'$.recycledAt'),0)=0) ORDER BY created_at DESC LIMIT 100")
 }
 func (s *Store) PendingInteractions() ([]Interaction, error) {
 	return listJSON[Interaction](s.DB, "SELECT data FROM interactions WHERE state='pending'")

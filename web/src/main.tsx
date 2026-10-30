@@ -24,6 +24,8 @@ import {
   ChevronDown,
   Archive,
   Pencil,
+  Pin,
+  MoreHorizontal,
 } from "lucide-react";
 import { zipSync } from "fflate";
 import {
@@ -50,6 +52,7 @@ import { ProjectFiles } from "./project-files";
 import { ExpertDetail } from "./expert-detail";
 import { useMessageSubmissions } from "./message-submissions";
 import { mergeRuns, mergeSessions, initialSessionTitle } from "./chat-state";
+import { RecycleBin, GlobalTools } from "./lifecycle-ui";
 import "./style.css";
 
 type Field = {
@@ -154,7 +157,7 @@ function App() {
     setSessionId(id);
   };
   const visibleSessions = sessions
-    .filter((s) => s.projectId === projectId)
+    .filter((s) => s.projectId === projectId && !s.recycledAt)
     .flatMap((s) => {
       if (!s.draft) return [s];
       const first =
@@ -168,11 +171,15 @@ function App() {
     });
   const project = projects.find((p) => p.id === projectId),
     session = sessions.find((s) => s.id === sessionId),
-    locked = runs.some(
-      (r) =>
-        r.projectId === projectId &&
-        ["running", "waiting", "stopping"].includes(r.state),
-    );
+    locked =
+      runs.some(
+        (r) =>
+          r.projectId === projectId &&
+          ["running", "waiting", "stopping"].includes(r.state),
+      ) ||
+      sessions.some(
+        (s) => s.projectId === projectId && s.lifecycle === "archiving",
+      );
   const notify = useCallback((message: string) => {
     setToast(message);
   }, []);
@@ -209,7 +216,10 @@ function App() {
         api<Session[]>(`/projects/${targetProject}/sessions`),
         api<FileEntry[]>(`/projects/${targetProject}/files`),
         targetSession
-          ? api<Session>(`/sessions/${targetSession}`).catch(() => null)
+          ? api<Session>(`/sessions/${targetSession}`).catch((e) => {
+              if ([400, 404].includes(e.status)) return null;
+              throw e;
+            })
           : Promise.resolve(null),
       ]);
       if (targetProject !== projectRef.current) return;
@@ -220,6 +230,18 @@ function App() {
         ]),
       );
       setFiles(fs);
+      if (
+        !current &&
+        targetSession &&
+        sessionRef.current === targetSession &&
+        requestedAt === latestEvent.current
+      ) {
+        const p = ps.find((p) => p.id === targetProject);
+        if (p) {
+          setSessionId(p.defaultSessionId);
+          return;
+        }
+      }
       if (sessionRef.current) {
         const history = await api<Run[]>(
           `/runs?sessionId=${sessionRef.current}`,
@@ -267,6 +289,20 @@ function App() {
         event.data?.id
       ) {
         setSessions((old) => mergeSessions(old, [event.data as Session]));
+      }
+      if (
+        event.type === "session.recycled" ||
+        event.type === "session.purged"
+      ) {
+        const id = event.data.id;
+        // Historical SSE replay must not remove or change focus for a session
+        // that has since been restored. Reconcile against current server state.
+        void api<Session>(`/sessions/${id}`).catch((e) => {
+          if (![400, 404].includes(e.status)) return;
+          setSessions((old) => old.filter((s) => s.id !== id));
+          setRuns((old) => old.filter((r) => r.sessionId !== id));
+          setEvents((old) => old.filter((e) => e.sessionId !== id));
+        });
       }
       setEvents((old) => {
         if (old.some((x) => x.seq === event.seq)) return old;
@@ -557,9 +593,9 @@ function App() {
       }
     });
   };
-  const renameSession = () => {
-    if (!session) return;
-    const target = session;
+  const renameSession = (selected?: Session) => {
+    if (!selected && !session) return;
+    const target = selected || session!;
     setDialog({
       title: "重命名对话",
       fields: [
@@ -633,7 +669,14 @@ function App() {
     }
   };
   const send = () => {
-    if (!text.trim() || !sessionId || busy || submissions.sending) return;
+    if (
+      !text.trim() ||
+      !sessionId ||
+      session?.lifecycle ||
+      busy ||
+      submissions.sending
+    )
+      return;
     if (
       submissions.submit({
         eventId: crypto.randomUUID(),
@@ -1066,24 +1109,126 @@ function App() {
                   </button>
                   <div className="session-list">
                     {visibleSessions.map((ss) => (
-                      <button
-                        className={sessionId === ss.id ? "selected" : ""}
+                      <div
+                        data-session-id={ss.id}
+                        className={
+                          "session-row " +
+                          (sessionId === ss.id ? "selected" : "")
+                        }
                         key={ss.id}
-                        onClick={() => {
-                          switchSession(ss.id);
-                          setProjectPanelOpen(false);
-                        }}
                       >
-                        <MessageSquare size={15} />
-                        <span>
-                          {ss.title}
-                          <small>
-                            {ss.kind === "assistant"
-                              ? "默认项目助手"
-                              : "专题对话"}
-                          </small>
-                        </span>
-                      </button>
+                        <button
+                          className="session-select"
+                          onClick={() => {
+                            switchSession(ss.id);
+                            setProjectPanelOpen(false);
+                          }}
+                        >
+                          {ss.pinnedAt ? (
+                            <Pin size={15} />
+                          ) : (
+                            <MessageSquare size={15} />
+                          )}
+                          <span>
+                            {ss.title}
+                            <small>
+                              {ss.lifecycle === "archiving"
+                                ? "正在提炼归档…"
+                                : ss.kind === "assistant"
+                                  ? "默认项目助手"
+                                  : "专题对话"}
+                            </small>
+                            {ss.lifecycleError && (
+                              <small className="error">
+                                {ss.lifecycleError}
+                              </small>
+                            )}
+                          </span>
+                        </button>
+                        <details className="session-menu">
+                          <summary aria-label={`对话操作：${ss.title}`}>
+                            <MoreHorizontal size={15} />
+                          </summary>
+                          <div>
+                            {ss.lifecycle === "archiving" && (
+                              <button
+                                onClick={() =>
+                                  void act(async () => {
+                                    await api(
+                                      `/sessions/${ss.id}/archive/stop`,
+                                      {},
+                                    );
+                                    await refresh();
+                                  })
+                                }
+                              >
+                                停止归档
+                              </button>
+                            )}
+                            <button
+                              disabled={!!ss.lifecycle}
+                              onClick={() =>
+                                void act(async () => {
+                                  const updated = await api<Session>(
+                                    `/sessions/${ss.id}/pin`,
+                                    { pinned: !ss.pinnedAt },
+                                    "PUT",
+                                  );
+                                  setSessions((old) =>
+                                    mergeSessions(old, [updated]),
+                                  );
+                                })
+                              }
+                            >
+                              {ss.pinnedAt ? "取消置顶" : "置顶"}
+                            </button>
+                            <button
+                              disabled={!!ss.lifecycle}
+                              onClick={() => renameSession(ss)}
+                            >
+                              重命名
+                            </button>
+                            <button
+                              disabled={!!ss.lifecycle}
+                              onClick={() =>
+                                setDialog({
+                                  title: "归档对话",
+                                  description:
+                                    "自动提炼核心信息到项目 MD，原始对话进入回收站保留 15 天。",
+                                  confirm: "开始归档",
+                                  action: async () => {
+                                    await api(`/sessions/${ss.id}/archive`, {});
+                                    await refresh();
+                                  },
+                                })
+                              }
+                            >
+                              归档
+                            </button>
+                            <button
+                              disabled={!!ss.lifecycle}
+                              onClick={() =>
+                                setDialog({
+                                  title: "删除对话",
+                                  description:
+                                    "原始对话进入回收站，15 天内可找回。项目文件继续保留。",
+                                  confirm: "移入回收站",
+                                  action: async () => {
+                                    await api(
+                                      `/sessions/${ss.id}`,
+                                      undefined,
+                                      "DELETE",
+                                    );
+                                    await refresh();
+                                  },
+                                })
+                              }
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </details>
+                      </div>
                     ))}
                   </div>
                 </>
@@ -1116,7 +1261,7 @@ function App() {
                   }
                 >
                   <Library size={15} />
-                  专家与插件
+                  项目专家
                   <ChevronRight size={14} />
                 </button>
                 <button
@@ -1177,7 +1322,9 @@ function App() {
                     <small>
                       {session?.draft
                         ? "发送第一条消息后自动命名"
-                        : "项目内持久对话 · 跨端继续"}
+                        : session?.lifecycle === "archiving"
+                          ? "正在提炼归档，可在对话菜单停止"
+                          : "项目内持久对话 · 跨端继续"}
                     </small>
                   </div>
                 </div>
@@ -1187,7 +1334,7 @@ function App() {
                     title="重命名对话"
                     aria-label="重命名对话"
                     disabled={!session || session.draft}
-                    onClick={renameSession}
+                    onClick={() => renameSession()}
                   >
                     <Pencil size={16} />
                   </button>
@@ -2269,14 +2416,7 @@ function ProjectCapabilities({
   experts: Expert[];
   onSave: (p: Project) => Promise<void>;
 }) {
-  const [p, setP] = useState(project),
-    [plugins, setPlugins] = useState<any[]>([]),
-    [error, setError] = useState("");
-  useEffect(() => {
-    api<any[]>("/plugins")
-      .then(setPlugins)
-      .catch((e) => setError(e.message));
-  }, []);
+  const [p, setP] = useState(project);
   return (
     <div className="capabilities">
       <h3>专家方法</h3>
@@ -2305,34 +2445,6 @@ function ProjectCapabilities({
           </span>
         </label>
       ))}
-      <h3>插件</h3>
-      {plugins.length === 0 && <p>可在设置中添加 MCP 插件。</p>}
-      {plugins.map((x) => (
-        <label key={x.id}>
-          <input
-            type="checkbox"
-            checked={p.pluginIds?.includes(x.id) ?? false}
-            onChange={(v) =>
-              setP({
-                ...p,
-                pluginIds: v.target.checked
-                  ? [...(p.pluginIds ?? []), x.id]
-                  : (p.pluginIds ?? []).filter((id) => id !== x.id),
-              })
-            }
-          />
-          {x.name}
-        </label>
-      ))}
-      {error && <p className="error">{error}</p>}
-      <footer>
-        <button
-          className="primary"
-          onClick={() => onSave(p).catch((e) => setError(e.message))}
-        >
-          保存项目能力
-        </button>
-      </footer>
     </div>
   );
 }
@@ -2694,7 +2806,7 @@ function SettingsPage({
             添加插件
           </button>
         </h3>
-        <p>添加后按项目启用，安装专家不会自动启用插件。</p>
+        <p>全局启用的 MCP 可供所有项目调用。</p>
         {plugins.map((p) => (
           <div key={p.id} className="setting-row">
             <div>
@@ -2702,8 +2814,19 @@ function SettingsPage({
               <p>
                 {p.description || p.transport}
                 {p.hasSecrets ? " · 已配置凭证" : ""}
+                {p.enabled === false ? " · 已停用" : " · 全局启用"}
               </p>
             </div>
+            <button
+              onClick={() =>
+                act(async () => {
+                  await api("/plugins", { ...p, enabled: p.enabled === false });
+                  await load();
+                })
+              }
+            >
+              {p.enabled === false ? "启用" : "停用"}
+            </button>
             <button
               onClick={() =>
                 act(async () => {
@@ -2717,6 +2840,8 @@ function SettingsPage({
           </div>
         ))}
       </section>
+      <GlobalTools notify={notify} />
+      <RecycleBin notify={notify} />
       <section className="settings-section">
         <h3>发送回执</h3>
         {deliveries.length ? (

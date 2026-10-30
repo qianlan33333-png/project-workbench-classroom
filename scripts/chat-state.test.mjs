@@ -55,3 +55,10 @@ test("a delayed title snapshot cannot overwrite an owner rename", () => {
   assert.equal(initialSessionTitle(""), "附件讨论");
   assert.equal(Array.from(initialSessionTitle("😀".repeat(30))).length, 25);
 });
+
+test("archive maintenance never becomes a user chat turn", () => {
+  assert.equal(
+    mergeRuns([], [run("completed", { kind: "archive" })]).length,
+    0,
+  );
+});

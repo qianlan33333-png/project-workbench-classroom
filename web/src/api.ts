@@ -37,6 +37,13 @@ export type Project = {
   archived: boolean;
 };
 export type Session = {
+  pinnedAt?: number;
+  recycledAt?: number;
+  expiresAt?: number;
+  recycleReason?: string;
+  lifecycle?: string;
+  lifecycleError?: string;
+  archivePath?: string;
   draft?: boolean;
   titleSource?: string;
   updatedAt?: number;
@@ -48,6 +55,7 @@ export type Session = {
   harnessId: string;
 };
 export type Run = {
+  kind?: string;
   id: string;
   sessionId: string;
   projectId: string;

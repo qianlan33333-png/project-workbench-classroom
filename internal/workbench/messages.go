@@ -13,7 +13,17 @@ func entryKey(in Incoming) string {
 	return digest([]byte(in.Source + "\x00" + in.ConnectionID + "\x00" + in.ActorID + "\x00" + in.ConversationID))
 }
 func (s *Store) Message(id string) (Message, error) {
-	return getJSON[Message](s.DB, "SELECT data FROM inbox WHERE id=?", id)
+	m, e := getJSON[Message](s.DB, "SELECT data FROM inbox WHERE id=?", id)
+	if e == nil && (m.SessionID != "" || m.Incoming.SessionID != "") {
+		id := m.SessionID
+		if id == "" {
+			id = m.Incoming.SessionID
+		}
+		if _, err := s.Session(id); err != nil {
+			return Message{}, err
+		}
+	}
+	return m, e
 }
 func (s *Store) Inbox() ([]Message, error) {
 	return listJSON[Message](s.DB, "SELECT data FROM inbox WHERE state IN ('unrouted','clarify','error') ORDER BY created_at")
@@ -25,9 +35,9 @@ func (s *Store) RunPage(session, before string) ([]Run, error) {
 	var rows []Run
 	var err error
 	if before != "" {
-		rows, err = listJSON[Run](s.DB, "SELECT data FROM runs WHERE (?='' OR session_id=?) AND rowid<(SELECT rowid FROM runs WHERE id=?) ORDER BY rowid DESC LIMIT 100", session, session, before)
+		rows, err = listJSON[Run](s.DB, "SELECT data FROM runs WHERE session_id IN (SELECT id FROM sessions WHERE coalesce(json_extract(data,'$.recycledAt'),0)=0) AND coalesce(json_extract(data,'$.kind'),'')<>'archive' AND (?='' OR session_id=?) AND rowid<(SELECT rowid FROM runs WHERE id=?) ORDER BY rowid DESC LIMIT 100", session, session, before)
 	} else {
-		rows, err = listJSON[Run](s.DB, "SELECT data FROM runs WHERE (?='' OR session_id=?) ORDER BY state IN ('running','waiting','stopping') DESC,rowid DESC LIMIT 100", session, session)
+		rows, err = listJSON[Run](s.DB, "SELECT data FROM runs WHERE session_id IN (SELECT id FROM sessions WHERE coalesce(json_extract(data,'$.recycledAt'),0)=0) AND coalesce(json_extract(data,'$.kind'),'')<>'archive' AND (?='' OR session_id=?) ORDER BY state IN ('running','waiting','stopping') DESC,rowid DESC LIMIT 100", session, session)
 	}
 	for i := range rows {
 		s.runExpertName(&rows[i])
@@ -43,6 +53,11 @@ func (s *Store) runExpertName(r *Run) {
 }
 func (s *Store) Run(id string) (Run, error) {
 	r, e := getJSON[Run](s.DB, "SELECT data FROM runs WHERE id=?", id)
+	if e == nil {
+		if _, err := s.Session(r.SessionID); err != nil {
+			return Run{}, err
+		}
+	}
 	s.runExpertName(&r)
 	return r, e
 }
@@ -54,7 +69,7 @@ func (s *Store) saveRun(r Run) error {
 	return s.Emit(r.SessionID, r.ID, "run.updated", r)
 }
 func (s *Store) saveMessage(m Message) error {
-	_, err := s.DB.Exec("UPDATE inbox SET state=?,session_id=?,data=? WHERE id=? AND state<>'deleted'", m.State, m.SessionID, encode(m), m.ID)
+	_, err := s.DB.Exec("UPDATE inbox SET state=?,session_id=?,data=? WHERE id=? AND state NOT IN ('deleted','cancelled')", m.State, m.SessionID, encode(m), m.ID)
 	return err
 }
 
@@ -84,7 +99,7 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 		in.References = nil // Only a parsed, explicit text command may grant channel references.
 	}
 	m := Message{ID: newID(), Incoming: in, State: "unrouted", CreatedAt: now()}
-	if in.Source == "wechat" || in.Source == "feishu" {
+	{
 		var count int
 		if e := s.DB.QueryRow("SELECT count(*) FROM legacy_consumed WHERE hash=?", digest([]byte(in.Source+":"+in.EventID))).Scan(&count); e != nil {
 			return m, e
@@ -113,6 +128,15 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 			}
 			if encode(old.Incoming) != encode(in) {
 				return old, errors.New("同一事件标识对应了不同内容")
+			}
+			target := old.SessionID
+			if target == "" {
+				target = old.Incoming.SessionID
+			}
+			if target != "" {
+				if _, err := s.Session(target); err != nil {
+					return Message{}, err
+				}
 			}
 			return old, nil
 		}
@@ -149,6 +173,9 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 	sess, err := s.Session(sessionID)
 	if err != nil {
 		return m, err
+	}
+	if sess.Lifecycle != "" {
+		return m, errors.New("对话正在归档")
 	}
 	p, err := s.Project(sess.ProjectID)
 	if err != nil {
@@ -231,6 +258,17 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 			m = old
 			alreadyQueued = true
 			return nil
+		}
+		var sessionRaw string
+		if err := tx.QueryRow("SELECT data FROM sessions WHERE id=?", sess.ID).Scan(&sessionRaw); err != nil {
+			return err
+		}
+		currentSession, e := decodeJSON[Session](sessionRaw)
+		if e != nil {
+			return e
+		}
+		if currentSession.RecycledAt > 0 || currentSession.Lifecycle != "" {
+			return errors.New("对话正在归档或已在回收站")
 		}
 		if _, err := tx.Exec("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)", run.ID, p.ID, sess.ID, m.ID, run.State, priority, run.CreatedAt, encode(run)); err != nil {
 			return err

@@ -9,6 +9,8 @@
  "Provider":"deepseek-official",
  "Model":"deepseek-v4-flash",
  "HarnessHome":"/etc/project-workbench/model-home",
+ "RuntimeDir":"/opt/project-workbench/current/runtime",
+ "BackupScrubCommand":["/usr/bin/sudo","-n","/usr/bin/python3","/usr/local/libexec/pwb-purge-backups.py"],
  "RuntimeMode":"podman",
  "Podman":"/usr/bin/podman",
  "RuntimeImage":"localhost/project-workbench-runtime:ce7073d",

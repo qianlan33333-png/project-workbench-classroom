@@ -70,7 +70,7 @@ func run() error {
 		return e
 	}
 	// igo owns configuration, logging, HTTP lifecycle and the SQLite connection.
-	toml := fmt.Sprintf("[local]\naddress = %q\ndebug = false\n[local.logger]\ndir = %q\nname = \"workbench.log\"\naccess = false\nlevel = \"INFO\"\nmax_size = 10\nmax_backups = 3\nmax_age = 7\n[sqlite.workbench]\ndata_source = %q\nmax_open = 4\nmax_idle = 4\n", c.Address, filepath.Join(c.DataDir, "logs"), "file:"+filepath.Join(c.DataDir, "workbench.sqlite")+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_txlock=immediate")
+	toml := fmt.Sprintf("[local]\naddress = %q\ndebug = false\n[local.logger]\ndir = %q\nname = \"workbench.log\"\naccess = false\nlevel = \"INFO\"\nmax_size = 10\nmax_backups = 3\nmax_age = 7\n[sqlite.workbench]\ndata_source = %q\nmax_open = 4\nmax_idle = 4\n", c.Address, filepath.Join(c.DataDir, "logs"), "file:"+filepath.Join(c.DataDir, "workbench.sqlite")+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=secure_delete(1)&_txlock=immediate")
 	igoConfig := filepath.Join(c.DataDir, "igo.toml")
 	if e = os.WriteFile(igoConfig, []byte(toml), 0600); e != nil {
 		return e
@@ -88,6 +88,7 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	store.BackupScrubCommand = c.BackupScrubCommand
 	runtime := &workbench.Harness{Config: c.Config, Store: store}
 	worker := workbench.NewWorker(store, runtime, runtime.Route)
 	recoveryCtx, done := context.WithTimeout(context.Background(), time.Minute)

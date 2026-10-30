@@ -29,16 +29,23 @@ type Project struct {
 	CreatedAt        int64    `json:"createdAt"`
 }
 type Session struct {
-	Draft       bool   `json:"draft,omitempty"`
-	TitleSource string `json:"titleSource,omitempty"`
-	ID          string `json:"id"`
-	ProjectID   string `json:"projectId"`
-	HarnessID   string `json:"harnessId"`
-	Title       string `json:"title"`
-	Kind        string `json:"kind"`
-	ExpertID    string `json:"expertId"`
-	CreatedAt   int64  `json:"createdAt"`
-	UpdatedAt   int64  `json:"updatedAt"`
+	PinnedAt       int64  `json:"pinnedAt,omitempty"`
+	RecycledAt     int64  `json:"recycledAt,omitempty"`
+	ExpiresAt      int64  `json:"expiresAt,omitempty"`
+	RecycleReason  string `json:"recycleReason,omitempty"`
+	Lifecycle      string `json:"lifecycle,omitempty"`
+	ArchivePath    string `json:"archivePath,omitempty"`
+	LifecycleError string `json:"lifecycleError,omitempty"`
+	Draft          bool   `json:"draft,omitempty"`
+	TitleSource    string `json:"titleSource,omitempty"`
+	ID             string `json:"id"`
+	ProjectID      string `json:"projectId"`
+	HarnessID      string `json:"harnessId"`
+	Title          string `json:"title"`
+	Kind           string `json:"kind"`
+	ExpertID       string `json:"expertId"`
+	CreatedAt      int64  `json:"createdAt"`
+	UpdatedAt      int64  `json:"updatedAt"`
 }
 type Expert struct {
 	UpdatedAt   int64    `json:"updatedAt"`
@@ -85,6 +92,7 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
+	Kind           string            `json:"kind,omitempty"`
 	ExpertName     string            `json:"expertName,omitempty"`
 	ID             string            `json:"id"`
 	ProjectID      string            `json:"projectId"`
@@ -183,20 +191,21 @@ type Revision struct {
 }
 
 type Config struct {
-	DataDir        string
-	BasePath       string
-	PublicURL      string
-	WebDir         string
-	ChannelToken   string
-	PasswordHash   string
-	HarnessCommand []string
-	HarnessPatch   string
-	HarnessHome    string
-	Provider       string
-	Model          string
-	Podman         string
-	RuntimeImage   string
-	RuntimeMode    string
-	BrowserURL     string
-	RuntimeDir     string
+	BackupScrubCommand []string
+	DataDir            string
+	BasePath           string
+	PublicURL          string
+	WebDir             string
+	ChannelToken       string
+	PasswordHash       string
+	HarnessCommand     []string
+	HarnessPatch       string
+	HarnessHome        string
+	Provider           string
+	Model              string
+	Podman             string
+	RuntimeImage       string
+	RuntimeMode        string
+	BrowserURL         string
+	RuntimeDir         string
 }

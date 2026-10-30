@@ -117,3 +117,23 @@ encode @workbench_compressible zstd gzip
 当前版本 `cloud-20261030-07-session-titles`，上一版 `cloud-20261030-06-message-feedback`。完整快照 `/opt/project-workbench/rollback-session-titles-20261030/{data,config}`。发布先停渠道接收并核对无排队／运行任务，再停主服务、做快照、原子切换并恢复主服务及渠道。
 
 回滚按前述步骤把 current 指回 06，保留当前数据库和游标。新增字段均在现有 JSON 中，不需迁移；旧界面回滚后可能显示没有消息的空白会话，但历史 ID、消息和执行记录不变。SSE 不压缩配置沿用 06，无需回退 Caddy。Harness 固定提交和镜像不变，仅对首条未命名专题开启内置标题提供方；默认项目助手、路由和定时任务不启用自动命名。
+
+## 对话生命周期与全局工具发行
+
+本轮发行 `cloud-20261030-08-lifecycle-tools`，前一版为 07；增量更新脚本 `scripts/deploy-lifecycle-update.sh` 用于已准备好的该发行目录。先停本轮隔离预览与渠道接收，确认无排队／活动业务和工具操作，停止应用，保存 `/opt/project-workbench/rollback-lifecycle-tools-20261030/{data,config}`，原子切换后启动应用与渠道。沿用原镜像，通过 `RuntimeDir=/opt/project-workbench/current/runtime` 挂载本轮运行插件，不触碰其他独立程序。
+
+全局 CLI 二进制在 `/var/lib/project-workbench/tools/packages`，原子命令入口在 `tools/bin`，账号配置和凭证在 `tools/state`。飞书 CLI 配置使用独立 `LARKSUITE_CLI_CONFIG_DIR`／`DATA_DIR`；CRM 使用 `AICRM_CLI_CONFIG_DIR` 和 `AICRM_CLI_CREDENTIAL_FILE`，实际站点为 `https://www.youcangogogo.com`。备份要同时保存这些状态；它们不进入 Git。设置中的“检查登录”执行 CLI 实际身份接口。CRM human 会话当前由服务端限制为 24 小时，到期需在设置重新授权；飞书按 CLI 原生刷新机制运行。组织不允许的 scope 不能靠重复扫码补齐。
+
+安装器将 `scripts/scrub-session-backups.py` 安装为 root 所有的 `/usr/local/libexec/pwb-purge-backups.py`，并仅允许 projectwb 免密运行该固定命令：
+
+```sudoers
+projectwb ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/libexec/pwb-purge-backups.py
+```
+
+配置 `BackupScrubCommand` 为 `/usr/bin/sudo -n /usr/bin/python3 /usr/local/libexec/pwb-purge-backups.py` 的参数数组。脚本只处理 `/opt/project-workbench/rollback-*/data/workbench.sqlite` 及对应原生会话／回收目录；业务文件不删除。不可逆清除清单位于 `/var/lib/project-workbench-purge-ledger`，须与备份独立保存，恢复旧数据时不得覆盖或删除。启动会同步清单，重新清除复活记录，再修复默认助手指向。自行复制到其他目录的非受管备份不在此脚本范围。
+
+归档先生成项目“对话归档/日期-标题-编号.md”，然后原件进入回收站；删除不生成 MD。原件 15 天内可找回，过期不可恢复，清除操作失败时仍保持隔离。保留不可逆入站 ID 摘要以防外部重放。项目附件、成果、文件版本仍是项目数据，不随对话清除。
+
+07 及更早程序不理解回收站隔离和全局工具状态。**启用本轮功能后，不可只把 current 指回 07。** 需要回退时先停止渠道与应用、保存当前完整快照；以本轮源码修复回退为优先，维持现有数据库、游标和独立清除清单。若必须恢复发布前快照，先运行固定清理脚本并使用支持清除清单的版本启动，再核对新增文件、渠道游标与已发送回执；不能恢复已彻底清除的聊天或重放旧 outbox。增量脚本的自动失败回退仅适用于首次切换、尚未开放本轮操作时。
+
+两套初始 CLI 的官方原始发行包随本轮版本放在 `tool-artifacts/<SHA256>.tar.gz`，安装器复制到数据目录的 `tools/downloads`。安装始终校验实际字节；缓存损坏直接报错。服务器直连 GitHub release-assets 曾出现 EOF／超时，已有安装和授权不受影响；内置两套的安装、重装使用随包缓存。其他 CLI 仍需要服务器能访问其配置下载源。缓存不包含任何账号或 token，卸载账号不会删除只读发行包缓存。

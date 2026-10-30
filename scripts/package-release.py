@@ -7,6 +7,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--harness', default='.var/harness-deploy-offline')
 parser.add_argument('--output', default='.var/project-workbench-release.tar.gz')
 parser.add_argument('--node', default='.toolchain/node-v24.22.0-linux-x64')
+parser.add_argument('--tool-archives', default='.var/global-tools-download')
 args = parser.parse_args()
 harness = root / args.harness
 node = root / args.node
@@ -28,6 +29,11 @@ def include(info):
 
 out = root / args.output
 out.parent.mkdir(parents=True, exist_ok=True)
+tool_archives = root / args.tool_archives
+cached_tools = [
+    ('cli-lark-cli-1.0.98-linux-amd64.tar.gz', '4a12dcb7a0aab25986d8bcd046cb45b08278531a9aac3a12b53cf3d94738fe80'),
+    ('aicrm-cli-aicrm-cli_0.6.1_linux_amd64.tar.gz', '9cab143d39d9a01ef3c7b3eaf21e43738aadfa7ecf3a3c73942f767707c0470e'),
+]
 with tarfile.open(out, 'w:gz', compresslevel=3) as tar:
     entries = [(root/'bin/workbench-linux-amd64','bin/workbench'),
                (root/'web/dist','web/dist'), (root/'runtime','runtime'),
@@ -40,6 +46,11 @@ with tarfile.open(out, 'w:gz', compresslevel=3) as tar:
                (node,'node'), (root/'README.md','README.md')]
     for source, destination in entries:
         tar.add(source, arcname=destination, filter=include)
+    for filename, digest in cached_tools:
+        source = tool_archives / filename
+        if source.is_file():
+            assert hashlib.sha256(source.read_bytes()).hexdigest() == digest, 'CLI archive checksum mismatch: '+filename
+            tar.add(source, arcname='tool-artifacts/'+digest+'.tar.gz', filter=include)
 sha = hashlib.sha256(out.read_bytes()).hexdigest()
 out.with_suffix(out.suffix+'.sha256').write_text(sha+'  '+out.name+'\n')
 print(json.dumps({'artifact':str(out),'sha256':sha,'bytes':out.stat().st_size}))

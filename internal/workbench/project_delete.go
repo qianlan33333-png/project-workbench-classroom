@@ -55,6 +55,9 @@ func (s *Store) DeleteProject(id string) error {
 		if err != nil {
 			return err
 		}
+		if _, err = tx.Exec("INSERT OR REPLACE INTO settings(key,value) SELECT ?,json_group_array(id) FROM sessions WHERE project_id=?", "project_delete_sessions:"+id, id); err != nil {
+			return err
+		}
 		statements := []string{
 			"DELETE FROM deliveries WHERE json_extract(data,'$.sessionId') IN (SELECT id FROM sessions WHERE project_id=?)",
 			"DELETE FROM schedule_occurrences WHERE schedule_id IN (SELECT id FROM schedules WHERE project_id=?)",
@@ -106,12 +109,28 @@ func (s *Store) finishProjectDeletion(id string) error {
 	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, "/\\") {
 		return errors.New("项目删除标识无效")
 	}
+	if raw, e := s.Setting("project_delete_sessions:" + id); e != nil {
+		return e
+	} else if raw != "" {
+		ids, e := decodeJSON[[]string](raw)
+		if e != nil {
+			return e
+		}
+		for _, sid := range ids {
+			if !toolIdentifier.MatchString(sid) {
+				return errors.New("回收记录标识无效")
+			}
+			if e = os.RemoveAll(filepath.Join(s.Root, "trash", sid)); e != nil {
+				return e
+			}
+		}
+	}
 	for _, dir := range []string{filepath.Join(s.Root, "projects", id), filepath.Join(s.Root, "runtime", "projects", id)} {
 		if err := os.RemoveAll(dir); err != nil {
 			return err
 		}
 	}
-	_, err := s.DB.Exec("DELETE FROM settings WHERE key=?", "project_delete:"+id)
+	_, err := s.DB.Exec("DELETE FROM settings WHERE key IN (?,?)", "project_delete:"+id, "project_delete_sessions:"+id)
 	return err
 }
 func (s *Store) RecoverProjectDeletions() error {

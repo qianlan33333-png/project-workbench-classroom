@@ -62,6 +62,15 @@ func (w *Worker) Recover(ctx context.Context) error {
 	if err = w.Store.RecoverProjectDeletions(); err != nil {
 		return err
 	}
+	if err = w.Store.ApplyPurgeLedger(); err != nil {
+		return err
+	}
+	if err = w.Store.RecoverSessionLifecycle(); err != nil {
+		return err
+	}
+	if err = w.Store.PurgeExpiredSessions(); err != nil {
+		return err
+	}
 	return w.Store.RecoverDeliveries()
 }
 func (w *Worker) Start(ctx context.Context) {
@@ -115,6 +124,7 @@ func (w *Worker) Start(ctx context.Context) {
 			}
 			if time.Since(scheduleAt) > time.Second*10 {
 				_ = w.Store.FireSchedules(time.Now())
+				_ = w.Store.PurgeExpiredSessions()
 				scheduleAt = time.Now()
 			}
 			r, err := w.claim()
@@ -137,7 +147,7 @@ func (w *Worker) claim() (Run, error) {
 	var r Run
 	err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var raw string
-		err := tx.QueryRow("SELECT r.data FROM runs r WHERE r.state='queued' AND NOT EXISTS(SELECT 1 FROM project_locks) ORDER BY r.priority,r.created_at,r.rowid LIMIT 1").Scan(&raw)
+		err := tx.QueryRow("SELECT r.data FROM runs r WHERE r.state='queued' AND NOT EXISTS(SELECT 1 FROM project_locks) AND NOT EXISTS(SELECT 1 FROM settings WHERE key='tool_install_running') ORDER BY r.priority,r.created_at,r.rowid LIMIT 1").Scan(&raw)
 		if err == sql.ErrNoRows {
 			return ErrNotFound
 		}
@@ -158,6 +168,10 @@ func (w *Worker) claim() (Run, error) {
 	return r, err
 }
 func (w *Worker) execute(parent context.Context, r Run) {
+	if r.Kind == "archive" {
+		w.executeArchive(parent, r)
+		return
+	}
 	ctx, cancel := context.WithCancel(parent)
 	w.mu.Lock()
 	w.active = r.ID
@@ -302,6 +316,13 @@ func (w *Worker) execute(parent context.Context, r Run) {
 }
 func (w *Worker) prompt(r Run, p Project) string {
 	var b strings.Builder
+	if tools, e := w.Store.CLITools(); e == nil {
+		for _, t := range tools {
+			if t.Installed && t.Enabled {
+				b.WriteString("全局 CLI 已安装：" + t.Command + "（" + t.Name + "，版本 " + t.Version + "）。直接用命令调用，先按需读取 --help 或 schema。账号配置由全局维护，不在项目里重新登录或运行自更新。\n")
+			}
+		}
+	}
 	b.WriteString("[本轮工作范围]\n项目：" + p.Name + "\n项目编号：" + p.ID + "\n当前对话：" + r.SessionID + "\n任务编号：#T" + r.ID[:8] + "\n来源：" + r.Source + "\n")
 	if r.ExpertID != "" {
 		if raw, e := os.ReadFile(filepath.Join(w.Store.Root, "experts", r.ExpertID, r.ExpertDigest, "SKILL.md")); e == nil {
@@ -557,6 +578,16 @@ func (w *Worker) Stop(id string) error {
 	}
 	r.State = "cancelled"
 	r.FinishedAt = now()
+	if r.Kind == "archive" {
+		ss, e := w.Store.rawSession(r.SessionID)
+		if e == nil {
+			ss.Lifecycle = ""
+			ss.LifecycleError = "归档已取消，原对话保留"
+			if e = w.Store.saveSession(ss); e != nil {
+				return e
+			}
+		}
+	}
 	return w.Store.saveRun(r)
 }
 func (w *Worker) handleControl(m Message) (bool, error) {
@@ -672,13 +703,16 @@ func (w *Worker) handleControl(m Message) (bool, error) {
 }
 
 func (s *Store) History(session string) ([]Message, error) {
-	return listJSON[Message](s.DB, "SELECT data FROM inbox WHERE session_id=? ORDER BY created_at", session)
+	if _, e := s.Session(session); e != nil {
+		return nil, e
+	}
+	return listJSON[Message](s.DB, "SELECT data FROM inbox WHERE session_id=? AND connection_id<>'maintenance' ORDER BY created_at", session)
 }
 func (s *Store) SessionSearch(project, q string) ([]map[string]any, error) {
 	if strings.TrimSpace(q) == "" {
 		return []map[string]any{}, nil
 	}
-	rows, err := s.DB.Query("SELECT r.id,r.session_id,r.data FROM runs r WHERE r.project_id=? AND instr(lower(r.data),lower(?))>0 ORDER BY r.created_at DESC LIMIT 30", project, q)
+	rows, err := s.DB.Query("SELECT r.id,r.session_id,r.data FROM runs r WHERE r.project_id=? AND r.session_id IN (SELECT id FROM sessions WHERE coalesce(json_extract(data,'$.recycledAt'),0)=0) AND coalesce(json_extract(r.data,'$.kind'),'')<>'archive' AND instr(lower(r.data),lower(?))>0 ORDER BY r.created_at DESC LIMIT 30", project, q)
 	if err != nil {
 		return nil, err
 	}
