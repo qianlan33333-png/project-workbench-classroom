@@ -1,0 +1,2326 @@
+import React, { useEffect, useState, useRef, useCallback } from "react";
+import { createRoot } from "react-dom/client";
+import CodeMirror from "@uiw/react-codemirror";
+import { markdown } from "@codemirror/lang-markdown";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import {
+  Folder,
+  Plus,
+  ArrowUp,
+  ArrowLeft,
+  Search,
+  Settings,
+  Library,
+  FileText,
+  ChevronRight,
+  MessageSquare,
+  Clock,
+  Upload,
+  Download,
+  Square,
+  Menu,
+  X,
+  History,
+  Paperclip,
+  Check,
+  RefreshCw,
+  ExternalLink,
+  Terminal,
+  ChevronDown,
+  Archive,
+  PanelLeftClose,
+  FileCode,
+  Globe,
+  LogOut,
+} from "lucide-react";
+import { zipSync } from "fflate";
+import {
+  api,
+  endpoint,
+  labels,
+  stamp,
+  type Project,
+  type Session,
+  type Run,
+  type Expert,
+  type Message,
+  type FileEntry,
+  type WorkEvent,
+} from "./api";
+import "./style.css";
+
+type Field = {
+  key: string;
+  label: string;
+  value?: string;
+  type?: string;
+  hint?: string;
+  required?: boolean;
+};
+type Dialog = {
+  title: string;
+  description?: string;
+  fields?: Field[];
+  confirm?: string;
+  action?: (data: Record<string, string>) => Promise<void>;
+  content?: React.ReactNode;
+};
+function App() {
+  const [auth, setAuth] = useState<boolean | null>(null),
+    [page, setPage] = useState("projects"),
+    [projects, setProjects] = useState<Project[]>([]),
+    [experts, setExperts] = useState<Expert[]>([]),
+    [projectId, setProjectId] = useState(""),
+    [sessionId, setSessionId] = useState(""),
+    [sessions, setSessions] = useState<Session[]>([]),
+    [runs, setRuns] = useState<Run[]>([]),
+    [inbox, setInbox] = useState<Message[]>([]),
+    [files, setFiles] = useState<FileEntry[]>([]),
+    [events, setEvents] = useState<WorkEvent[]>([]),
+    [interactions, setInteractions] = useState<any[]>([]);
+  const [toast, setToast] = useState(""),
+    [dialog, setDialog] = useState<Dialog | null>(null),
+    [busy, setBusy] = useState(false),
+    [text, setText] = useState(""),
+    [filePath, setFilePath] = useState(""),
+    [content, setContent] = useState(""),
+    [saved, setSaved] = useState(""),
+    [hash, setHash] = useState(""),
+    [preview, setPreview] = useState(false),
+    [find, setFind] = useState(""),
+    [tab, setTab] = useState("files"),
+    [mobileNav, setMobileNav] = useState(false),
+    [attachments, setAttachments] = useState<string[]>([]),
+    [searchResult, setSearchResult] = useState<any[] | null>(null);
+  const chatEnd = useRef<HTMLDivElement>(null),
+    projectRef = useRef(projectId),
+    sessionRef = useRef(sessionId),
+    refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  projectRef.current = projectId;
+  sessionRef.current = sessionId;
+  const project = projects.find((p) => p.id === projectId),
+    session = sessions.find((s) => s.id === sessionId),
+    locked = runs.some(
+      (r) =>
+        r.projectId === projectId &&
+        ["running", "waiting", "stopping"].includes(r.state),
+    );
+  const notify = useCallback((message: string) => {
+    setToast(message);
+  }, []);
+  const act = useCallback(
+    async (fn: () => Promise<any>) => {
+      try {
+        return await fn();
+      } catch (e) {
+        notify((e as Error).message);
+      }
+    },
+    [notify],
+  );
+  const refresh = useCallback(async () => {
+    const [ps, es, rs, ib, ints] = await Promise.all([
+      api<Project[]>("/projects"),
+      api<Expert[]>("/experts"),
+      api<Run[]>("/runs"),
+      api<Message[]>("/inbox"),
+      api<any[]>("/interactions"),
+    ]);
+    setProjects(ps);
+    setExperts(es);
+    setRuns(rs);
+    setInbox(ib);
+    setInteractions(ints);
+    if (projectRef.current) {
+      const [ss, fs] = await Promise.all([
+        api<Session[]>(`/projects/${projectRef.current}/sessions`),
+        api<FileEntry[]>(`/projects/${projectRef.current}/files`),
+      ]);
+      setSessions(ss);
+      setFiles(fs);
+    }
+  }, []);
+  useEffect(() => {
+    act(async () => {
+      const a = await api("/auth");
+      setAuth(a.authenticated);
+    });
+    const fn = () => setAuth(false);
+    window.addEventListener("auth-expired", fn);
+    return () => window.removeEventListener("auth-expired", fn);
+  }, [act]);
+  useEffect(() => {
+    if (!auth) return;
+    act(refresh);
+    const stream = new EventSource(endpoint("/events"));
+    stream.onmessage = (e) => {
+      const event = JSON.parse(e.data) as WorkEvent;
+      setEvents((old) => {
+        if (old.some((x) => x.seq === event.seq)) return old;
+        return [...old, event].slice(-1800);
+      });
+      if (
+        !event.type.startsWith("harness.") ||
+        event.type === "harness.turn/end"
+      ) {
+        if (refreshTimer.current) clearTimeout(refreshTimer.current);
+        refreshTimer.current = setTimeout(() => act(refresh), 200);
+      }
+    };
+    return () => {
+      stream.close();
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, [auth, refresh, act]);
+  useEffect(() => {
+    if (auth && projectId) act(refresh);
+  }, [projectId, auth, refresh, act]);
+  useEffect(() => {
+    if (!sessionId || !auth) return;
+    act(async () => {
+      let after = 0;
+      const all: WorkEvent[] = [];
+      for (;;) {
+        const batch = await api<WorkEvent[]>(
+          `/events?json=1&sessionId=${sessionId}&after=${after}`,
+        );
+        all.push(...batch);
+        if (batch.length < 500) break;
+        after = batch.at(-1)!.seq;
+      }
+      setEvents((old) => {
+        const map = new Map([...old, ...all].map((e) => [e.seq, e]));
+        return [...map.values()].sort((a, b) => a.seq - b.seq);
+      });
+    });
+  }, [sessionId, auth, act]);
+  useEffect(() => {
+    chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [sessionId, runs.length, events.length]);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 7000);
+    return () => clearTimeout(t);
+  }, [toast]);
+  const openProject = (p: Project) => {
+    if (content !== saved && !window.confirm("文档有未保存的修改，仍然切换？"))
+      return;
+    setProjectId(p.id);
+    setSessionId(p.defaultSessionId);
+    setFilePath("");
+    setFind("");
+    setSearchResult(null);
+    setContent("");
+    setSaved("");
+    setPage("project");
+    setMobileNav(false);
+  };
+  const openFile = async (path: string) => {
+    if (content !== saved && !window.confirm("放弃当前未保存的修改？")) return;
+    const v = await api(
+      `/projects/${projectId}/file?path=${encodeURIComponent(path)}`,
+    );
+    setFilePath(path);
+    setContent(v.content);
+    setSaved(v.content);
+    setHash(v.hash);
+    setPreview(/\.(png|jpe?g|gif|webp|pdf|mp4|webm)$/i.test(path));
+  };
+  const newProject = () =>
+    setDialog({
+      title: "新建项目",
+      description: "从一个空白工作区开始，资料和对话都留在这里。",
+      fields: [
+        { key: "name", label: "项目名称", required: true },
+        {
+          key: "description",
+          label: "简短说明",
+          type: "textarea",
+          hint: "帮助入口判断归属，可稍后填写",
+        },
+        {
+          key: "aliases",
+          label: "项目别名",
+          hint: "用逗号分隔，例如：品牌A、A公司",
+        },
+      ],
+      action: async (v) => {
+        const p = await api<Project>("/projects", {
+          ...v,
+          aliases: v.aliases
+            .split(/[,，]/)
+            .map((x) => x.trim())
+            .filter(Boolean),
+        });
+        await refresh();
+        openProject(p);
+      },
+    });
+  const newSession = () =>
+    setDialog({
+      title: "另开对话",
+      description: "新对话仍属于当前项目，保留独立历史。",
+      fields: [{ key: "title", label: "对话名称", required: true }],
+      action: async (v) => {
+        const ss = await api<Session>(`/projects/${projectId}/sessions`, v);
+        setSessions((old) => [...old, ss]);
+        setSessionId(ss.id);
+        setFilePath("");
+      },
+    });
+  const createFile = () =>
+    setDialog({
+      title: "新建文档",
+      fields: [
+        {
+          key: "path",
+          label: "文件路径",
+          value: "新文档.md",
+          required: true,
+          hint: "可以输入目录/文件名.md",
+        },
+      ],
+      action: async (v) => {
+        await api(
+          `/projects/${projectId}/file`,
+          { path: v.path, content: "", baseHash: "" },
+          "PUT",
+        );
+        await refresh();
+        await openFile(v.path);
+      },
+    });
+  const importFiles = async (
+    list: FileList | null,
+    archive = false,
+    expert = false,
+  ) => {
+    if (!list?.length) return;
+    setBusy(true);
+    try {
+      const form = new FormData();
+      if (list.length === 1 && list[0].name.endsWith(".zip"))
+        form.append("file", list[0]);
+      else if (archive || expert) {
+        const input: Record<string, Uint8Array> = {};
+        const root = list[0].webkitRelativePath.split("/")[0];
+        for (const f of Array.from(list)) {
+          let path = f.webkitRelativePath || f.name;
+          if (f.webkitRelativePath) path = path.slice(root.length + 1);
+          input[path] = new Uint8Array(await f.arrayBuffer());
+        }
+        form.append(
+          "file",
+          new Blob([zipSync(input) as BlobPart]),
+          "import.zip",
+        );
+      } else {
+        form.append("file", list[0]);
+      }
+      const path = expert
+        ? "/experts/import"
+        : `/projects/${projectId}/${archive ? "import" : "upload"}`;
+      const result = await api(path, form);
+      if (!archive && !expert) setAttachments((old) => [...old, result.path]);
+      await refresh();
+      notify(
+        expert
+          ? "专家已导入"
+          : archive
+            ? "资料已导入"
+            : "附件已保存，可随下一条消息引用",
+      );
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const send = async () => {
+    if (!text.trim() || !sessionId || busy) return;
+    const value = text;
+    setBusy(true);
+    try {
+      await api("/messages", {
+        eventId: crypto.randomUUID(),
+        sessionId,
+        text: value,
+        attachments,
+      });
+      setText("");
+      setAttachments([]);
+      await refresh();
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const versions = async () => {
+    const revisions = await api<any[]>(
+      `/projects/${projectId}/revisions?path=${encodeURIComponent(filePath)}`,
+    );
+    setDialog({
+      title: filePath ? "文件历史" : "项目文件变化",
+      content: (
+        <div className="revision-list">
+          {revisions.length === 0 ? (
+            <p>还没有文件变化记录。</p>
+          ) : (
+            revisions.map((v) => (
+              <div className="revision" key={v.id}>
+                <div>
+                  <strong>{v.path}</strong>
+                  <small>
+                    {stamp(v.createdAt)} ·{" "}
+                    {v.runId ? `#T${v.runId.slice(0, 8)}` : "手动编辑"}
+                  </small>
+                </div>
+                <button
+                  onClick={() =>
+                    act(async () => {
+                      const read = async (h: string) =>
+                        h
+                          ? fetch(endpoint(`/versions/${h}`)).then((r) =>
+                              r.text(),
+                            )
+                          : "";
+                      const [before, after] = await Promise.all([
+                        read(v.before),
+                        read(v.after),
+                      ]);
+                      setDialog({
+                        title: v.path,
+                        description: "左侧为修改前，右侧为修改后。",
+                        content: (
+                          <div className="diff">
+                            <pre>{before || "（不存在）"}</pre>
+                            <pre>{after || "（已删除）"}</pre>
+                          </div>
+                        ),
+                      });
+                    })
+                  }
+                >
+                  查看差异
+                </button>
+                <button
+                  disabled={locked}
+                  onClick={() =>
+                    act(async () => {
+                      await api(
+                        `/revisions/${encodeURIComponent(v.id)}/undo`,
+                        {},
+                      );
+                      setDialog(null);
+                      await refresh();
+                      if (filePath) await openFile(filePath);
+                      notify("已撤销；后续修改受到版本校验保护");
+                    })
+                  }
+                >
+                  撤销
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      ),
+    });
+  };
+  const configureProject = () =>
+    project &&
+    setDialog({
+      title: "项目设置",
+      fields: [
+        { key: "name", label: "名称", value: project.name, required: true },
+        {
+          key: "description",
+          label: "简短说明",
+          value: project.description,
+          type: "textarea",
+        },
+        {
+          key: "aliases",
+          label: "别名",
+          value: (project.aliases ?? []).join("，"),
+        },
+      ],
+      action: async (v) => {
+        await api(
+          `/projects/${projectId}`,
+          {
+            ...project,
+            ...v,
+            aliases: v.aliases
+              .split(/[,，]/)
+              .map((x) => x.trim())
+              .filter(Boolean),
+          },
+          "PUT",
+        );
+        await refresh();
+      },
+    });
+  const sessionRuns = runs
+      .filter((r) => r.sessionId === sessionId)
+      .sort((a, b) => a.createdAt - b.createdAt),
+    activity = events.filter((e) => e.sessionId === sessionId);
+  if (auth === null) return <div className="loading">正在打开工作台…</div>;
+  if (!auth)
+    return (
+      <>
+        <Login onLogin={() => setAuth(true)} notify={notify} />
+        {toast && (
+          <div role="alert" className="toast">
+            {toast}
+          </div>
+        )}
+      </>
+    );
+  return (
+    <div className="app">
+      <aside className={`rail ${mobileNav ? "open" : ""}`}>
+        <a
+          className="brand"
+          onClick={() => {
+            setPage("projects");
+            setProjectId("");
+          }}
+        >
+          <span className="brand-mark">工</span>
+          <span>
+            项目工作台<small>让工作持续发生</small>
+          </span>
+        </a>
+        <nav>
+          <button
+            className={page.startsWith("project") ? "active" : ""}
+            onClick={() => {
+              setPage("projects");
+              setMobileNav(false);
+            }}
+          >
+            <Folder size={18} />
+            项目
+          </button>
+          <button
+            className={page === "experts" ? "active" : ""}
+            onClick={() => {
+              setPage("experts");
+              setMobileNav(false);
+            }}
+          >
+            <Library size={18} />
+            专家库
+          </button>
+          <button
+            className={page === "settings" ? "active" : ""}
+            onClick={() => {
+              setPage("settings");
+              setMobileNav(false);
+            }}
+          >
+            <Settings size={18} />
+            设置
+          </button>
+        </nav>
+        <div className="rail-title">
+          工作区{" "}
+          <button title="新建项目" onClick={newProject}>
+            <Plus size={15} />
+          </button>
+        </div>
+        <div className="project-links">
+          {projects
+            .filter((p) => !p.archived)
+            .map((p) => (
+              <button
+                className={
+                  page === "project" && p.id === projectId ? "chosen" : ""
+                }
+                key={p.id}
+                onClick={() => openProject(p)}
+              >
+                <span className="project-dot" />
+                {p.name}
+              </button>
+            ))}
+        </div>
+        <div className="rail-bottom">
+          <span className="online-dot" />
+          个人云端工作台
+          <button
+            aria-label="退出登录"
+            onClick={() =>
+              act(async () => {
+                await api("/logout", {});
+                setAuth(false);
+              })
+            }
+          >
+            <LogOut size={15} />
+          </button>
+        </div>
+      </aside>
+      <main>
+        <header className="topbar">
+          <button
+            className="mobile-only icon"
+            aria-label="打开导航"
+            onClick={() => setMobileNav(!mobileNav)}
+          >
+            <Menu size={20} />
+          </button>
+          <div className="crumb">
+            工作台 <ChevronRight size={14} />
+            <span>
+              {page === "project"
+                ? project?.name
+                : page === "projects"
+                  ? "项目"
+                  : page === "experts"
+                    ? "专家库"
+                    : "设置"}
+            </span>
+          </div>
+          <span className="top-status">
+            {runs.some((r) => ["running", "waiting"].includes(r.state)) ? (
+              <>
+                <span className="pulse" />
+                任务进行中
+              </>
+            ) : (
+              <>
+                <span className="online-dot" />
+                已连接
+              </>
+            )}
+          </span>
+        </header>
+        {page === "projects" && (
+          <div className="home page">
+            <div className="page-heading">
+              <div>
+                <span className="eyebrow">WORKSPACE</span>
+                <h1>项目</h1>
+                <p>把资料、对话和成果留在同一个地方。</p>
+              </div>
+              <button className="primary" onClick={newProject}>
+                <Plus size={17} />
+                新建项目
+              </button>
+            </div>
+            {inbox.length > 0 && (
+              <section className="inbox">
+                <h3>
+                  待归属消息 <span>{inbox.length}</span>
+                </h3>
+                {inbox.map((m) => (
+                  <div className="inbox-row" key={m.id}>
+                    <div>
+                      <small>
+                        {labels[m.incoming.source] ?? m.incoming.source}
+                      </small>
+                      <p>{m.incoming.text}</p>
+                      <span>{m.question || "正在判断归属…"}</span>
+                    </div>
+                    <select
+                      aria-label="为消息选择项目"
+                      value=""
+                      onChange={(e) =>
+                        act(async () => {
+                          await api(`/messages/${m.id}/resolve`, {
+                            sessionId: e.target.value,
+                          });
+                          await refresh();
+                        })
+                      }
+                    >
+                      <option value="">选择项目</option>
+                      {projects
+                        .filter((p) => !p.archived)
+                        .map((p) => (
+                          <option key={p.id} value={p.defaultSessionId}>
+                            {p.name}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                ))}
+              </section>
+            )}
+            {projects.filter((p) => !p.archived).length === 0 ? (
+              <div className="empty-workspace">
+                <div className="empty-symbol">
+                  <Folder size={34} />
+                </div>
+                <h2>从你的第一个项目开始</h2>
+                <p>
+                  新建一个空白项目，或把现有 Obsidian 资料带进来。
+                  <br />
+                  通用助手已经准备好，无需安装专家。
+                </p>
+                <button className="primary" onClick={newProject}>
+                  <Plus size={16} />
+                  新建项目
+                </button>
+                <small>创建后可导入目录或 ZIP，保留原有结构。</small>
+              </div>
+            ) : (
+              <div className="project-grid">
+                {projects
+                  .filter((p) => !p.archived)
+                  .map((p, i) => (
+                    <button
+                      className="project-card"
+                      key={p.id}
+                      onClick={() => openProject(p)}
+                    >
+                      <span className={`project-avatar color-${i % 4}`}>
+                        {p.name.slice(0, 1)}
+                      </span>
+                      <h2>
+                        {p.name}
+                        <ChevronRight size={17} />
+                      </h2>
+                      <p>{p.description || "还没有项目说明"}</p>
+                      <div>
+                        <span>{p.expertIds?.length ?? 0} 位专家</span>
+                        <span>打开工作区 →</span>
+                      </div>
+                    </button>
+                  ))}
+                <button className="project-card new-card" onClick={newProject}>
+                  <Plus size={24} />
+                  <span>新建项目</span>
+                </button>
+              </div>
+            )}
+            {runs.length > 0 && (
+              <section className="recent">
+                <h3>最近工作</h3>
+                {runs.slice(0, 8).map((r) => (
+                  <button
+                    key={r.id}
+                    className="recent-row"
+                    onClick={() => {
+                      const p = projects.find((p) => p.id === r.projectId);
+                      if (p) {
+                        openProject(p);
+                        setSessionId(r.sessionId);
+                      }
+                    }}
+                  >
+                    <MessageSquare size={17} />
+                    <div>
+                      <strong>{r.text}</strong>
+                      <small>
+                        {projects.find((p) => p.id === r.projectId)?.name} ·{" "}
+                        {stamp(r.createdAt)}
+                      </small>
+                    </div>
+                    <State state={r.state} />
+                  </button>
+                ))}
+              </section>
+            )}
+            {projects.some((p) => p.archived) && (
+              <details className="archived">
+                <summary>已归档项目</summary>
+                {projects
+                  .filter((p) => p.archived)
+                  .map((p) => (
+                    <div key={p.id}>
+                      {p.name}
+                      <button
+                        onClick={() =>
+                          act(async () => {
+                            await api(
+                              `/projects/${p.id}`,
+                              { ...p, archived: false },
+                              "PUT",
+                            );
+                            await refresh();
+                          })
+                        }
+                      >
+                        恢复
+                      </button>
+                    </div>
+                  ))}
+              </details>
+            )}
+          </div>
+        )}
+        {page === "project" && project && (
+          <div className="workspace">
+            <aside className="project-panel">
+              <div className="project-title">
+                <span className="project-avatar small-avatar">
+                  {project.name.slice(0, 1)}
+                </span>
+                <strong>{project.name}</strong>
+                <button
+                  className="icon"
+                  title="项目设置"
+                  onClick={configureProject}
+                >
+                  <Settings size={16} />
+                </button>
+              </div>
+              <div className="panel-tabs">
+                <button
+                  className={tab === "files" ? "selected" : ""}
+                  onClick={() => setTab("files")}
+                >
+                  文件
+                </button>
+                <button
+                  className={tab === "sessions" ? "selected" : ""}
+                  onClick={() => setTab("sessions")}
+                >
+                  对话
+                </button>
+                <button
+                  className={tab === "schedules" ? "selected" : ""}
+                  onClick={() => setTab("schedules")}
+                >
+                  定时
+                </button>
+              </div>
+              {tab === "files" && (
+                <>
+                  <div className="file-search">
+                    <Search size={14} />
+                    <input
+                      aria-label="搜索项目资料"
+                      placeholder="搜索资料…"
+                      value={find}
+                      onChange={(e) => {
+                        setFind(e.target.value);
+                        setSearchResult(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter")
+                          act(async () =>
+                            setSearchResult(
+                              await api(
+                                `/projects/${projectId}/search?q=${encodeURIComponent(find)}`,
+                              ),
+                            ),
+                          );
+                      }}
+                    />
+                  </div>
+                  <div className="file-tools">
+                    <button
+                      title="新建文档"
+                      disabled={locked}
+                      onClick={createFile}
+                    >
+                      <Plus size={15} />
+                    </button>
+                    <label
+                      title="导入目录"
+                      className={locked ? "disabled" : ""}
+                    >
+                      <Upload size={15} />
+                      <input
+                        type="file"
+                        multiple
+                        {...({ webkitdirectory: "" } as any)}
+                        disabled={locked}
+                        onChange={(e) => {
+                          importFiles(e.target.files, true);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                    <label title="导入 ZIP">
+                      <FileCode size={15} />
+                      <input
+                        type="file"
+                        accept=".zip"
+                        disabled={locked}
+                        onChange={(e) => {
+                          importFiles(e.target.files, true);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                    <button title="文件变化" onClick={() => act(versions)}>
+                      <History size={15} />
+                    </button>
+                    <a
+                      title="导出项目"
+                      href={endpoint(`/projects/${projectId}/export`)}
+                    >
+                      <Download size={15} />
+                    </a>
+                  </div>
+                  <div className="file-tree">
+                    {searchResult
+                      ? searchResult.map((r) => (
+                          <button
+                            key={r.path}
+                            className="search-hit"
+                            onClick={() => act(() => openFile(r.path))}
+                          >
+                            <strong>{r.path}</strong>
+                            <small>{r.snippet}</small>
+                          </button>
+                        ))
+                      : files
+                          .filter((f) =>
+                            f.path.toLowerCase().includes(find.toLowerCase()),
+                          )
+                          .map((f) => (
+                            <button
+                              key={f.path}
+                              className={`${filePath === f.path ? "selected" : ""} ${f.directory ? "directory" : ""}`}
+                              style={{
+                                paddingLeft: 14 + f.path.split("/").length * 10,
+                              }}
+                              onClick={() =>
+                                !f.directory && act(() => openFile(f.path))
+                              }
+                            >
+                              {f.directory ? (
+                                <Folder size={14} />
+                              ) : (
+                                <FileText size={14} />
+                              )}
+                              <span>{f.path.split("/").at(-1)}</span>
+                            </button>
+                          ))}
+                    {files.length === 0 && (
+                      <div className="panel-empty">
+                        这里还是空的。
+                        <br />
+                        新建文档或导入项目资料。
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+              {tab === "sessions" && (
+                <>
+                  <button className="panel-action" onClick={newSession}>
+                    <Plus size={15} />
+                    另开对话
+                  </button>
+                  <div className="session-list">
+                    {sessions.map((ss) => (
+                      <button
+                        className={sessionId === ss.id ? "selected" : ""}
+                        key={ss.id}
+                        onClick={() => {
+                          setSessionId(ss.id);
+                          setFilePath("");
+                        }}
+                      >
+                        <MessageSquare size={15} />
+                        <span>
+                          {ss.title}
+                          <small>
+                            {ss.kind === "assistant"
+                              ? "默认项目助手"
+                              : "专题对话"}
+                          </small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+              {tab === "schedules" && (
+                <Schedules
+                  project={project}
+                  experts={experts}
+                  setDialog={setDialog}
+                  act={act}
+                />
+              )}
+              <div className="project-panel-footer">
+                <button
+                  onClick={() =>
+                    setDialog({
+                      title: "项目能力",
+                      content: (
+                        <ProjectCapabilities
+                          project={project}
+                          experts={experts}
+                          onSave={async (p) => {
+                            await api(`/projects/${p.id}`, p, "PUT");
+                            await refresh();
+                            setDialog(null);
+                          }}
+                        />
+                      ),
+                    })
+                  }
+                >
+                  <Library size={15} />
+                  专家与插件
+                  <ChevronRight size={14} />
+                </button>
+                <button
+                  onClick={() =>
+                    act(async () => {
+                      if (
+                        !window.confirm(
+                          "归档后项目仍保留，停止接收新任务。是否归档？",
+                        )
+                      )
+                        return;
+                      await api(
+                        `/projects/${projectId}`,
+                        { ...project, archived: true },
+                        "PUT",
+                      );
+                      setPage("projects");
+                      setProjectId("");
+                      await refresh();
+                    })
+                  }
+                >
+                  <Archive size={15} />
+                  归档项目
+                </button>
+              </div>
+            </aside>
+            {filePath && (
+              <section className="editor-pane">
+                <header>
+                  <div>
+                    <FileText size={15} />
+                    <span title={filePath}>{filePath}</span>
+                    {content !== saved && <span className="unsaved" />}
+                  </div>
+                  <div>
+                    <button
+                      className={preview ? "selected" : ""}
+                      onClick={() => setPreview(!preview)}
+                    >
+                      {preview ? "编辑" : "预览"}
+                    </button>
+                    <button title="文件历史" onClick={() => act(versions)}>
+                      <History size={15} />
+                    </button>
+                    <button
+                      className="primary small"
+                      disabled={locked || content === saved}
+                      onClick={() =>
+                        act(async () => {
+                          const v = await api(
+                            `/projects/${projectId}/file`,
+                            { path: filePath, content, baseHash: hash },
+                            "PUT",
+                          );
+                          setHash(v.after);
+                          setSaved(content);
+                          await refresh();
+                          notify("已保存");
+                        })
+                      }
+                    >
+                      保存
+                    </button>
+                    <button
+                      title="关闭编辑器"
+                      onClick={() => {
+                        if (
+                          content === saved ||
+                          window.confirm("放弃未保存的修改？")
+                        ) {
+                          setFilePath("");
+                          setContent("");
+                          setSaved("");
+                        }
+                      }}
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                </header>
+                {locked && (
+                  <div className="lock-note">
+                    任务正在写入项目，可以查看和编辑草稿；任务结束或停止后再保存。
+                  </div>
+                )}
+                {preview ? (
+                  <div className="document-preview">
+                    {/\.(png|jpe?g|gif|webp)$/i.test(filePath) ? (
+                      <img
+                        src={endpoint(
+                          `/projects/${projectId}/file?raw=1&path=${encodeURIComponent(filePath)}`,
+                        )}
+                      />
+                    ) : /\.pdf$/i.test(filePath) ? (
+                      <iframe
+                        title="PDF 预览"
+                        src={endpoint(
+                          `/projects/${projectId}/file?raw=1&path=${encodeURIComponent(filePath)}`,
+                        )}
+                      />
+                    ) : (
+                      <RichText
+                        text={content}
+                        onFile={(p) => act(() => openFile(p))}
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <CodeMirror
+                    value={content}
+                    onChange={setContent}
+                    extensions={[markdown()]}
+                    height="100%"
+                    basicSetup={{ lineNumbers: true, foldGutter: true }}
+                  />
+                )}
+                <footer>
+                  <span>{content.length} 字符</span>
+                  <a
+                    href={endpoint(
+                      `/projects/${projectId}/file?raw=1&download=1&path=${encodeURIComponent(filePath)}`,
+                    )}
+                  >
+                    <Download size={13} />
+                    下载
+                  </a>
+                  <button
+                    disabled={locked}
+                    onClick={() =>
+                      act(async () => {
+                        if (
+                          !window.confirm(
+                            `删除 ${filePath}？可从文件历史撤销。`,
+                          )
+                        )
+                          return;
+                        await api(
+                          `/projects/${projectId}/file?path=${encodeURIComponent(filePath)}&baseHash=${hash}`,
+                          undefined,
+                          "DELETE",
+                        );
+                        setFilePath("");
+                        setContent("");
+                        setSaved("");
+                        await refresh();
+                      })
+                    }
+                  >
+                    删除文件
+                  </button>
+                </footer>
+              </section>
+            )}
+            <section className={`chat ${filePath ? "compact" : ""}`}>
+              <header className="chat-header">
+                <div>
+                  <span className="assistant-icon">✦</span>
+                  <div>
+                    <select
+                      aria-label="当前对话"
+                      value={sessionId}
+                      onChange={(e) => setSessionId(e.target.value)}
+                    >
+                      {sessions.map((ss) => (
+                        <option key={ss.id} value={ss.id}>
+                          {ss.title}
+                        </option>
+                      ))}
+                    </select>
+                    <small>项目内持久对话 · 跨端继续</small>
+                  </div>
+                </div>
+                <div>
+                  <select
+                    aria-label="当前专家"
+                    value={session?.expertId || ""}
+                    onChange={(e) =>
+                      act(async () => {
+                        await api(
+                          `/sessions/${sessionId}`,
+                          { expertId: e.target.value },
+                          "PUT",
+                        );
+                        await refresh();
+                      })
+                    }
+                  >
+                    <option value="">通用助手</option>
+                    {experts
+                      .filter((e) => project.expertIds?.includes(e.id))
+                      .map((e) => (
+                        <option key={e.id} value={e.id}>
+                          {e.name}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    className="icon"
+                    title="另开对话"
+                    onClick={newSession}
+                  >
+                    <Plus size={18} />
+                  </button>
+                </div>
+              </header>
+              <div className="chat-scroll">
+                {sessionRuns.length === 0 && (
+                  <div className="chat-welcome">
+                    <span>✦</span>
+                    <h2>一起推进这个项目</h2>
+                    <p>
+                      我会按需阅读项目资料、使用专家方法，
+                      <br />
+                      并把重要结果保存下来。
+                    </p>
+                    <div>
+                      <button
+                        onClick={() =>
+                          setText("看看项目里有哪些资料，帮我梳理下一步。")
+                        }
+                      >
+                        梳理项目资料
+                      </button>
+                      <button onClick={() => setText("帮我完成一个任务：")}>
+                        开始一项工作
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {sessionRuns.map((r) => (
+                  <article className="turn" key={r.id}>
+                    <div className="user-message">
+                      <span>
+                        {labels[r.source]} · {stamp(r.createdAt)}
+                      </span>
+                      <p>{r.text}</p>
+                    </div>
+                    <div className="assistant-message">
+                      <div className="assistant-line">
+                        <span className="assistant-icon">✦</span>
+                        <strong>
+                          {experts.find((e) => e.id === r.expertId)?.name ||
+                            "项目助手"}
+                        </strong>
+                        <State state={r.state} />
+                        <small>#T{r.id.slice(0, 8)}</small>
+                        {["queued", "running", "waiting"].includes(r.state) && (
+                          <button
+                            className="stop"
+                            onClick={() =>
+                              act(async () => {
+                                await api(`/runs/${r.id}/stop`, {});
+                                await refresh();
+                              })
+                            }
+                          >
+                            <Square size={12} />
+                            停止
+                          </button>
+                        )}
+                      </div>
+                      <RunActivity
+                        events={activity.filter((e) => e.runId === r.id)}
+                        running={r.state === "running"}
+                      />
+                      {r.result && (
+                        <RichText
+                          text={r.result}
+                          onFile={(p) => act(() => openFile(p))}
+                        />
+                      )}{" "}
+                      {!r.result && r.state === "running" && (
+                        <p className="thinking">
+                          正在处理你的任务<span>…</span>
+                        </p>
+                      )}
+                      {r.error && (
+                        <div
+                          className={`run-error ${r.state === "cancelled" ? "neutral" : ""}`}
+                        >
+                          {r.error}
+                        </div>
+                      )}
+                      {["failed", "interrupted", "cancelled"].includes(
+                        r.state,
+                      ) && (
+                        <button
+                          className="continue"
+                          onClick={() => {
+                            setText(
+                              "请检查上次任务已经产生的结果，从中断处继续完成，不重复已经成功的外部操作。",
+                            );
+                          }}
+                        >
+                          <RefreshCw size={13} />
+                          继续这项工作
+                        </button>
+                      )}
+                      {interactions
+                        .filter((i) => i.runId === r.id)
+                        .map((i) => (
+                          <Question
+                            key={i.id}
+                            interaction={i}
+                            onAnswer={async (answer) => {
+                              await api(`/interactions/${i.id}/answer`, answer);
+                              await refresh();
+                            }}
+                            notify={notify}
+                          />
+                        ))}
+                    </div>
+                  </article>
+                ))}
+                <div ref={chatEnd} />
+              </div>
+              <div className="composer-wrap">
+                {attachments.length > 0 && (
+                  <div className="attachment-chips">
+                    {attachments.map((p) => (
+                      <button
+                        key={p}
+                        onClick={() =>
+                          setAttachments((a) => a.filter((x) => x !== p))
+                        }
+                      >
+                        <Paperclip size={12} />
+                        {p}
+                        <X size={12} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="composer">
+                  <textarea
+                    aria-label="发送消息"
+                    placeholder="描述任务，或补充新的指令…"
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (
+                        e.key === "Enter" &&
+                        !e.shiftKey &&
+                        !e.nativeEvent.isComposing
+                      ) {
+                        e.preventDefault();
+                        send();
+                      }
+                    }}
+                  />
+                  <div>
+                    <label title={locked ? "任务结束后可添加文件" : "添加附件"}>
+                      <Paperclip size={18} />
+                      <input
+                        type="file"
+                        disabled={locked || busy}
+                        onChange={(e) => {
+                          importFiles(e.target.files);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                    <span>
+                      {locked
+                        ? "新指令将按顺序继续执行"
+                        : "Enter 发送 · Shift + Enter 换行"}
+                    </span>
+                    <button
+                      className="send"
+                      aria-label="发送"
+                      disabled={!text.trim() || busy}
+                      onClick={send}
+                    >
+                      <ArrowUp size={18} />
+                    </button>
+                  </div>
+                </div>
+                <small className="composer-note">
+                  当前范围：{project.name} · 对话历史由助手持续维护
+                </small>
+              </div>
+            </section>
+          </div>
+        )}
+        {page === "experts" && (
+          <div className="page">
+            <div className="page-heading">
+              <div>
+                <span className="eyebrow">CAPABILITIES</span>
+                <h1>专家库</h1>
+                <p>方法可以复用，项目经验留在各自项目。</p>
+              </div>
+              <button
+                className="primary"
+                onClick={() =>
+                  setDialog({
+                    title: "创建专家",
+                    fields: [
+                      { key: "name", label: "名称", required: true },
+                      { key: "description", label: "能力简介", required: true },
+                      {
+                        key: "instructions",
+                        label: "方法与工作准则",
+                        type: "textarea",
+                        required: true,
+                      },
+                    ],
+                    action: async (v) => {
+                      await api("/experts", v);
+                      await refresh();
+                    },
+                  })
+                }
+              >
+                <Plus size={17} />
+                创建专家
+              </button>
+            </div>
+            <div className="import-bar">
+              <span>导入已有能力包</span>
+              <label className="button">
+                <Upload size={15} />
+                选择目录
+                <input
+                  type="file"
+                  multiple
+                  {...({ webkitdirectory: "" } as any)}
+                  onChange={(e) => {
+                    importFiles(e.target.files, false, true);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <label className="button">
+                ZIP 文件
+                <input
+                  type="file"
+                  accept=".zip"
+                  onChange={(e) => {
+                    importFiles(e.target.files, false, true);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <button
+                onClick={() =>
+                  setDialog({
+                    title: "从 Git 导入专家",
+                    fields: [
+                      { key: "url", label: "HTTPS 仓库地址", required: true },
+                      {
+                        key: "commit",
+                        label: "固定提交（40 位 SHA）",
+                        required: true,
+                      },
+                      {
+                        key: "subdir",
+                        label: "能力包目录",
+                        hint: "SKILL.md 所在的相对目录",
+                      },
+                    ],
+                    action: async (v) => {
+                      await api("/experts/git", v);
+                      await refresh();
+                    },
+                  })
+                }
+              >
+                Git 提交
+              </button>
+              <small>目录需包含 SKILL.md</small>
+            </div>
+            <div className="expert-grid">
+              {experts.map((e) => (
+                <article key={e.id} className="expert-card">
+                  <span className="expert-avatar">
+                    <Library size={24} />
+                  </span>
+                  <h2>{e.name}</h2>
+                  <p>{e.description}</p>
+                  <div>
+                    <small>版本 {e.digest.slice(0, 10)}</small>
+                    <button
+                      onClick={() =>
+                        act(async () => {
+                          const v = await api(`/experts/${e.id}/skill`);
+                          setDialog({
+                            title: e.name,
+                            content: <RichText text={v.content} />,
+                          });
+                        })
+                      }
+                    >
+                      查看方法 <ChevronRight size={13} />
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+            {!experts.length && (
+              <div className="empty-workspace shorter">
+                <Library size={34} />
+                <h2>沉淀你的通用方法</h2>
+                <p>
+                  专家可在多个项目使用。
+                  <br />
+                  没有安装专家，也可以使用通用助手。
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+        {page === "settings" && (
+          <SettingsPage act={act} setDialog={setDialog} notify={notify} />
+        )}
+      </main>
+      {dialog && (
+        <Modal dialog={dialog} close={() => setDialog(null)} notify={notify} />
+      )}{" "}
+      {toast && (
+        <div role="alert" className="toast">
+          <span>{toast}</span>
+          <button aria-label="关闭提示" onClick={() => setToast("")}>
+            <X size={15} />
+          </button>
+        </div>
+      )}
+      {busy && <div className="global-busy">正在处理…</div>}
+    </div>
+  );
+}
+
+function Login({
+  onLogin,
+  notify,
+}: {
+  onLogin: () => void;
+  notify: (s: string) => void;
+}) {
+  const [password, setPassword] = useState(""),
+    [busy, setBusy] = useState(false);
+  return (
+    <div className="login">
+      <div className="login-art">
+        <span className="brand-mark">工</span>
+        <h1>
+          一处工作区，
+          <br />
+          持续向前。
+        </h1>
+        <p>你的项目、方法和每一步进展。</p>
+        <div className="orbit orbit-one" />
+        <div className="orbit orbit-two" />
+        <small>PERSONAL CLOUD WORKSPACE</small>
+      </div>
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true);
+          try {
+            await api("/login", { password });
+            onLogin();
+          } catch (e) {
+            notify((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <span className="eyebrow">WELCOME BACK</span>
+        <h2>登录工作台</h2>
+        <p>继续你正在进行的工作。</p>
+        <label>
+          密码
+          <input
+            autoFocus
+            required
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </label>
+        <button className="primary" disabled={busy}>
+          {busy ? "正在登录…" : "进入工作台"}
+          <ChevronRight size={16} />
+        </button>
+      </form>
+    </div>
+  );
+}
+function State({ state }: { state: string }) {
+  return (
+    <span className={`state state-${state}`}>{labels[state] ?? state}</span>
+  );
+}
+function RichText({
+  text,
+  onFile,
+}: {
+  text: string;
+  onFile?: (p: string) => void;
+}) {
+  const transformed = text.replace(
+    /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+    (_, path, label) =>
+      `[${label || path}](project:${encodeURIComponent(path.endsWith(".md") ? path : path + ".md")})`,
+  );
+  return (
+    <div className="markdown">
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        urlTransform={(url) =>
+          url.startsWith("project:")
+            ? url
+            : /^(https?:|mailto:|\/|#)/.test(url)
+              ? url
+              : url.includes(":")
+                ? ""
+                : url
+        }
+        components={{
+          a: ({ href, children }) => {
+            const local = href?.startsWith("project:")
+              ? decodeURIComponent(href.slice(8))
+              : href && !/^https?:|mailto:|#/.test(href)
+                ? href.replace(/^\/workspace\//, "")
+                : "";
+            return local && onFile ? (
+              <button className="file-link" onClick={() => onFile(local)}>
+                {children}
+              </button>
+            ) : (
+              <a href={href} target="_blank" rel="noreferrer">
+                {children}
+              </a>
+            );
+          },
+        }}
+      >
+        {transformed}
+      </Markdown>
+    </div>
+  );
+}
+function RunActivity({
+  events,
+  running,
+}: {
+  events: WorkEvent[];
+  running: boolean;
+}) {
+  const tools = events.filter((e) => e.type === "harness.tool/call"),
+    results = events.filter((e) => e.type === "harness.tool/result");
+  if (!tools.length) return null;
+  return (
+    <details className="activity" open={running}>
+      <summary>
+        <Terminal size={13} />
+        {running ? "正在执行" : "执行过程"} · {tools.length} 次工具调用
+        <ChevronDown size={13} />
+      </summary>
+      {tools.map((e) => {
+        const result = results.find((r) => r.data.callId === e.data.callId);
+        return (
+          <details key={e.seq} className="tool">
+            <summary>
+              {result ? <Check size={12} /> : <span className="pulse" />}
+              <strong>{e.data.name}</strong>
+              <span>{stamp(e.createdAt)}</span>
+            </summary>
+            <pre>
+              {typeof e.data.arguments === "string"
+                ? e.data.arguments
+                : JSON.stringify(e.data.arguments, null, 2)}
+            </pre>
+            {result && (
+              <pre>
+                {JSON.stringify(
+                  result.data.result ?? result.data,
+                  null,
+                  2,
+                ).slice(0, 30000)}
+              </pre>
+            )}
+          </details>
+        );
+      })}
+    </details>
+  );
+}
+function Modal({
+  dialog,
+  close,
+  notify,
+}: {
+  dialog: Dialog;
+  close: () => void;
+  notify: (s: string) => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>(() =>
+      Object.fromEntries(
+        (dialog.fields ?? []).map((f) => [f.key, f.value ?? ""]),
+      ),
+    ),
+    [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setValues(
+      Object.fromEntries(
+        (dialog.fields ?? []).map((f) => [f.key, f.value ?? ""]),
+      ),
+    );
+  }, [dialog]);
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !busy) close();
+      }}
+    >
+      <div
+        className={`modal ${dialog.content ? "wide" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={dialog.title}
+      >
+        <header>
+          <h2>{dialog.title}</h2>
+          <button
+            className="icon"
+            disabled={busy}
+            onClick={close}
+            aria-label="关闭"
+          >
+            <X size={19} />
+          </button>
+        </header>
+        {dialog.description && (
+          <p className="modal-description">{dialog.description}</p>
+        )}
+        {dialog.content ?? (
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setBusy(true);
+              try {
+                await dialog.action?.(values);
+                close();
+              } catch (e) {
+                notify((e as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {dialog.fields?.map((f, i) => (
+              <label key={f.key}>
+                {f.label}
+                {f.type === "textarea" ? (
+                  <textarea
+                    rows={5}
+                    required={f.required}
+                    value={values[f.key] ?? ""}
+                    onChange={(e) =>
+                      setValues({ ...values, [f.key]: e.target.value })
+                    }
+                  />
+                ) : (
+                  <input
+                    autoFocus={i === 0}
+                    required={f.required}
+                    type={f.type ?? "text"}
+                    value={values[f.key] ?? ""}
+                    onChange={(e) =>
+                      setValues({ ...values, [f.key]: e.target.value })
+                    }
+                  />
+                )}{" "}
+                {f.hint && <small>{f.hint}</small>}
+              </label>
+            ))}
+            <footer>
+              <button type="button" disabled={busy} onClick={close}>
+                取消
+              </button>
+              <button className="primary" disabled={busy}>
+                {busy ? "正在处理…" : (dialog.confirm ?? "保存")}
+              </button>
+            </footer>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+function Question({
+  interaction: i,
+  onAnswer,
+  notify,
+}: {
+  interaction: any;
+  onAnswer: (a: any) => Promise<void>;
+  notify: (s: string) => void;
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({}),
+    [busy, setBusy] = useState(false);
+  const send = async (a: any) => {
+    setBusy(true);
+    try {
+      await onAnswer(a);
+    } catch (e) {
+      notify((e as Error).message);
+      setBusy(false);
+    }
+  };
+  const questions = i.payload.questions ?? [];
+  return (
+    <div className="question">
+      <h4>
+        {i.kind === "approval" ? "需要单次授权" : "需要你的补充"}{" "}
+        <small>#Q{i.id.slice(0, 8)}</small>
+      </h4>
+      {i.kind === "approval" ? (
+        <>
+          <p>
+            {i.payload.toolName} · {i.payload.reason}
+          </p>
+          <button
+            disabled={busy}
+            onClick={() => send({ outcome: "allowed-once" })}
+          >
+            允许这一次
+          </button>
+          <button disabled={busy} onClick={() => send({ outcome: "rejected" })}>
+            拒绝
+          </button>
+        </>
+      ) : (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            send({
+              answers: questions.map((q: any) => ({
+                id: q.id,
+                selected: [],
+                custom: answers[q.id] ?? "",
+              })),
+            });
+          }}
+        >
+          {questions.map((q: any) => (
+            <label key={q.id}>
+              {q.question ?? q.title ?? q.prompt}
+              <div className="options">
+                {q.options?.map((o: any) => (
+                  <button
+                    type="button"
+                    key={o.id ?? o.label}
+                    onClick={() =>
+                      setAnswers({ ...answers, [q.id]: o.label ?? o.value })
+                    }
+                  >
+                    {o.label ?? o.title}
+                  </button>
+                ))}
+              </div>
+              <input
+                required
+                value={answers[q.id] ?? ""}
+                onChange={(e) =>
+                  setAnswers({ ...answers, [q.id]: e.target.value })
+                }
+              />
+            </label>
+          ))}
+          <button className="primary small" disabled={busy}>
+            提交回答
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => send({ cancelled: true })}
+          >
+            暂不回答
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+function ProjectCapabilities({
+  project,
+  experts,
+  onSave,
+}: {
+  project: Project;
+  experts: Expert[];
+  onSave: (p: Project) => Promise<void>;
+}) {
+  const [p, setP] = useState(project),
+    [plugins, setPlugins] = useState<any[]>([]),
+    [error, setError] = useState("");
+  useEffect(() => {
+    api<any[]>("/plugins")
+      .then(setPlugins)
+      .catch((e) => setError(e.message));
+  }, []);
+  return (
+    <div className="capabilities">
+      <h3>专家方法</h3>
+      {experts.length === 0 && <p>先到专家库导入或创建一个能力包。</p>}
+      {experts.map((e) => (
+        <label key={e.id}>
+          <input
+            type="checkbox"
+            checked={p.expertIds?.includes(e.id) ?? false}
+            onChange={(v) =>
+              setP({
+                ...p,
+                expertIds: v.target.checked
+                  ? [...(p.expertIds ?? []), e.id]
+                  : (p.expertIds ?? []).filter((id) => id !== e.id),
+                defaultExpertId:
+                  p.defaultExpertId === e.id && !v.target.checked
+                    ? ""
+                    : p.defaultExpertId,
+              })
+            }
+          />
+          <span>
+            {e.name}
+            <small>{e.description}</small>
+          </span>
+        </label>
+      ))}
+      <h3>插件</h3>
+      {plugins.length === 0 && <p>可在设置中添加 MCP 插件。</p>}
+      {plugins.map((x) => (
+        <label key={x.id}>
+          <input
+            type="checkbox"
+            checked={p.pluginIds?.includes(x.id) ?? false}
+            onChange={(v) =>
+              setP({
+                ...p,
+                pluginIds: v.target.checked
+                  ? [...(p.pluginIds ?? []), x.id]
+                  : (p.pluginIds ?? []).filter((id) => id !== x.id),
+              })
+            }
+          />
+          {x.name}
+        </label>
+      ))}
+      {error && <p className="error">{error}</p>}
+      <footer>
+        <button
+          className="primary"
+          onClick={() => onSave(p).catch((e) => setError(e.message))}
+        >
+          保存项目能力
+        </button>
+      </footer>
+    </div>
+  );
+}
+function Schedules({
+  project,
+  experts,
+  setDialog,
+  act,
+}: {
+  project: Project;
+  experts: Expert[];
+  setDialog: (d: Dialog | null) => void;
+  act: (f: () => Promise<any>) => Promise<any>;
+}) {
+  const [list, setList] = useState<any[]>([]);
+  const load = () =>
+    api<any[]>(`/schedules?projectId=${project.id}`).then(setList);
+  useEffect(() => {
+    act(load);
+  }, [project.id]);
+  const edit = (v: any = {}) =>
+    setDialog({
+      title: v.id ? "编辑定时任务" : "新建定时任务",
+      description: "每次独立执行，成果留在项目中，不刷入项目助手。",
+      fields: [
+        { key: "name", label: "任务名称", required: true, value: v.name },
+        {
+          key: "instruction",
+          label: "执行指令",
+          type: "textarea",
+          required: true,
+          value: v.instruction,
+        },
+        {
+          key: "cron",
+          label: "时间规则（cron）",
+          required: true,
+          value: v.cron ?? "0 9 * * *",
+          hint: "默认每天 09:00；0 9 * * 1 表示每周一 09:00",
+        },
+        {
+          key: "timezone",
+          label: "时区",
+          value: v.timezone ?? "Asia/Shanghai",
+        },
+      ],
+      action: async (fields) => {
+        await api(
+          v.id ? `/schedules/${v.id}` : "/schedules",
+          {
+            ...v,
+            ...fields,
+            projectId: project.id,
+            enabled: v.enabled ?? true,
+          },
+          v.id ? "PUT" : "POST",
+        );
+        await load();
+      },
+    });
+  return (
+    <div className="schedule-panel">
+      <button className="panel-action" onClick={() => edit()}>
+        <Plus size={15} />
+        新建定时任务
+      </button>
+      {list.map((v) => (
+        <div className="schedule-item" key={v.id}>
+          <Clock size={16} />
+          <strong>{v.name}</strong>
+          <small>
+            {v.cron} · {v.timezone}
+          </small>
+          <small>下次：{stamp(v.nextAt)}</small>
+          <div>
+            <button onClick={() => edit(v)}>编辑</button>
+            <button
+              onClick={() =>
+                act(async () => {
+                  await api(
+                    `/schedules/${v.id}`,
+                    { ...v, enabled: !v.enabled },
+                    "PUT",
+                  );
+                  await load();
+                })
+              }
+            >
+              {v.enabled ? "暂停" : "启用"}
+            </button>
+            <button
+              onClick={() =>
+                act(async () => {
+                  const rs = await api<Run[]>(`/schedules/${v.id}/runs`);
+                  setDialog({
+                    title: v.name,
+                    content: (
+                      <div>
+                        {rs.length === 0 ? (
+                          <p>还没有执行记录。</p>
+                        ) : (
+                          rs.map((r) => (
+                            <article className="schedule-result" key={r.id}>
+                              <State state={r.state} />
+                              <small>{stamp(r.createdAt)}</small>
+                              <RichText
+                                text={r.result || r.error || "等待执行"}
+                              />
+                            </article>
+                          ))
+                        )}
+                      </div>
+                    ),
+                  });
+                })
+              }
+            >
+              结果
+            </button>
+          </div>
+        </div>
+      ))}
+      {!list.length && (
+        <div className="panel-empty">
+          把重复的工作交给助手。
+          <br />
+          执行时间按上海时区。
+        </div>
+      )}
+    </div>
+  );
+}
+function SettingsPage({
+  act,
+  setDialog,
+  notify,
+}: {
+  act: (f: () => Promise<any>) => Promise<any>;
+  setDialog: (d: Dialog | null) => void;
+  notify: (s: string) => void;
+}) {
+  const [settings, setSettings] = useState<any>({}),
+    [connections, setConnections] = useState<any[]>([]),
+    [deliveries, setDeliveries] = useState<any[]>([]),
+    [plugins, setPlugins] = useState<any[]>([]);
+  const load = async () => {
+    const [s, c, d, p] = await Promise.all([
+      api("/settings"),
+      api<any[]>("/connections"),
+      api<any[]>("/deliveries"),
+      api<any[]>("/plugins"),
+    ]);
+    setSettings(s);
+    setConnections(c);
+    setDeliveries(d);
+    setPlugins(p);
+  };
+  useEffect(() => {
+    act(load);
+  }, []);
+  return (
+    <div className="page settings-page">
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">PREFERENCES</span>
+          <h1>设置</h1>
+          <p>连接你的入口，配置项目需要的能力。</p>
+        </div>
+      </div>
+      <section className="settings-section">
+        <h3>执行核心</h3>
+        <div className="setting-row">
+          <div>
+            <strong>DeepSeek Harness</strong>
+            <p>{settings.model || "尚未配置"} · 同一个执行核心服务所有入口</p>
+          </div>
+          <span className="state state-completed">
+            {settings.runtimeMode || "未配置"}
+          </span>
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>任务并发</strong>
+            <p>一个业务任务执行，其余任务排队；消息入口保持可用。</p>
+          </div>
+          <span>1</span>
+        </div>
+        {settings.browserUrl && (
+          <div className="setting-row">
+            <div>
+              <strong>浏览器接管</strong>
+              <p>登录或验证时，打开当前执行环境的浏览器。</p>
+            </div>
+            <a
+              className="button"
+              href={settings.browserUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              打开 <ExternalLink size={14} />
+            </a>
+          </div>
+        )}
+      </section>
+      <section className="settings-section">
+        <h3>
+          微信与飞书{" "}
+          <button
+            onClick={() =>
+              setDialog({
+                title: "绑定本人私聊",
+                fields: [
+                  {
+                    key: "kind",
+                    label: "类型",
+                    value: "wechat",
+                    hint: "wechat 或 feishu",
+                    required: true,
+                  },
+                  { key: "label", label: "连接名称", required: true },
+                  { key: "ownerId", label: "本人渠道账号 ID", required: true },
+                  {
+                    key: "secrets",
+                    label: "渠道配置（JSON）",
+                    type: "textarea",
+                    value: "{}",
+                    hint: "飞书：appId、appSecret；微信：baseUrl、token、accountId",
+                  },
+                ],
+                action: async (v) => {
+                  await api("/connections", {
+                    connection: {
+                      kind: v.kind,
+                      label: v.label,
+                      ownerId: v.ownerId,
+                      enabled: false,
+                    },
+                    secrets: JSON.parse(v.secrets),
+                  });
+                  await load();
+                },
+              })
+            }
+          >
+            <Plus size={15} />
+            添加连接
+          </button>
+        </h3>
+        <p>每个入口独立记住当前对话。回复只发回本次请求的来源。</p>
+        {connections.map((c) => (
+          <div className="setting-row" key={c.id}>
+            <div>
+              <strong>{c.label || labels[c.kind]}</strong>
+              <p>
+                {c.status} ·{" "}
+                {c.lastHeartbeat
+                  ? `最近连接 ${stamp(c.lastHeartbeat)}`
+                  : "尚未连接"}
+              </p>
+            </div>
+            <button
+              onClick={() =>
+                act(async () => {
+                  await api("/connections", {
+                    connection: { ...c, enabled: !c.enabled },
+                  });
+                  await load();
+                })
+              }
+            >
+              {c.enabled ? "停用" : "启用"}
+            </button>
+          </div>
+        ))}
+        {!connections.length && (
+          <p className="empty-text">尚未绑定渠道。网页助手可直接使用。</p>
+        )}
+      </section>
+      <section className="settings-section">
+        <h3>
+          MCP 插件{" "}
+          <button
+            onClick={() =>
+              setDialog({
+                title: "添加 MCP 插件",
+                fields: [
+                  { key: "name", label: "插件名称", required: true },
+                  { key: "description", label: "用途说明" },
+                  {
+                    key: "transport",
+                    label: "传输方式",
+                    value: "http",
+                    hint: "http 或 stdio",
+                  },
+                  { key: "url", label: "HTTPS 地址（http）" },
+                  { key: "command", label: "容器内命令（stdio）" },
+                  { key: "args", label: "命令参数（JSON 数组）", value: "[]" },
+                  {
+                    key: "headers",
+                    label: "请求头（JSON，独立保存）",
+                    type: "textarea",
+                    value: "{}",
+                  },
+                ],
+                action: async (v) => {
+                  await api("/plugins", {
+                    ...v,
+                    args: JSON.parse(v.args),
+                    headers: JSON.parse(v.headers),
+                  });
+                  await load();
+                },
+              })
+            }
+          >
+            <Plus size={15} />
+            添加插件
+          </button>
+        </h3>
+        <p>添加后按项目启用，安装专家不会自动启用插件。</p>
+        {plugins.map((p) => (
+          <div key={p.id} className="setting-row">
+            <div>
+              <strong>{p.name}</strong>
+              <p>
+                {p.description || p.transport}
+                {p.hasSecrets ? " · 已配置凭证" : ""}
+              </p>
+            </div>
+            <button
+              onClick={() =>
+                act(async () => {
+                  await api(`/plugins/${p.id}`, undefined, "DELETE");
+                  await load();
+                })
+              }
+            >
+              移除
+            </button>
+          </div>
+        ))}
+      </section>
+      <section className="settings-section">
+        <h3>发送回执</h3>
+        {deliveries.length ? (
+          deliveries.slice(0, 15).map((d) => (
+            <div key={d.id} className="setting-row">
+              <div>
+                <strong>{d.text.slice(0, 75)}</strong>
+                <p>
+                  {stamp(d.createdAt)} {d.error}
+                </p>
+              </div>
+              <State state={d.state} />
+            </div>
+          ))
+        ) : (
+          <p className="empty-text">尚无渠道发送记录。</p>
+        )}
+      </section>
+      <section className="settings-section">
+        <h3>账号</h3>
+        <div className="setting-row">
+          <div>
+            <strong>工作台密码</strong>
+            <p>用于网页登录。</p>
+          </div>
+          <button
+            onClick={() =>
+              setDialog({
+                title: "修改密码",
+                fields: [
+                  {
+                    key: "password",
+                    label: "新密码",
+                    type: "password",
+                    required: true,
+                    hint: "至少 10 个字符",
+                  },
+                ],
+                action: async (v) => {
+                  await api("/settings/password", v);
+                  notify("密码已更新");
+                },
+              })
+            }
+          >
+            修改密码
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(<App />);

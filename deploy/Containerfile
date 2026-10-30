@@ -1,0 +1,17 @@
+FROM docker.io/library/debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git bash python3 python3-pip python3-venv build-essential musl-tools ripgrep jq chromium xvfb x11vnc novnc websockify tini && rm -rf /var/lib/apt/lists/*
+COPY node /opt/node
+ENV PATH=/opt/node/bin:$PATH
+COPY harness /opt/harness
+COPY native-linux /opt/harness/node_modules/@deepseek-ai/node-addon-system-linux-x64
+COPY native-src /tmp/native-src
+RUN mkdir -p /opt/harness/node_modules/@deepseek-ai/node-addon-system-linux-x64/bin/glibc /opt/harness/node_modules/@deepseek-ai/node-addon-system-linux-x64/bin/musl && \
+    cc -std=c11 -O2 -Wall -Wextra -Werror -fPIC -fvisibility=hidden -DNAPI_VERSION=8 -I /opt/node/include/node -shared /tmp/native-src/flock.c -o /opt/harness/node_modules/@deepseek-ai/node-addon-system-linux-x64/bin/glibc/system.node && \
+    musl-gcc -std=c11 -Os -Wall -Wextra -Werror -static -s /tmp/native-src/main.c -o /opt/harness/node_modules/@deepseek-ai/node-addon-system-linux-x64/bin/landlock-run && \
+    rm -rf /tmp/native-src
+COPY runtime /opt/workbench-runtime
+COPY entrypoint.sh /usr/local/bin/workbench-entrypoint
+RUN chmod +x /usr/local/bin/workbench-entrypoint && ln -s /opt/harness/lib/bin.js /opt/node/bin/dsh
+ENV NODE_ENV=production PW_CHROMIUM=/usr/bin/chromium
+WORKDIR /workspace
+ENTRYPOINT ["/usr/bin/tini","-g","--","/usr/local/bin/workbench-entrypoint"]

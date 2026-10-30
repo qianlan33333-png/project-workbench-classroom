@@ -1,0 +1,24 @@
+[Unit]
+Description=Personal Project Workbench (igo)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=projectwb
+Group=projectwb
+WorkingDirectory=/opt/project-workbench/current
+Environment=HOME=/home/projectwb
+Environment=PATH=/opt/node-v24.22.0-linux-x64/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/project-workbench/service.env
+ExecStart=/opt/project-workbench/current/bin/workbench -config /etc/project-workbench/config.json
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=60
+KillMode=control-group
+Delegate=yes
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

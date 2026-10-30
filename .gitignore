@@ -1,0 +1,11 @@
+vendor-src/
+.toolchain/
+node_modules/
+web/node_modules/
+web/dist/
+bin/
+.var/
+.env
+*.sqlite*
+*.log
+artifacts/
