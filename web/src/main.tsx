@@ -55,6 +55,7 @@ import { useMessageSubmissions } from "./message-submissions";
 import { mergeRuns, mergeSessions, initialSessionTitle } from "./chat-state";
 import { RecycleBin, GlobalTools } from "./lifecycle-ui";
 import { CapabilityComposer, CapabilityBadges } from "./capability-composer";
+import { Today, TasksPanel, ContextSettings, type PreparedTask } from "./today";
 import "./style.css";
 
 type Field = {
@@ -82,7 +83,9 @@ function App() {
         ? "expert-detail"
         : initialLocation.get("project")
           ? "project"
-          : "projects",
+          : initialLocation.get("page") === "today"
+            ? "today"
+            : "projects",
     ),
     [projects, setProjects] = useState<Project[]>([]),
     [experts, setExperts] = useState<Expert[]>([]),
@@ -156,8 +159,14 @@ function App() {
     refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   projectRef.current = projectId;
   sessionRef.current = sessionId;
-  const switchSession = (id: string) => {
+  const switchSession = async (id: string) => {
     if (id === sessionRef.current) return;
+    try {
+      await flushTaskDraft();
+    } catch (e: any) {
+      notify(e.message);
+      return;
+    }
     composerDrafts.current.set(sessionRef.current, composerCurrent.current);
     const draft = composerDrafts.current.get(id);
     setText(draft?.text || "");
@@ -380,7 +389,9 @@ function App() {
           }).toString()
         : page === "expert-detail"
           ? new URLSearchParams({ expert: expertId }).toString()
-          : "";
+          : page === "today"
+            ? "page=today"
+            : "";
     history.replaceState(
       null,
       "",
@@ -411,6 +422,8 @@ function App() {
   const navigate = async (next: string) => {
     if (!(await canLeave())) return;
     fileRequest.current++;
+    await flushTaskDraft();
+    composerDrafts.current.set(sessionRef.current, composerCurrent.current);
     setPage(next);
     setMobileNav(false);
     if (next !== "project") {
@@ -432,6 +445,7 @@ function App() {
   };
   const openProject = async (p: Project, targetSession?: string) => {
     if (!(await canLeave())) return;
+    await flushTaskDraft();
     setReferences([]);
     setAttachments([]);
     setText("");
@@ -791,36 +805,86 @@ function App() {
     project &&
     setDialog({
       title: "项目设置",
-      fields: [
-        { key: "name", label: "名称", value: project.name, required: true },
-        {
-          key: "description",
-          label: "简短说明",
-          value: project.description,
-          type: "textarea",
-        },
-        {
-          key: "aliases",
-          label: "别名",
-          value: (project.aliases ?? []).join("，"),
-        },
-      ],
-      action: async (v) => {
-        await api(
-          `/projects/${projectId}`,
-          {
-            ...project,
-            ...v,
-            aliases: v.aliases
-              .split(/[,，]/)
-              .map((x) => x.trim())
-              .filter(Boolean),
-          },
-          "PUT",
-        );
-        await refresh();
-      },
+      content: (
+        <>
+          <ProjectMetadata project={project} onSave={refresh} notify={notify} />
+          <ContextSettings
+            project={project}
+            notify={notify}
+            onSaved={refresh}
+          />
+        </>
+      ),
     });
+  const taskDraft = useRef<{
+    id: string;
+    version: number;
+    sessionId: string;
+  } | null>(null);
+  const draftWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const flushTaskDraft = async () => {
+    const d = taskDraft.current;
+    if (!d || d.sessionId !== sessionRef.current) return;
+    const latest = composerCurrent.current.text;
+    draftWrites.current = draftWrites.current
+      .catch(() => {})
+      .then(() =>
+        api(
+          `/tasks/${d.id}/draft`,
+          { text: latest, version: d.version },
+          "PUT",
+        ),
+      );
+    await draftWrites.current;
+  };
+  useEffect(() => {
+    if (!projectId || !sessionId) return;
+    const id = sessionId;
+    void api(`/projects/${projectId}/tasks`)
+      .then(async (ts: any[]) => {
+        const t = ts.find((t) => t.sessionId === id);
+        if (!t) return;
+        const ss = await api(`/sessions/${id}`);
+        if (sessionRef.current !== id || !ss.draft) return;
+        taskDraft.current = {
+          id: t.id,
+          version: t.draftVersion,
+          sessionId: id,
+        };
+        if (!composerCurrent.current.text && !composerDrafts.current.has(id))
+          setText(t.draftText || "");
+      })
+      .catch(() => {});
+  }, [projectId, sessionId]);
+  const beginTask = async (d: PreparedTask) => {
+    const p = projects.find((p) => p.id === d.task.projectId);
+    if (!p) return;
+    if (!(await canLeave())) return;
+    const existing = composerDrafts.current.get(d.session.id);
+    if (d.session.draft && (!existing || d.refilled))
+      composerDrafts.current.set(d.session.id, {
+        text: d.text,
+        attachments: [],
+        references: [],
+        capabilities: [],
+      });
+    await openProject(p, d.session.id);
+    taskDraft.current = d.session.draft
+      ? {
+          id: d.task.id,
+          version: d.task.draftVersion || 0,
+          sessionId: d.session.id,
+        }
+      : null;
+  };
+  useEffect(() => {
+    const d = taskDraft.current;
+    if (!d || d.sessionId !== sessionId) return;
+    const timer = setTimeout(() => {
+      void flushTaskDraft().catch((e) => notify(e.message));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [text, sessionId]);
   const sessionRuns = runs
       .filter((r) => r.sessionId === sessionId)
       .sort((a, b) => a.createdAt - b.createdAt),
@@ -876,7 +940,10 @@ function App() {
         }
       />
       <main>
-        <header className="topbar">
+        <header
+          className="topbar"
+          style={page === "today" ? { display: "none" } : undefined}
+        >
           <button
             className="mobile-only icon"
             aria-label="打开导航"
@@ -889,11 +956,13 @@ function App() {
             <span>
               {page === "project"
                 ? project?.name
-                : page === "projects"
-                  ? "项目"
-                  : page.startsWith("expert")
-                    ? "专家库"
-                    : "设置"}
+                : page === "today"
+                  ? "今天"
+                  : page === "projects"
+                    ? "项目"
+                    : page.startsWith("expert")
+                      ? "专家库"
+                      : "设置"}
             </span>
           </div>
           <span className="top-status">
@@ -910,6 +979,14 @@ function App() {
             )}
           </span>
         </header>
+        {page === "today" && (
+          <Today
+            projects={projects}
+            begin={beginTask}
+            notify={notify}
+            openNavigation={() => setMobileNav(true)}
+          />
+        )}
         {page === "projects" && (
           <div className="home page">
             <div className="page-heading">
@@ -1097,6 +1174,12 @@ function App() {
                   文件
                 </button>
                 <button
+                  className={tab === "tasks" ? "selected" : ""}
+                  onClick={() => setTab("tasks")}
+                >
+                  任务
+                </button>
+                <button
                   className={tab === "schedules" ? "selected" : ""}
                   onClick={() => setTab("schedules")}
                 >
@@ -1251,6 +1334,14 @@ function App() {
                     ))}
                   </div>
                 </>
+              )}
+              {tab === "tasks" && (
+                <TasksPanel
+                  projectId={projectId}
+                  projects={projects}
+                  begin={beginTask}
+                  notify={notify}
+                />
               )}
               {tab === "schedules" && (
                 <Schedules
@@ -2920,3 +3011,51 @@ function SettingsPage({
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
+
+function ProjectMetadata({
+  project,
+  onSave,
+  notify,
+}: {
+  project: Project;
+  onSave: () => Promise<void>;
+  notify: (s: string) => void;
+}) {
+  const [name, setName] = useState(project.name),
+    [aliases, setAliases] = useState((project.aliases || []).join("，"));
+  return (
+    <div className="project-metadata">
+      <label>
+        名称
+        <input value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <label>
+        别名
+        <input value={aliases} onChange={(e) => setAliases(e.target.value)} />
+      </label>
+      <button
+        onClick={async () => {
+          try {
+            await api(
+              `/projects/${project.id}`,
+              {
+                name,
+                aliases: aliases
+                  .split(/[,，]/)
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              },
+              "PATCH",
+            );
+            await onSave();
+            notify("名称与别名已保存");
+          } catch (e: any) {
+            notify(e.message);
+          }
+        }}
+      >
+        保存名称与别名
+      </button>
+    </div>
+  );
+}

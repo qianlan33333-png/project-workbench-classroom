@@ -79,6 +79,7 @@ func (a *API) Mount(r *gin.Engine) {
 	g.POST("/login", a.login)
 	owner := g.Group("")
 	owner.Use(a.authMiddleware)
+	a.mountToday(owner)
 	owner.GET("/browser/*path", func(c *gin.Context) {
 		var count int
 		if e := s.DB.QueryRow("SELECT count(*) FROM runs WHERE state IN ('running','waiting')").Scan(&count); e != nil || count == 0 {

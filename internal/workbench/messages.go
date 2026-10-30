@@ -209,6 +209,9 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 	if p.Archived {
 		return m, errors.New("项目已归档，不能继续执行")
 	}
+	if p.ID == personalProjectID && (len(m.Incoming.Capabilities) > 0 || len(m.Incoming.References) > 0 || len(m.Incoming.Attachments) > 0) {
+		return m, errors.New("个人助手不接收业务文件或执行能力，请进入对应项目")
+	}
 	expert := m.Incoming.ExpertID
 	if expert == "" {
 		expert = sess.ExpertID
@@ -305,6 +308,9 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		if _, err := tx.Exec("UPDATE inbox SET state=?,session_id=?,data=? WHERE id=?", m.State, m.SessionID, encode(m), m.ID); err != nil {
 			return err
 		}
+		if err = startTaskForSession(tx, sess.ID); err != nil {
+			return err
+		}
 		activated, err = activateSession(tx, sess.ID, m.Incoming.Text)
 		if err != nil {
 			return err
@@ -322,6 +328,14 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 	if alreadyQueued {
 		return m, nil
 	}
+	if ts, e := s.Tasks(p.ID); e == nil {
+		for _, t := range ts {
+			if t.SessionID == sess.ID && t.State == "in_progress" {
+				_ = s.Emit("", "", "task.updated", t)
+			}
+		}
+	}
+
 	if activated != nil {
 		if err = s.Emit(sess.ID, "", "session.updated", activated); err != nil {
 			return m, err
@@ -396,6 +410,7 @@ func (s *Store) Route(ctx context.Context, id string, semantic SemanticRouter) (
 	active := []Project{}
 	for _, p := range projects {
 		if !p.Archived {
+			p.Description = string([]rune(p.Description)[:min(240, len([]rune(p.Description)))])
 			active = append(active, p)
 		}
 	}

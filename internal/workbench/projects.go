@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Store) Projects() ([]Project, error) {
-	return listJSON[Project](s.DB, "SELECT data FROM projects ORDER BY archived,name")
+	return listJSON[Project](s.DB, "SELECT data FROM projects WHERE id <> 'personal-assistant' ORDER BY archived,name")
 }
 func (s *Store) Project(id string) (Project, error) {
 	return getJSON[Project](s.DB, "SELECT data FROM projects WHERE id=?", id)
@@ -93,6 +93,7 @@ func (s *Store) updateProject(id string, update Project) (Project, error) {
 	oldExperts := append([]string(nil), p.ExpertIDs...)
 	p.Name = strings.TrimSpace(update.Name)
 	p.Aliases = update.Aliases
+	descriptionChanged := p.Description != update.Description
 	p.Description = update.Description
 	p.ExpertIDs = update.ExpertIDs
 	p.DefaultExpertID = update.DefaultExpertID
@@ -103,6 +104,31 @@ func (s *Store) updateProject(id string, update Project) (Project, error) {
 	err = s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		if _, e := tx.Exec("UPDATE projects SET name=?,archived=?,data=? WHERE id=?", p.Name, p.Archived, encode(p), p.ID); e != nil {
 			return e
+		}
+		if descriptionChanged {
+			var raw string
+			c := ProjectContext{ProjectID: p.ID}
+			e := tx.QueryRow("SELECT data FROM project_contexts WHERE project_id=?", p.ID).Scan(&raw)
+			if e == nil {
+				c, e = decodeJSON[ProjectContext](raw)
+				if e != nil {
+					return e
+				}
+			} else if e != sql.ErrNoRows {
+				return e
+			}
+			if _, e = tx.Exec("INSERT OR IGNORE INTO context_versions VALUES(?,?,?)", p.ID, c.Version, encode(c)); e != nil {
+				return e
+			}
+			c.Manual = p.Description
+			c.ManualAt = now()
+			c.Description = p.Description
+			c.Version++
+			c.UpdatedAt = now()
+			c.State = "pending"
+			if _, e = tx.Exec("INSERT INTO project_contexts VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET data=excluded.data", p.ID, encode(c)); e != nil {
+				return e
+			}
 		}
 		for _, expert := range oldExperts {
 			if contains(p.ExpertIDs, expert) {
@@ -120,6 +146,7 @@ func (s *Store) updateProject(id string, update Project) (Project, error) {
 	if err != nil {
 		return p, err
 	}
+
 	return p, s.Emit("", "", "project.updated", p)
 }
 

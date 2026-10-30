@@ -79,7 +79,7 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + todaySchema); err != nil {
 		return nil, fmt.Errorf("数据库初始化: %w", err)
 	}
 	var version int
@@ -167,6 +167,7 @@ func listJSON[T any](db *sql.DB, q string, args ...any) ([]T, error) {
 	return out, rows.Err()
 }
 func (s *Store) Emit(session, run, kind string, data any) error {
+	s.contextEvent(session, kind, data)
 	_, err := s.DB.Exec("INSERT INTO events(session_id,run_id,type,data,created_at) VALUES(?,?,?,?,?)", session, run, kind, encode(data), now())
 	if err == nil {
 		select {

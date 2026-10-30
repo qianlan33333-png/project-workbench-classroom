@@ -6,6 +6,14 @@ import remarkGfm from "remark-gfm";
 import { Folder, FileText, ChevronDown, ChevronRight } from "lucide-react";
 import type { FileEntry } from "./api";
 
+function decodeFileLink(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 export function RichText({
   text,
   onFile,
@@ -37,9 +45,9 @@ export function RichText({
         components={{
           a: ({ href, children }) => {
             const local = href?.startsWith("project:")
-              ? decodeURIComponent(href.slice(8))
+              ? decodeFileLink(href.slice(8))
               : href && !/^https?:|mailto:|#/.test(href)
-                ? href.replace(/^\/workspace\//, "")
+                ? decodeFileLink(href).replace(/^\/workspace\//, "")
                 : "";
             return local && onFile ? (
               <button className="file-link" onClick={() => onFile(local)}>

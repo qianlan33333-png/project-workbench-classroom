@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
+  Sun,
   Folder,
   Library,
   Settings,
@@ -72,6 +73,7 @@ export function NavigationRail({
       </div>
       <nav>
         {[
+          { id: "today", text: "今天", Icon: Sun },
           { id: "projects", text: "项目", Icon: Folder },
           { id: "experts", text: "专家库", Icon: Library },
           { id: "settings", text: "设置", Icon: Settings },

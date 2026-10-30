@@ -60,6 +60,9 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 }
 
 func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {
+	if in.Project.ID == personalProjectID {
+		return s.personalTool(in, tool, args)
+	}
 	var a struct {
 		Query        string   `json:"query"`
 		RunID        string   `json:"runId"`

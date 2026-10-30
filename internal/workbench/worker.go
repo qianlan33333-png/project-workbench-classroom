@@ -31,6 +31,29 @@ func NewWorker(s *Store, e Executor, router SemanticRouter) *Worker {
 	return &Worker{Store: s, Executor: e, Router: router, answers: map[string]chan json.RawMessage{}}
 }
 func (w *Worker) Recover(ctx context.Context) error {
+	rows, e := w.Store.DB.Query("SELECT run_id FROM project_locks WHERE run_id LIKE 'maintenance:%'")
+	if e != nil {
+		return e
+	}
+	var maintenance []string
+	for rows.Next() {
+		var id string
+		if e = rows.Scan(&id); e != nil {
+			rows.Close()
+			return e
+		}
+		maintenance = append(maintenance, id)
+	}
+	rows.Close()
+	for _, id := range maintenance {
+		if e = w.Executor.Cleanup(ctx, strings.TrimPrefix(id, "maintenance:")); e != nil {
+			return e
+		}
+		if _, e = w.Store.DB.Exec("DELETE FROM project_locks WHERE run_id=?", id); e != nil {
+			return e
+		}
+	}
+
 	runs, err := listJSON[Run](w.Store.DB, "SELECT data FROM runs WHERE state IN ('running','waiting','stopping')")
 	if err != nil {
 		return err
@@ -69,6 +92,9 @@ func (w *Worker) Recover(ctx context.Context) error {
 		return err
 	}
 	if err = w.Store.PurgeExpiredSessions(); err != nil {
+		return err
+	}
+	if err = w.Store.ApplyForgottenMemories(); err != nil {
 		return err
 	}
 	return w.Store.RecoverDeliveries()
@@ -129,6 +155,7 @@ func (w *Worker) Start(ctx context.Context) {
 			}
 			r, err := w.claim()
 			if errors.Is(err, ErrNotFound) {
+				w.maintainToday(ctx)
 				continue
 			}
 			if err != nil {
@@ -168,6 +195,18 @@ func (w *Worker) claim() (Run, error) {
 	return r, err
 }
 func (w *Worker) execute(parent context.Context, r Run) {
+	if r.ProjectID == personalProjectID {
+		if flag, _ := w.Store.Setting("personal_context_reset"); flag == "true" {
+			if e := w.Store.resetPersonalContext(); e != nil {
+				r.State = "failed"
+				r.Error = e.Error()
+				_ = w.Store.saveRun(r)
+				_, _ = w.Store.DB.Exec("DELETE FROM project_locks WHERE run_id=?", r.ID)
+				return
+			}
+			_ = w.Store.SetSetting("personal_context_reset", "")
+		}
+	}
 	if r.Kind == "archive" {
 		w.executeArchive(parent, r)
 		return
@@ -315,6 +354,9 @@ func (w *Worker) execute(parent context.Context, r Run) {
 	}
 }
 func (w *Worker) prompt(r Run, p Project) string {
+	if p.ID == personalProjectID {
+		return w.personalPrompt(r)
+	}
 	var b strings.Builder
 	if tools, e := w.Store.CLITools(); e == nil {
 		for _, t := range tools {
