@@ -111,3 +111,9 @@ encode @workbench_compressible zstd gzip
 完整独立站点示例见 `deploy/Caddyfile.example`；不要用示例覆盖现有公司官网路由。编辑后运行 `caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`，通过后 reload。实际修改前的 Caddyfile 保存在 `/opt/project-workbench/rollback-message-feedback-20261030/Caddyfile`。程序回滚时可继续保留这项事件流修复；只有确需恢复代理配置时才恢复该文件并再次 validate/reload。对照脚本通过新增临时文件产生一个真实事件，检查浏览器是否及时收到，不能只看连接为 200。
 
 配置依据：[Caddy encode](https://caddyserver.com/docs/caddyfile/directives/encode) 与 [请求匹配器](https://caddyserver.com/docs/caddyfile/matchers)。当前新版文档的增量流行为不能代表服务器已经安装的 2.6.2，必须以实际版本和浏览器测量为准。
+
+## 无标题新对话版本与回滚
+
+当前版本 `cloud-20261030-07-session-titles`，上一版 `cloud-20261030-06-message-feedback`。完整快照 `/opt/project-workbench/rollback-session-titles-20261030/{data,config}`。发布先停渠道接收并核对无排队／运行任务，再停主服务、做快照、原子切换并恢复主服务及渠道。
+
+回滚按前述步骤把 current 指回 06，保留当前数据库和游标。新增字段均在现有 JSON 中，不需迁移；旧界面回滚后可能显示没有消息的空白会话，但历史 ID、消息和执行记录不变。SSE 不压缩配置沿用 06，无需回退 Caddy。Harness 固定提交和镜像不变，仅对首条未命名专题开启内置标题提供方；默认项目助手、路由和定时任务不启用自动命名。

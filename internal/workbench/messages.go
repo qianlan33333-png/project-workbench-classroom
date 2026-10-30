@@ -93,7 +93,18 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 			m.State = "handled"
 		}
 	}
-	_, err := s.DB.Exec("INSERT INTO inbox VALUES(?,?,?,?,?,?,'',?,?)", m.ID, in.Source, in.ConnectionID, in.EventID, entryKey(in), m.State, m.CreatedAt, encode(m))
+	var activated *Session
+	err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if _, e := tx.Exec("INSERT INTO inbox VALUES(?,?,?,?,?,?,'',?,?)", m.ID, in.Source, in.ConnectionID, in.EventID, entryKey(in), m.State, m.CreatedAt, encode(m)); e != nil {
+			return e
+		}
+		if in.SessionID != "" {
+			var e error
+			activated, e = activateSession(tx, in.SessionID, in.Text)
+			return e
+		}
+		return nil
+	})
 	if err != nil {
 		old, e := getJSON[Message](s.DB, "SELECT data FROM inbox WHERE source=? AND connection_id=? AND event_id=?", in.Source, in.ConnectionID, in.EventID)
 		if e == nil {
@@ -106,6 +117,11 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 			return old, nil
 		}
 		return m, err
+	}
+	if activated != nil {
+		if err = s.Emit(activated.ID, "", "session.updated", activated); err != nil {
+			return m, err
+		}
 	}
 	if err = s.Emit("", "", "message.received", map[string]string{"id": m.ID, "eventId": in.EventID, "sessionId": in.SessionID, "source": in.Source}); err != nil {
 		return m, err
@@ -197,6 +213,7 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		priority = 10
 	}
 	alreadyQueued := false
+	var activated *Session
 	err = s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var existing string
 		err := tx.QueryRow("SELECT data FROM inbox WHERE id=?", m.ID).Scan(&existing)
@@ -221,6 +238,10 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		if _, err := tx.Exec("UPDATE inbox SET state=?,session_id=?,data=? WHERE id=?", m.State, m.SessionID, encode(m), m.ID); err != nil {
 			return err
 		}
+		activated, err = activateSession(tx, sess.ID, m.Incoming.Text)
+		if err != nil {
+			return err
+		}
 		if m.Incoming.Source != "automation" {
 			if _, err := tx.Exec("INSERT INTO entry_focus VALUES(?,?,?) ON CONFLICT(entry_key) DO UPDATE SET session_id=excluded.session_id,updated_at=excluded.updated_at", entryKey(m.Incoming), sess.ID, now()); err != nil {
 				return err
@@ -233,6 +254,11 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 	}
 	if alreadyQueued {
 		return m, nil
+	}
+	if activated != nil {
+		if err = s.Emit(sess.ID, "", "session.updated", activated); err != nil {
+			return m, err
+		}
 	}
 	if err = s.Emit(sess.ID, run.ID, "message.user", map[string]any{"text": run.Text, "source": run.Source, "messageId": m.ID, "attachments": m.Incoming.Attachments}); err != nil {
 		return m, err

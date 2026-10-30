@@ -37,6 +37,9 @@ export type Project = {
   archived: boolean;
 };
 export type Session = {
+  draft?: boolean;
+  titleSource?: string;
+  updatedAt?: number;
   id: string;
   projectId: string;
   title: string;

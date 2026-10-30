@@ -29,14 +29,16 @@ type Project struct {
 	CreatedAt        int64    `json:"createdAt"`
 }
 type Session struct {
-	ID        string `json:"id"`
-	ProjectID string `json:"projectId"`
-	HarnessID string `json:"harnessId"`
-	Title     string `json:"title"`
-	Kind      string `json:"kind"`
-	ExpertID  string `json:"expertId"`
-	CreatedAt int64  `json:"createdAt"`
-	UpdatedAt int64  `json:"updatedAt"`
+	Draft       bool   `json:"draft,omitempty"`
+	TitleSource string `json:"titleSource,omitempty"`
+	ID          string `json:"id"`
+	ProjectID   string `json:"projectId"`
+	HarnessID   string `json:"harnessId"`
+	Title       string `json:"title"`
+	Kind        string `json:"kind"`
+	ExpertID    string `json:"expertId"`
+	CreatedAt   int64  `json:"createdAt"`
+	UpdatedAt   int64  `json:"updatedAt"`
 }
 type Expert struct {
 	UpdatedAt   int64    `json:"updatedAt"`

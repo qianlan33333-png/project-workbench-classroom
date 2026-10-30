@@ -143,7 +143,7 @@ func (s *Store) PatchProject(id string, fields map[string]json.RawMessage) (Proj
 	return s.updateProject(id, p)
 }
 func (s *Store) Sessions(project string) ([]Session, error) {
-	return listJSON[Session](s.DB, "SELECT data FROM sessions WHERE project_id=? AND kind<>'automation' ORDER BY kind='assistant' DESC,updated_at DESC", project)
+	return listJSON[Session](s.DB, "SELECT data FROM sessions WHERE project_id=? AND kind<>'automation' AND coalesce(json_extract(data,'$.draft'),0)=0 ORDER BY kind='assistant' DESC,updated_at DESC", project)
 }
 func (s *Store) Session(id string) (Session, error) {
 	return getJSON[Session](s.DB, "SELECT data FROM sessions WHERE id=?", id)
@@ -164,10 +164,16 @@ func (s *Store) CreateSession(project, title, kind, expert string) (Session, err
 	if kind != "topic" && kind != "automation" {
 		return Session{}, errors.New("不支持的对话类型")
 	}
-	if strings.TrimSpace(title) == "" {
-		title = "新对话"
+	title = strings.TrimSpace(title)
+	if len([]rune(title)) > 80 {
+		return Session{}, errors.New("对话标题最多 80 个字")
 	}
 	sess := Session{ID: newID(), ProjectID: project, Title: title, Kind: kind, ExpertID: expert, CreatedAt: now(), UpdatedAt: now()}
+	sess.TitleSource = "manual"
+	if title == "" && kind == "topic" {
+		sess.Draft = true
+		sess.TitleSource = "pending"
+	}
 	sess.HarnessID = "pw-" + sess.ID
 	_, err = s.DB.Exec("INSERT INTO sessions VALUES(?,?,?,?,?,?)", sess.ID, project, sess.HarnessID, kind, sess.UpdatedAt, encode(sess))
 	if err != nil {
@@ -175,28 +181,53 @@ func (s *Store) CreateSession(project, title, kind, expert string) (Session, err
 	}
 	return sess, s.Emit(sess.ID, "", "session.created", sess)
 }
-func (s *Store) UpdateSession(id, title, expert string) (Session, error) {
+
+// UpdateSession patches only supplied fields; renaming never resets the expert.
+func (s *Store) UpdateSession(id string, title, expert *string) (Session, error) {
 	s.expertMu.RLock()
 	defer s.expertMu.RUnlock()
-	sess, err := s.Session(id)
+	var sess Session
+	err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		var raw string
+		if e := tx.QueryRow("SELECT data FROM sessions WHERE id=?", id).Scan(&raw); e != nil {
+			return e
+		}
+		var e error
+		sess, e = decodeJSON[Session](raw)
+		if e != nil {
+			return e
+		}
+		if title != nil {
+			value := strings.TrimSpace(*title)
+			if value == "" || len([]rune(value)) > 80 {
+				return errors.New("对话标题需为 1–80 个字")
+			}
+			sess.Title, sess.TitleSource = value, "manual"
+		}
+		if expert != nil {
+			var projectRaw string
+			if e = tx.QueryRow("SELECT data FROM projects WHERE id=?", sess.ProjectID).Scan(&projectRaw); e != nil {
+				return e
+			}
+			p, e := decodeJSON[Project](projectRaw)
+			if e != nil {
+				return e
+			}
+			if *expert != "" && *expert != "general" && !contains(p.ExpertIDs, *expert) {
+				return errors.New("此专家尚未加入项目")
+			}
+			sess.ExpertID = *expert
+		}
+		sess.UpdatedAt = max(now(), sess.UpdatedAt+1)
+		_, e = tx.Exec("UPDATE sessions SET data=?,updated_at=? WHERE id=?", encode(sess), sess.UpdatedAt, id)
+		return e
+	})
 	if err != nil {
 		return sess, err
 	}
-	p, err := s.Project(sess.ProjectID)
-	if err != nil {
-		return sess, err
-	}
-	if expert != "" && expert != "general" && !contains(p.ExpertIDs, expert) {
-		return sess, errors.New("此专家尚未加入项目")
-	}
-	if strings.TrimSpace(title) != "" {
-		sess.Title = title
-	}
-	sess.ExpertID = expert
-	sess.UpdatedAt = now()
-	_, err = s.DB.Exec("UPDATE sessions SET data=?,updated_at=? WHERE id=?", encode(sess), sess.UpdatedAt, id)
-	return sess, err
+	return sess, s.Emit(sess.ID, "", "session.updated", sess)
 }
+
 func contains(a []string, v string) bool {
 	for _, x := range a {
 		if x == v {

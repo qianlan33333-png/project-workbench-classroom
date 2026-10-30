@@ -23,6 +23,7 @@ import {
   Terminal,
   ChevronDown,
   Archive,
+  Pencil,
 } from "lucide-react";
 import { zipSync } from "fflate";
 import {
@@ -48,7 +49,7 @@ import { RichText, FileContent, useUnsavedChanges } from "./file-ui";
 import { ProjectFiles } from "./project-files";
 import { ExpertDetail } from "./expert-detail";
 import { useMessageSubmissions } from "./message-submissions";
-import { mergeRuns } from "./chat-state";
+import { mergeRuns, mergeSessions, initialSessionTitle } from "./chat-state";
 import "./style.css";
 
 type Field = {
@@ -92,6 +93,7 @@ function App() {
   const [toast, setToast] = useState(""),
     [dialog, setDialog] = useState<Dialog | null>(null),
     [busy, setBusy] = useState(false),
+    [creatingSession, setCreatingSession] = useState(false),
     [text, setText] = useState(""),
     [filePath, setFilePath] = useState(""),
     [content, setContent] = useState(""),
@@ -112,6 +114,19 @@ function App() {
     [references, setReferences] = useState<
       { projectId: string; path: string }[]
     >([]);
+  const creatingSessionRef = useRef(false);
+  const composerDrafts = useRef(
+    new Map<
+      string,
+      {
+        text: string;
+        attachments: string[];
+        references: { projectId: string; path: string }[];
+      }
+    >(),
+  );
+  const composerCurrent = useRef({ text, attachments, references });
+  composerCurrent.current = { text, attachments, references };
   const latestEvent = useRef(0);
   const runEventSequences = useRef(new Map<string, number>());
   const applyRun = useCallback(
@@ -129,6 +144,28 @@ function App() {
     refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   projectRef.current = projectId;
   sessionRef.current = sessionId;
+  const switchSession = (id: string) => {
+    if (id === sessionRef.current) return;
+    composerDrafts.current.set(sessionRef.current, composerCurrent.current);
+    const draft = composerDrafts.current.get(id);
+    setText(draft?.text || "");
+    setAttachments(draft?.attachments || []);
+    setReferences(draft?.references || []);
+    setSessionId(id);
+  };
+  const visibleSessions = sessions
+    .filter((s) => s.projectId === projectId)
+    .flatMap((s) => {
+      if (!s.draft) return [s];
+      const first =
+        submissions.items.find((v) => v.input.sessionId === s.id)?.input.text ??
+        runs
+          .filter((r) => r.sessionId === s.id)
+          .sort((a, b) => a.createdAt - b.createdAt)[0]?.text;
+      return first !== undefined
+        ? [{ ...s, title: initialSessionTitle(first) }]
+        : [];
+    });
   const project = projects.find((p) => p.id === projectId),
     session = sessions.find((s) => s.id === sessionId),
     locked = runs.some(
@@ -165,12 +202,23 @@ function App() {
     );
     setInbox(ib);
     setInteractions(ints);
-    if (projectRef.current) {
-      const [ss, fs] = await Promise.all([
-        api<Session[]>(`/projects/${projectRef.current}/sessions`),
-        api<FileEntry[]>(`/projects/${projectRef.current}/files`),
+    const targetProject = projectRef.current;
+    const targetSession = sessionRef.current;
+    if (targetProject) {
+      const [ss, fs, current] = await Promise.all([
+        api<Session[]>(`/projects/${targetProject}/sessions`),
+        api<FileEntry[]>(`/projects/${targetProject}/files`),
+        targetSession
+          ? api<Session>(`/sessions/${targetSession}`).catch(() => null)
+          : Promise.resolve(null),
       ]);
-      setSessions(ss);
+      if (targetProject !== projectRef.current) return;
+      setSessions((old) =>
+        mergeSessions(old, [
+          ...ss,
+          ...(current?.projectId === targetProject ? [current] : []),
+        ]),
+      );
       setFiles(fs);
       if (sessionRef.current) {
         const history = await api<Run[]>(
@@ -212,6 +260,13 @@ function App() {
       ) {
         runEventSequences.current.set(event.data.id, event.seq);
         applyRun(event.data as Run);
+      }
+      if (
+        (event.type === "session.updated" ||
+          event.type === "session.created") &&
+        event.data?.id
+      ) {
+        setSessions((old) => mergeSessions(old, [event.data as Session]));
       }
       setEvents((old) => {
         if (old.some((x) => x.seq === event.seq)) return old;
@@ -335,6 +390,13 @@ function App() {
     setAttachments([]);
     setText("");
     setProjectId(p.id);
+    composerDrafts.current.set(sessionRef.current, composerCurrent.current);
+    const nextDraft = composerDrafts.current.get(
+      targetSession || p.defaultSessionId,
+    );
+    setText(nextDraft?.text || "");
+    setAttachments(nextDraft?.attachments || []);
+    setReferences(nextDraft?.references || []);
     setSessionId(targetSession || p.defaultSessionId);
     fileRequest.current++;
     setFilePath("");
@@ -457,17 +519,68 @@ function App() {
         openProject(p);
       },
     });
-  const newSession = () =>
+  const newSession = () => {
+    if (creatingSessionRef.current) return;
+    if (session?.draft && !text && !attachments.length && !references.length) {
+      document
+        .querySelector<HTMLTextAreaElement>('[aria-label="发送消息"]')
+        ?.focus();
+      return;
+    }
+    const targetProject = projectId;
+    const priorSession = sessionId;
+    creatingSessionRef.current = true;
+    setCreatingSession(true);
+    void act(async () => {
+      try {
+        const ss = await api<Session>(
+          `/projects/${targetProject}/sessions`,
+          {},
+        );
+        setSessions((old) => mergeSessions(old, [ss]));
+        if (
+          projectRef.current === targetProject &&
+          sessionRef.current === priorSession
+        ) {
+          switchSession(ss.id);
+          setTab("sessions");
+          setProjectPanelOpen(false);
+          requestAnimationFrame(() =>
+            document
+              .querySelector<HTMLTextAreaElement>('[aria-label="发送消息"]')
+              ?.focus(),
+          );
+        }
+      } finally {
+        creatingSessionRef.current = false;
+        setCreatingSession(false);
+      }
+    });
+  };
+  const renameSession = () => {
+    if (!session) return;
+    const target = session;
     setDialog({
-      title: "另开对话",
-      description: "新对话仍属于当前项目，保留独立历史。",
-      fields: [{ key: "title", label: "对话名称", required: true }],
+      title: "重命名对话",
+      fields: [
+        {
+          key: "title",
+          label: "对话标题",
+          value: target.title,
+          required: true,
+        },
+      ],
+      confirm: "保存",
       action: async (v) => {
-        const ss = await api<Session>(`/projects/${projectId}/sessions`, v);
-        setSessions((old) => [...old, ss]);
-        setSessionId(ss.id);
+        const ss = await api<Session>(
+          `/sessions/${target.id}`,
+          { title: v.title },
+          "PUT",
+        );
+        setSessions((old) => mergeSessions(old, [ss]));
       },
     });
+  };
   const importFiles = async (
     list: FileList | null,
     archive = false,
@@ -943,17 +1056,21 @@ function App() {
               )}
               {tab === "sessions" && (
                 <>
-                  <button className="panel-action" onClick={newSession}>
+                  <button
+                    className="panel-action"
+                    onClick={newSession}
+                    disabled={creatingSession}
+                  >
                     <Plus size={15} />
                     另开对话
                   </button>
                   <div className="session-list">
-                    {sessions.map((ss) => (
+                    {visibleSessions.map((ss) => (
                       <button
                         className={sessionId === ss.id ? "selected" : ""}
                         key={ss.id}
                         onClick={() => {
-                          setSessionId(ss.id);
+                          switchSession(ss.id);
                           setProjectPanelOpen(false);
                         }}
                       >
@@ -1046,29 +1163,45 @@ function App() {
                     <select
                       aria-label="当前对话"
                       value={sessionId}
-                      onChange={(e) => setSessionId(e.target.value)}
+                      onChange={(e) => switchSession(e.target.value)}
                     >
-                      {sessions.map((ss) => (
+                      {!visibleSessions.some((s) => s.id === sessionId) && (
+                        <option value={sessionId}>新对话</option>
+                      )}
+                      {visibleSessions.map((ss) => (
                         <option key={ss.id} value={ss.id}>
                           {ss.title}
                         </option>
                       ))}
                     </select>
-                    <small>项目内持久对话 · 跨端继续</small>
+                    <small>
+                      {session?.draft
+                        ? "发送第一条消息后自动命名"
+                        : "项目内持久对话 · 跨端继续"}
+                    </small>
                   </div>
                 </div>
                 <div>
+                  <button
+                    className="icon"
+                    title="重命名对话"
+                    aria-label="重命名对话"
+                    disabled={!session || session.draft}
+                    onClick={renameSession}
+                  >
+                    <Pencil size={16} />
+                  </button>
                   <select
                     aria-label="当前专家"
                     value={session?.expertId || ""}
                     onChange={(e) =>
                       act(async () => {
-                        await api(
+                        const ss = await api<Session>(
                           `/sessions/${sessionId}`,
                           { expertId: e.target.value },
                           "PUT",
                         );
-                        await refresh();
+                        setSessions((old) => mergeSessions(old, [ss]));
                       })
                     }
                   >
@@ -1089,6 +1222,7 @@ function App() {
                   <button
                     className="icon"
                     title="另开对话"
+                    disabled={creatingSession}
                     onClick={newSession}
                   >
                     <Plus size={18} />

@@ -176,7 +176,10 @@ func (a *API) Mount(r *gin.Engine) {
 	})
 	owner.GET("/sessions/:id", func(c *gin.Context) { v, e := s.Session(c.Param("id")); reply(c, v, e) })
 	owner.PUT("/sessions/:id", func(c *gin.Context) {
-		bind(c, func(v Session) (any, error) { return s.UpdateSession(c.Param("id"), v.Title, v.ExpertID) })
+		bind(c, func(v struct {
+			Title    *string `json:"title"`
+			ExpertID *string `json:"expertId"`
+		}) (any, error) { return s.UpdateSession(c.Param("id"), v.Title, v.ExpertID) })
 	})
 	owner.GET("/sessions/:id/history", func(c *gin.Context) { v, e := s.History(c.Param("id")); reply(c, v, e) })
 	owner.GET("/inbox", func(c *gin.Context) { v, e := s.Inbox(); reply(c, v, e) })

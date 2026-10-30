@@ -196,6 +196,11 @@ func (w *Worker) execute(parent context.Context, r Run) {
 					return e
 				},
 				Event: func(seq int64, kind string, data json.RawMessage) error {
+					if kind == "session/title" {
+						if e := s.ApplySessionTitle(r.SessionID, data); e != nil {
+							return e
+						}
+					}
 					record := encode(map[string]any{"type": kind, "data": data})
 					res, e := s.DB.Exec("INSERT OR IGNORE INTO harness_events VALUES(?,?,?)", r.SessionID, seq, record)
 					if e != nil {

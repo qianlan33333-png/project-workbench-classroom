@@ -69,3 +69,13 @@ SSE 使用持久化的全局递增 seq，支持 Last-Event-ID 和 after 参数�
 网页在本标签页 sessionStorage 暂存未对齐的输入，以 eventId 显示“发送中／已接收／待确认／未能提交”；真正执行状态来自 Run。传输结果未知时先只读核对，不自动重发。用户显式核对重试时，只有 404 才提交同一 ID 和原请求。客户端消息和 Run 以消息 ID／事件 ID 对齐，不用正文猜测身份。旧回执不能修改当前输入框。
 
 SSE 直接合并运行状态。全局 HTTP 刷新记下请求发起时的事件序号，拒绝覆盖此后收到的运行事件；迟到的旧记录也不能让完成的任务退回排队。待发送状态属于 UI，不改变服务端执行优先级。
+
+## 无标题新对话与自动命名
+
+`POST /api/v1/projects/:id/sessions` 可传空对象：立即创建稳定的应用 Session/Harness ID，`draft=true`、`title=""`、`titleSource=pending`。列表与入口语义目录不包含未发送的草稿，但 `GET /sessions/:id` 可以恢复明确链接的空会话。已有显式标题、默认项目助手及定时会话保持原有行为。
+
+首条网页消息的接收事务同时写 inbox 和激活 Session：清除 draft，将原始消息开头最多 8 个词／24 个 Unicode 字符作为 fallback 标题；附件消息使用“附件讨论”。去重重试不会再次创建对话或覆盖首条标题。前端先通过待发送消息即时显示同一个侧栏条目，再以服务器回执收敛；不会等待路由、排队或模型。
+
+首轮在同一 Harness 中启用固定版本自带 `session-title-first-prompt-llm`，使用原生辅助请求生成简短标题；它不往主对话追加命名消息、不建立第二段历史，不改变任务排序。以 `session/title` 的 provider 事件更新应用元数据，忽略 Harness 根据包装提示词生成的 fallback。标题生成失败／超时保留首句标题，聊天任务照常进行。
+
+`PUT /sessions/:id` 仅修改明确传入的 `title` 或 `expertId`。手动标题非空且不超过 80 字，设为 manual；标题写入通过 SQLite 事务检查来源，迟到的 AI 结果不能覆盖人工命名。版本更新时间单调递增，客户端通过 `session.updated` 事件立即合并，慢快照不能覆盖较新的标题。改名和专家选择都不改变应用 Session/Harness ID。

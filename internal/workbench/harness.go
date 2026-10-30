@@ -209,6 +209,9 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "project-mcp-" + p.ID, "name": "@deepseek-ai/dsh-mcp-client", "config": config}}})
 		}
 	}
+	// SDK defaults disable native automatic titles. Enable only the first
+	// untitled topic; generation is an auxiliary request in the same Harness.
+	patch = append(patch, map[string]any{"id": "session-title-llm", "disabled": input.Routing || input.Session.TitleSource != "fallback", "config": map[string]any{"targetWords": 5, "targetCjkCharacters": 10, "maxInputBytes": 131072, "maxOutputTokens": 1024, "timeoutMs": 15000}})
 	patchFile := filepath.Join(home, "invocation-"+input.Run.ID+".yml")
 	b, err := yaml.Marshal(patch)
 	if err != nil {
