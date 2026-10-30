@@ -17,7 +17,10 @@ export async function api<T = any>(
   if (res.status === 401 && path != "/login")
     window.dispatchEvent(new Event("auth-expired"));
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? `请求失败（${res.status}）`);
+  if (!res.ok)
+    throw Object.assign(new Error(data.error ?? `请求失败（${res.status}）`), {
+      status: res.status,
+    });
   return data;
 }
 export type Project = {
@@ -51,12 +54,16 @@ export type Run = {
   source: string;
   expertId: string;
   expertDigest: string;
+  expertName?: string;
   createdAt: number;
   startedAt: number;
   finishedAt: number;
   scheduleId: string;
 };
 export type Expert = {
+  skillName?: string;
+  updatedAt?: number;
+  createdAt?: number;
   id: string;
   name: string;
   description: string;

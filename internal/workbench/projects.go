@@ -90,6 +90,7 @@ func (s *Store) updateProject(id string, update Project) (Project, error) {
 	if update.DefaultExpertID != "" && !contains(update.ExpertIDs, update.DefaultExpertID) {
 		return p, errors.New("默认专家必须先加入项目")
 	}
+	oldExperts := append([]string(nil), p.ExpertIDs...)
 	p.Name = strings.TrimSpace(update.Name)
 	p.Aliases = update.Aliases
 	p.Description = update.Description
@@ -97,7 +98,25 @@ func (s *Store) updateProject(id string, update Project) (Project, error) {
 	p.DefaultExpertID = update.DefaultExpertID
 	p.PluginIDs = update.PluginIDs
 	p.Archived = update.Archived
-	_, err = s.DB.Exec("UPDATE projects SET name=?,archived=?,data=? WHERE id=?", p.Name, p.Archived, encode(p), p.ID)
+	s.expertMu.Lock()
+	defer s.expertMu.Unlock()
+	err = s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if _, e := tx.Exec("UPDATE projects SET name=?,archived=?,data=? WHERE id=?", p.Name, p.Archived, encode(p), p.ID); e != nil {
+			return e
+		}
+		for _, expert := range oldExperts {
+			if contains(p.ExpertIDs, expert) {
+				continue
+			}
+			if _, e := tx.Exec("UPDATE sessions SET data=json_set(data,'$.expertId','general') WHERE project_id=? AND json_extract(data,'$.expertId')=?", p.ID, expert); e != nil {
+				return e
+			}
+			if _, e := tx.Exec("UPDATE schedules SET enabled=0,data=json_set(data,'$.enabled',json('false'),'$.expertId','','$.pausedReason','专家已从项目移除，请重新选择专家后启用') WHERE project_id=? AND json_extract(data,'$.expertId')=?", p.ID, expert); e != nil {
+				return e
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return p, err
 	}
@@ -130,6 +149,8 @@ func (s *Store) Session(id string) (Session, error) {
 	return getJSON[Session](s.DB, "SELECT data FROM sessions WHERE id=?", id)
 }
 func (s *Store) CreateSession(project, title, kind, expert string) (Session, error) {
+	s.expertMu.RLock()
+	defer s.expertMu.RUnlock()
 	p, err := s.Project(project)
 	if err != nil {
 		return Session{}, err
@@ -155,6 +176,8 @@ func (s *Store) CreateSession(project, title, kind, expert string) (Session, err
 	return sess, s.Emit(sess.ID, "", "session.created", sess)
 }
 func (s *Store) UpdateSession(id, title, expert string) (Session, error) {
+	s.expertMu.RLock()
+	defer s.expertMu.RUnlock()
 	sess, err := s.Session(id)
 	if err != nil {
 		return sess, err

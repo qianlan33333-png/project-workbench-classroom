@@ -13,10 +13,11 @@ import (
 )
 
 type Store struct {
-	DB     *sql.DB
-	Root   string
-	mu     sync.Mutex
-	notify chan struct{}
+	DB       *sql.DB
+	Root     string
+	mu       sync.Mutex
+	expertMu sync.RWMutex
+	notify   chan struct{}
 }
 
 const schema = `

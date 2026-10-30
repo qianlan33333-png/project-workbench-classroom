@@ -32,6 +32,12 @@ func (s *Store) SaveSchedule(v Schedule) (Schedule, error) {
 	return s.saveSchedule(v, "")
 }
 func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
+	s.expertMu.RLock()
+	defer s.expertMu.RUnlock()
+	if v.Enabled && v.PausedReason != "" {
+		return v, errors.New("请先编辑任务，重新确认使用的专家后再启用")
+	}
+	v.PausedReason = ""
 	p, err := s.Project(v.ProjectID)
 	if err != nil {
 		return v, err
@@ -88,6 +94,8 @@ func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
 	return v, err
 }
 func (s *Store) FireSchedules(at time.Time) error {
+	s.expertMu.RLock()
+	defer s.expertMu.RUnlock()
 	due, err := listJSON[Schedule](s.DB, "SELECT data FROM schedules WHERE enabled=1 AND next_at<=? ORDER BY next_at", at.UnixMilli())
 	if err != nil {
 		return err
@@ -143,6 +151,7 @@ func (s *Store) FireSchedules(at time.Time) error {
 					return e
 				}
 				r.ExpertDigest = ex.Digest
+				r.ExpertName = ex.Name
 			}
 			if _, e := tx.Exec("INSERT INTO sessions VALUES(?,?,?,?,?,?)", ss.ID, p.ID, ss.HarnessID, ss.Kind, ss.UpdatedAt, encode(ss)); e != nil {
 				return e

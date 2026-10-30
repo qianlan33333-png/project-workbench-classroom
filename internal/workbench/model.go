@@ -39,6 +39,7 @@ type Session struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 type Expert struct {
+	UpdatedAt   int64    `json:"updatedAt"`
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
 	SkillName   string   `json:"skillName"`
@@ -82,6 +83,7 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
+	ExpertName     string            `json:"expertName,omitempty"`
 	ID             string            `json:"id"`
 	ProjectID      string            `json:"projectId"`
 	SessionID      string            `json:"sessionId"`
@@ -146,6 +148,7 @@ type Delivery struct {
 	CreatedAt      int64    `json:"createdAt"`
 }
 type Schedule struct {
+	PausedReason         string `json:"pausedReason,omitempty"`
 	ID                   string `json:"id"`
 	ProjectID            string `json:"projectId"`
 	Name                 string `json:"name"`

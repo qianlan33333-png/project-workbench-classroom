@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 DEFAULT_URL = "https://dsh.qianlan333.cloud"
 
 
@@ -138,6 +138,25 @@ class Client:
         chunks.extend([(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\nContent-Type: application/octet-stream\r\n\r\n').encode(), read_input(file), f'\r\n--{boundary}--\r\n'.encode()])
         return self.request("POST", endpoint, body=b"".join(chunks), content_type="multipart/form-data; boundary=" + boundary)
 
+    def multipart(self, method, endpoint, fields, files, destination=None):
+        boundary = "pwb-" + uuid.uuid4().hex
+        chunks = []
+        def field_pair(value):
+            key, separator, text = value.partition("=")
+            if not separator or not key or not all(c.isascii() and (c.isalnum() or c in "_-") for c in key):
+                raise CLIError("multipart 参数需要 FIELD=VALUE，字段名使用字母、数字、下划线或连字符", 2)
+            return key, text
+        for value in fields:
+            key, text = field_pair(value)
+            chunks.append((f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{text}\r\n').encode())
+        for value in files:
+            key, file = field_pair(value)
+            filename = "stdin.bin" if file == "-" else Path(file).name
+            filename = filename.replace('"', "_").replace("\r", "_").replace("\n", "_")
+            chunks.extend([(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"; filename="{filename}"\r\nContent-Type: application/octet-stream\r\n\r\n').encode(), read_input(file), b"\r\n"])
+        chunks.append(f'--{boundary}--\r\n'.encode())
+        return self.request(method, endpoint, body=b"".join(chunks), content_type="multipart/form-data; boundary=" + boundary, destination=destination)
+
 
 def parser():
     p = Parser(description="项目工作台 CLI：直接密码鉴权，默认 JSON 输出，无登录过期时间。")
@@ -204,6 +223,8 @@ def parser():
     data = api.add_mutually_exclusive_group()
     data.add_argument("--data", help="JSON 请求体")
     data.add_argument("--from", dest="input_file", help="JSON 文件，或 -")
+    api.add_argument("--form", action="append", default=[], help="multipart 文本字段 FIELD=VALUE；可重复")
+    api.add_argument("--file", action="append", default=[], help="multipart 文件 FIELD=PATH；可重复，PATH 可为 -")
     api.add_argument("--output", help="把响应原始字节写入文件")
     return p
 
@@ -255,7 +276,14 @@ def run(argv=None):
             data = json.loads(args.data)
         elif args.input_file:
             data = json.loads(read_input(args.input_file))
-        result = client.request(args.method, args.path, data, destination=args.output)
+        if args.form or args.file:
+            if args.data is not None or args.input_file:
+                raise CLIError("JSON 输入与 multipart --form/--file 不能混用", 2)
+            if sum(value.partition("=")[2] == "-" for value in args.file) > 1:
+                raise CLIError("stdin 只能作为一个文件输入", 2)
+            result = client.multipart(args.method, args.path, args.form, args.file, args.output)
+        else:
+            result = client.request(args.method, args.path, data, destination=args.output)
     elif args.command == "projects":
         if args.action == "list":
             result = client.request("GET", "/projects")

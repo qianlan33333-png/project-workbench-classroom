@@ -71,3 +71,20 @@ sudo systemctl start project-workbench-channels
 如需完全停用新系统：先停止新渠道和新应用，保存当前完整快照，再回退网页。**不要直接启动旧微信／飞书消费者**：它们的游标、去重表与待发送记录停留在切换时刻，可能重复执行。应先把新接收游标和已消费 ID 反向核对，隔离旧待发送消息，再单独启用；当前交付不会自动执行该反向业务迁移。无需回退数据时优先回滚新应用的发行目录，维持新数据库和会话映射。
 
 相关机制见 [systemd 委托文档](https://systemd.io/CONTROL_GROUP_INTERFACE/) 和 [Podman 文档](https://docs.podman.io/en/stable/markdown/podman.1.html)。
+
+## 工作台优化版本与回滚
+
+当前发行：`/opt/project-workbench/releases/cloud-20261030-05-workspace`。上一版：`cloud-20261030-04-cli`。发布前完整快照保存在 `/opt/project-workbench/rollback-workspace-20261030/{data,config}`，`previous-release` 记录上一版路径，至少保留 7 天。快照包含当时数据；部分临时 CLI 验收记录可能在该时点存在，最终线上已清理。
+
+本次是兼容的字段和文件版本扩展，不重新导入项目、不重建对话或渠道。需要紧急退回上一版程序时，等待全部排队／活动任务结束，再执行（只回退程序，保留当前数据、渠道游标及回执）：
+
+```sh
+sudo systemctl stop project-workbench-channels project-workbench
+sudo ln -sfn /opt/project-workbench/releases/cloud-20261030-04-cli /opt/project-workbench/current.rollback
+sudo mv -Tf /opt/project-workbench/current.rollback /opt/project-workbench/current
+sudo systemctl start project-workbench
+curl -f http://127.0.0.1:3082/api/v1/health
+sudo systemctl start project-workbench-channels
+```
+
+旧界面不提供新增专家管理功能。不要直接恢复旧快照覆盖上线后的文件或回退平台游标；完整数据恢复前先保存当前状态并核对后续消息和发送回执，按前文“备份与恢复”处理。源码、验收脚本和配置说明随新发行一并保留。

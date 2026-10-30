@@ -388,14 +388,12 @@ func (s *Store) RecoverFileIntents() error {
 func (s *Store) IndexFile(project, p string) error {
 	content := ""
 	h := ""
-	if strings.HasSuffix(strings.ToLower(p), ".md") || strings.HasSuffix(strings.ToLower(p), ".txt") {
-		b, hash, err := s.ReadFile(project, p)
-		if err == nil && len(b) <= 2<<20 && utf8.Valid(b) {
-			content = string(b)
-			h = hash
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
+	b, hash, err := s.ReadFile(project, p)
+	if err == nil && len(b) <= maxEditableFile && utf8.Valid(b) && !strings.ContainsRune(string(b), 0) {
+		content = string(b)
+		h = hash
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		if _, err := tx.Exec("DELETE FROM documents WHERE project_id=? AND path=?", project, p); err != nil {
@@ -503,6 +501,14 @@ func unzipInto(z *zip.Reader, root string) error {
 	return nil
 }
 func (s *Store) ImportZip(project string, reader io.ReaderAt, size int64) error {
+	return s.ImportZipTo(project, reader, size, "")
+}
+func (s *Store) ImportZipTo(project string, reader io.ReaderAt, size int64, target string) error {
+	if target != "" {
+		if e := validPath(target); e != nil {
+			return e
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.CheckUnlocked(project); err != nil {
@@ -554,15 +560,19 @@ func (s *Store) ImportZip(project string, reader io.ReaderAt, size int64) error 
 		return err
 	}
 	defer r.Close()
+	conflicts := []string{}
 	for _, p := range files {
-		if _, e := r.Stat(p); e == nil {
-			return fmt.Errorf("%w: 已有同名文件 %s，导入不会覆盖", ErrConflict, p)
+		if _, e := r.Stat(path.Join(target, p)); e == nil {
+			conflicts = append(conflicts, path.Join(target, p))
 		} else if !errors.Is(e, os.ErrNotExist) {
 			return e
 		}
 	}
+	if len(conflicts) > 0 {
+		return fmt.Errorf("%w: 导入不会覆盖以下路径：%s", ErrConflict, strings.Join(conflicts, "、"))
+	}
 	for _, dir := range dirs {
-		if e := r.MkdirAll(dir, 0700); e != nil {
+		if e := r.MkdirAll(path.Join(target, dir), 0700); e != nil {
 			return e
 		}
 	}
@@ -572,7 +582,7 @@ func (s *Store) ImportZip(project string, reader io.ReaderAt, size int64) error 
 		if err != nil {
 			return err
 		}
-		if _, err = s.saveFile(project, p, b, "", false, ""); err != nil {
+		if _, err = s.saveFile(project, path.Join(target, p), b, "", false, ""); err != nil {
 			return err
 		}
 	}

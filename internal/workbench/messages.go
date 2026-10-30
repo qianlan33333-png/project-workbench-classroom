@@ -22,16 +22,29 @@ func (s *Store) Runs(session string) ([]Run, error) {
 	return s.RunPage(session, "")
 }
 func (s *Store) RunPage(session, before string) ([]Run, error) {
+	var rows []Run
+	var err error
 	if before != "" {
-		return listJSON[Run](s.DB, "SELECT data FROM runs WHERE (?='' OR session_id=?) AND rowid<(SELECT rowid FROM runs WHERE id=?) ORDER BY rowid DESC LIMIT 100", session, session, before)
+		rows, err = listJSON[Run](s.DB, "SELECT data FROM runs WHERE (?='' OR session_id=?) AND rowid<(SELECT rowid FROM runs WHERE id=?) ORDER BY rowid DESC LIMIT 100", session, session, before)
+	} else {
+		rows, err = listJSON[Run](s.DB, "SELECT data FROM runs WHERE (?='' OR session_id=?) ORDER BY state IN ('running','waiting','stopping') DESC,rowid DESC LIMIT 100", session, session)
 	}
-	if session != "" {
-		return listJSON[Run](s.DB, "SELECT data FROM runs WHERE session_id=? ORDER BY rowid DESC LIMIT 100", session)
+	for i := range rows {
+		s.runExpertName(&rows[i])
 	}
-	return listJSON[Run](s.DB, "SELECT data FROM runs WHERE (?='' OR session_id=?) ORDER BY state IN ('running','waiting','stopping') DESC,rowid DESC LIMIT 100", session, session)
+	return rows, err
+}
+func (s *Store) runExpertName(r *Run) {
+	if r.ExpertName == "" && r.ExpertID != "" && r.ExpertDigest != "" {
+		if ex, e := s.ExpertVersion(r.ExpertID, r.ExpertDigest); e == nil {
+			r.ExpertName = ex.Name
+		}
+	}
 }
 func (s *Store) Run(id string) (Run, error) {
-	return getJSON[Run](s.DB, "SELECT data FROM runs WHERE id=?", id)
+	r, e := getJSON[Run](s.DB, "SELECT data FROM runs WHERE id=?", id)
+	s.runExpertName(&r)
+	return r, e
 }
 func (s *Store) saveRun(r Run) error {
 	_, err := s.DB.Exec("UPDATE runs SET state=?,data=? WHERE id=?", r.State, encode(r), r.ID)
@@ -112,6 +125,8 @@ func (s *Store) SetFocus(in Incoming, session string) error {
 }
 
 func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool) (Message, error) {
+	s.expertMu.RLock()
+	defer s.expertMu.RUnlock()
 	if current, e := s.Message(m.ID); e == nil && current.RunID != "" {
 		return current, nil
 	}
@@ -137,6 +152,7 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		expert = ""
 	}
 	version := ""
+	expertName := ""
 	if expert != "" {
 		if !contains(p.ExpertIDs, expert) {
 			return m, errors.New("专家尚未加入项目")
@@ -146,8 +162,9 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 			return m, err
 		}
 		version = e.Digest
+		expertName = e.Name
 	}
-	run := Run{ID: newID(), ProjectID: p.ID, SessionID: sess.ID, MessageID: m.ID, State: "queued", Source: m.Incoming.Source, Text: m.Incoming.Text, ExpertID: expert, ExpertDigest: version, ReplyAnchor: anchor, AnchorExplicit: explicit, CreatedAt: now()}
+	run := Run{ExpertName: expertName, ID: newID(), ProjectID: p.ID, SessionID: sess.ID, MessageID: m.ID, State: "queued", Source: m.Incoming.Source, Text: m.Incoming.Text, ExpertID: expert, ExpertDigest: version, ReplyAnchor: anchor, AnchorExplicit: explicit, CreatedAt: now()}
 	run.ExpertVersions = map[string]string{}
 	for _, id := range p.ExpertIDs {
 		ex, e := s.Expert(id)

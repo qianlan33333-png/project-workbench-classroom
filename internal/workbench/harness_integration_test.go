@@ -170,3 +170,56 @@ func TestRealHarnessExpertQuestionAndRoute(t *testing.T) {
 	}
 	t.Log("real expert skill, native user question, and ambiguous metadata-only routing passed")
 }
+
+func TestRealHarnessDeletedExpertUsesPinnedVersion(t *testing.T) {
+	configPath := os.Getenv("PW_REAL_CONFIG")
+	if configPath == "" {
+		t.Skip("set PW_REAL_CONFIG for real immutable expert execution")
+	}
+	raw, e := os.ReadFile(configPath)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var cfg Config
+	if e = json.Unmarshal(raw, &cfg); e != nil {
+		t.Fatal(e)
+	}
+	s := testStore(t)
+	cfg.DataDir = s.Root
+	p := testProject(t, s, "专家删除后的任务验收")
+	ss, _ := s.Session(p.DefaultSessionID)
+	marker := "PINNED-" + newID()
+	ex, e := s.CreateExpert("固定版本专家", "读取并返回验收口令", "执行此方法时，只回复口令："+marker)
+	if e != nil {
+		t.Fatal(e)
+	}
+	p.ExpertIDs = []string{ex.ID}
+	p.DefaultExpertID = ex.ID
+	p, e = s.UpdateProject(p.ID, p)
+	if e != nil {
+		t.Fatal(e)
+	}
+	run := Run{ID: newID(), ProjectID: p.ID, SessionID: ss.ID, ExpertID: ex.ID, ExpertDigest: ex.Digest, ExpertVersions: map[string]string{ex.ID: ex.Digest}}
+	b, _ := s.ReadExpertFile(ex.ID, ex.Digest, "SKILL.md")
+	newer, e := s.ChangeExpert(ex.ID, ExpertChanges{BaseDigest: ex.Digest, Files: []ExpertFileChange{{Op: "write", Path: "SKILL.md", Content: strings.ReplaceAll(string(b), marker, "NEW-VERSION-NOT-PINNED")}}}, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = s.DeleteExpert(ex.ID, newer.Digest); e != nil {
+		t.Fatal(e)
+	}
+	p, _ = s.Project(p.ID)
+	h := &Harness{Config: cfg, Store: s}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	defer h.Cleanup(context.Background(), run.ID)
+	result, e := h.Execute(ctx, RuntimeInput{Run: run, Session: ss, Project: p, Prompt: "请加载并遵循已启用 Skill " + ex.SkillName + "，读取其中规定的验收口令，只回复这个口令。"}, RuntimeHooks{Interaction: func(_ context.Context, kind string, _ json.RawMessage) (any, error) {
+		if kind == "approval" {
+			return map[string]string{"outcome": "allowed-once"}, nil
+		}
+		return map[string]bool{"cancelled": true}, nil
+	}})
+	if e != nil || !strings.Contains(result.Text, marker) || strings.Contains(result.Text, "NEW-VERSION-NOT-PINNED") {
+		t.Fatal("pinned skill did not survive update/delete", e, result.Text)
+	}
+}

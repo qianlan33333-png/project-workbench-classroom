@@ -276,3 +276,41 @@ func TestProjectDeletionRecovery(t *testing.T) {
 		t.Fatal("live project affected", e)
 	}
 }
+
+func TestCLIMultipartExpertChanges(t *testing.T) {
+	s := testStore(t)
+	ex, e := s.CreateExpert("CLI 专家", "独立 multipart 验收", "方法")
+	if e != nil {
+		t.Fatal(e)
+	}
+	hash, _ := PasswordHash("cli-multipart-test-password")
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.New()
+	(&API{Store: s, Config: Config{PasswordHash: hash}}).Mount(router)
+	server := httptest.NewServer(router)
+	defer server.Close()
+	temp := t.TempDir()
+	binary := filepath.Join(temp, "fixture.bin")
+	os.WriteFile(binary, []byte{0, 255, 17}, 0600)
+	script, _ := filepath.Abs("../../cli/pwb.py")
+	change := ExpertChanges{BaseDigest: ex.Digest, Files: []ExpertFileChange{{Op: "write", Path: "参考/fixture.bin", Upload: "file0"}}}
+	cmd := exec.Command("python3", script, "--url", server.URL, "--config", filepath.Join(temp, "cli.json"), "api", "POST", "/experts/"+ex.ID+"/changes", "--form", "changes="+encode(change), "--file", "file0="+binary)
+	for _, v := range os.Environ() {
+		if !strings.HasPrefix(v, "PWB_") {
+			cmd.Env = append(cmd.Env, v)
+		}
+	}
+	cmd.Env = append(cmd.Env, "PWB_PASSWORD=cli-multipart-test-password")
+	out, e := cmd.CombinedOutput()
+	if e != nil {
+		t.Fatal(e, string(out))
+	}
+	var updated Expert
+	if e = json.Unmarshal(out, &updated); e != nil {
+		t.Fatal(e, string(out))
+	}
+	b, e := s.ReadExpertFile(ex.ID, updated.Digest, "参考/fixture.bin")
+	if e != nil || !bytes.Equal(b, []byte{0, 255, 17}) {
+		t.Fatal(b, e)
+	}
+}

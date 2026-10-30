@@ -115,3 +115,25 @@ curl -u owner https://dsh.qianlan333.cloud/api/v1/projects
 ```
 
 同一密码具有个人工作台所有者权限，没有单独的 Agent 账号和权限配置。
+
+## multipart：专家与二进制（CLI 0.3.0）
+
+`pwb api` 支持可重复的 `--form KEY=VALUE` 与 `--file FIELD=PATH`；保留指定 HTTP 方法。它们与 JSON 的 `--data`／`--from` 互斥。最多一个文件可从 `-` 读取 stdin；返回文件用 `--output`。
+
+```sh
+pwb api GET /experts/EXPERT_ID
+pwb api GET /experts/EXPERT_ID/versions
+pwb api POST /experts/EXPERT_ID/changes \
+  --form 'changes={"baseDigest":"DIGEST_FROM_READ","files":[{"op":"write","path":"参考/示意图.png","upload":"resource"}]}' \
+  --file resource=./diagram.png
+pwb api POST /experts/EXPERT_ID/changes \
+  --data '{"baseDigest":"DIGEST_FROM_READ","metadata":{"name":"新媒体专家","description":"选题与内容方法"}}'
+pwb api GET /experts/EXPERT_ID/export --output ./expert.zip
+pwb api POST /experts/EXPERT_ID/copy --data '{}'
+pwb api DELETE /experts/EXPERT_ID --data '{"baseDigest":"DIGEST_FROM_READ"}'
+pwb api POST /projects/PROJECT_ID/directories --data '{"path":"导入资料"}'
+pwb api POST /projects/PROJECT_ID/import --form targetDir=导入资料 --file file=./vault.zip
+pwb api POST /projects/PROJECT_ID/upload --form path=附件/data.bin --form conflict=rename --file file=./data.bin
+```
+
+专家修改必须使用读取时的 digest；409 时重新读取并解决冲突，不直接重试覆盖。删除专家暂停显式绑定的定时任务，已提交任务继续使用固定版本。接口细节见仓库 `docs/ARCHITECTURE.md`。

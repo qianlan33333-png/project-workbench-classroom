@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import uuid
+import urllib.parse
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--cli', required=True)
@@ -20,6 +21,7 @@ if args.config:
     base += ['--config', args.config]
 records = []
 created = []
+created_experts = []
 before = None
 
 def cli(*words, content=None, error=None):
@@ -34,7 +36,7 @@ def cli(*words, content=None, error=None):
 
 ok = False
 try:
-    assert cli('schema')['version'] == '0.2.0'
+    assert cli('schema')['version'] == '0.3.0'
     assert cli('status')['expiresAt'] is None
     before = {p['id'] for p in cli('projects', 'list')}
     p = cli('projects', 'create', '--name', 'CLI 临时验收 ' + uuid.uuid4().hex[:8], '--description', '只用于 CLI 验收', '--alias', 'CLI测试别名')
@@ -61,6 +63,16 @@ try:
         temp = Path(temp)
         source = temp / 'fixture.bin'
         source.write_bytes(b'\x00\xff\xfeCLI\n')
+        expert = cli('api', 'POST', '/experts', '--data', json.dumps({'name':'CLI 包验收 '+uuid.uuid4().hex[:8],'description':'临时方法','instructions':'测试方法'}))
+        created_experts.append(expert['id'])
+        change = {'baseDigest':expert['digest'],'metadata':{'description':'二进制资源已更新'},'files':[{'op':'write','path':'参考/fixture.bin','upload':'resource'}]}
+        changed = cli('api','POST','/experts/'+expert['id']+'/changes','--form','changes='+json.dumps(change),'--file','resource='+str(source))
+        assert changed['digest'] != expert['digest']
+        received = temp/'expert-received.bin'
+        cli('api','GET','/experts/'+expert['id']+'/file?raw=1&path='+urllib.parse.quote('参考/fixture.bin'),'--output',str(received))
+        assert received.read_bytes() == source.read_bytes()
+        cli('api','DELETE','/experts/'+expert['id'],'--data',json.dumps({'baseDigest':changed['digest']}))
+        created_experts.remove(expert['id'])
         cli('files', 'upload', pid, '附件/fixture.bin', str(source))
         download = temp / 'received.bin'
         cli('files', 'download', pid, '附件/fixture.bin', '--output', str(download))
@@ -84,6 +96,12 @@ try:
     ok = True
 finally:
     cleanup_errors = []
+    for expert_id in created_experts:
+        try:
+            detail=cli('api','GET','/experts/'+expert_id)
+            cli('api','DELETE','/experts/'+expert_id,'--data',json.dumps({'baseDigest':detail['expert']['digest']}))
+        except Exception as e:
+            cleanup_errors.append('Temporary expert cleanup failed: '+str(e))
     for pid in created:
         try:
             cli('projects', 'delete', pid)

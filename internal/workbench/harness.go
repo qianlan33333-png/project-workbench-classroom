@@ -117,16 +117,19 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		sort.Strings(expertIDs)
 	}
 	for _, id := range expertIDs {
-		ex, e := h.Store.Expert(id)
-		if e != nil {
-			return nil, nil, "", e
-		}
-		version := ex.Digest
-		if fixed := input.Run.ExpertVersions[id]; fixed != "" {
-			version = fixed
-		}
+		version := input.Run.ExpertVersions[id]
 		if id == input.Run.ExpertID && input.Run.ExpertDigest != "" {
 			version = input.Run.ExpertDigest
+		}
+		if version == "" {
+			ex, e := h.Store.Expert(id)
+			if e != nil {
+				return nil, nil, "", e
+			}
+			version = ex.Digest
+		}
+		if _, e := h.Store.ExpertVersion(id, version); e != nil {
+			return nil, nil, "", e
 		}
 		source := filepath.Join(c.DataDir, "experts", id, version)
 		parent := filepath.Join(home, "skills", id)
@@ -139,7 +142,7 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 				return nil, nil, "", e
 			}
 		}
-		if _, e = os.Lstat(target); errors.Is(e, os.ErrNotExist) {
+		if _, e := os.Lstat(target); errors.Is(e, os.ErrNotExist) {
 			if e = os.Symlink(source, target); e != nil {
 				return nil, nil, "", e
 			}

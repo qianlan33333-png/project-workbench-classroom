@@ -115,6 +115,11 @@ func (a *API) Mount(r *gin.Engine) {
 		bind(c, func(v map[string]json.RawMessage) (any, error) { return s.PatchProject(c.Param("id"), v) })
 	})
 	owner.DELETE("/projects/:id", func(c *gin.Context) { reply(c, nil, s.DeleteProject(c.Param("id"))) })
+	owner.POST("/projects/:id/directories", func(c *gin.Context) {
+		bind(c, func(v struct {
+			Path string `json:"path"`
+		}) (any, error) { return nil, s.CreateDirectory(c.Param("id"), v.Path) })
+	})
 	owner.GET("/projects/:id/files", func(c *gin.Context) { v, e := s.Files(c.Param("id")); reply(c, v, e) })
 	owner.GET("/projects/:id/file", a.getFile)
 	owner.PUT("/projects/:id/file", func(c *gin.Context) {
@@ -201,6 +206,7 @@ func (a *API) Mount(r *gin.Engine) {
 		reply(c, nil, e)
 	})
 	owner.GET("/events", a.events)
+	a.mountExpertManagement(owner)
 	owner.GET("/experts", func(c *gin.Context) { v, e := s.Experts(); reply(c, v, e) })
 	owner.POST("/experts", func(c *gin.Context) {
 		bind(c, func(v struct {
@@ -214,12 +220,13 @@ func (a *API) Mount(r *gin.Engine) {
 	owner.POST("/experts/import", func(c *gin.Context) { a.importExpert(c) })
 	owner.POST("/experts/git", func(c *gin.Context) {
 		bind(c, func(v struct {
-			URL    string `json:"url"`
-			Commit string `json:"commit"`
-			Subdir string `json:"subdir"`
-			ID     string `json:"id"`
+			URL        string `json:"url"`
+			Commit     string `json:"commit"`
+			Subdir     string `json:"subdir"`
+			ID         string `json:"id"`
+			BaseDigest string `json:"baseDigest"`
 		}) (any, error) {
-			return s.ImportExpertGit(c.Request.Context(), v.URL, v.Commit, v.Subdir, v.ID)
+			return s.ImportExpertGit(c.Request.Context(), v.URL, v.Commit, v.Subdir, v.ID, v.BaseDigest)
 		})
 	})
 	owner.GET("/experts/:id/skill", func(c *gin.Context) {
@@ -407,6 +414,9 @@ func (a *API) getFile(c *gin.Context) {
 		reply(c, nil, e)
 		return
 	}
+	fileResponse(c, b, h)
+}
+func fileResponse(c *gin.Context, b []byte, h string) {
 	c.Header("ETag", `"`+h+`"`)
 	if c.Query("raw") == "1" {
 		typ := mime.TypeByExtension(filepath.Ext(c.Query("path")))
@@ -424,10 +434,11 @@ func (a *API) getFile(c *gin.Context) {
 	}
 	binary := !utf8.Valid(b) || bytes.ContainsRune(b, 0)
 	content := ""
-	if !binary {
+	tooLarge := len(b) > maxEditableFile
+	if !binary && (!tooLarge || c.Query("view") != "1") {
 		content = string(b)
 	}
-	reply(c, gin.H{"path": c.Query("path"), "content": content, "binary": binary, "hash": h, "size": len(b)}, nil)
+	reply(c, gin.H{"path": c.Query("path"), "content": content, "binary": binary, "tooLarge": tooLarge, "editable": !binary && !tooLarge, "hash": h, "size": len(b)}, nil)
 }
 func (a *API) upload(c *gin.Context, archive bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 512<<20)
@@ -443,7 +454,7 @@ func (a *API) upload(c *gin.Context, archive bool) {
 	}
 	defer f.Close()
 	if archive {
-		e = a.Store.ImportZip(c.Param("id"), f, header.Size)
+		e = a.Store.ImportZipTo(c.Param("id"), f, header.Size, c.PostForm("targetDir"))
 		reply(c, nil, e)
 		return
 	}
@@ -460,7 +471,11 @@ func (a *API) upload(c *gin.Context, archive bool) {
 	if path == "" {
 		path = "附件/" + header.Filename
 	}
-	v, e := a.Store.SaveFile(c.Param("id"), path, b, c.PostForm("baseHash"))
+	v, skipped, e := a.Store.UploadFile(c.Param("id"), path, b, c.PostForm("baseHash"), c.PostForm("conflict"))
+	if skipped && e == nil {
+		reply(c, gin.H{"path": v.Path, "skipped": true}, nil)
+		return
+	}
 	reply(c, v, e)
 }
 func (a *API) importExpert(c *gin.Context) {
@@ -476,7 +491,7 @@ func (a *API) importExpert(c *gin.Context) {
 		return
 	}
 	defer f.Close()
-	v, e := a.Store.ImportExpert(f, header.Size, c.PostForm("id"))
+	v, e := a.Store.ImportExpert(f, header.Size, c.PostForm("id"), c.PostForm("baseDigest"))
 	reply(c, v, e)
 }
 func (a *API) events(c *gin.Context) {

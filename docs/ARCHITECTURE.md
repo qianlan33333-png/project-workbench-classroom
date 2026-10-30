@@ -39,7 +39,7 @@ SSE 使用持久化的全局递增 seq，支持 Last-Event-ID 和 after 参数�
 |---|---|
 | 账号 | `/auth`、`/login`、`/logout`、`/settings/password` |
 | 项目与资料 | `/projects`、`/projects/:id/files`、`/file`、`/upload`、`/import`、`/export`、`/search`、`/revisions` |
-| 专家 | `/experts`、`/experts/import`、`/experts/git`、`/experts/:id/skill` |
+| 专家 | `/experts`、`/experts/import`、`/experts/git`、`/experts/:id/skill`、`/experts/:id`、`/versions`、`/files`、`/file`、`/changes`、`/copy`、`/export` |
 | 对话 | `/projects/:id/sessions`、`/sessions/:id` |
 | 消息与执行 | `/messages`、`/messages/:id/resolve`、`/inbox`、`/runs`、`/runs/:id/stop`、`/interactions/:id/answer` |
 | 事件 | `/events`，`json=1` 支持批量历史读取 |
@@ -48,3 +48,16 @@ SSE 使用持久化的全局递增 seq，支持 Last-Event-ID 和 after 参数�
 | 浏览器 | `/browser/*`，仅登录用户且有活动任务时代理 noVNC / WebSocket |
 
 发送 pending→sending 后才调用平台；异常重启将遗留 sending 置为 unknown，不能重新领取。飞书存平台消息回执；微信只把成功提交记为 accepted，不能等同于本人已收到或已读。
+
+## 文件和专家管理接口
+
+- `POST /projects/:id/directories`：JSON `{ "path": "资料/参考" }`，沿用项目写锁。
+- `POST /projects/:id/upload`：multipart `file`、完整相对 `path`、`baseHash`、`conflict`（空／skip／rename／replace）。目标目录包含在 path；返回修订和 skipped。
+- `POST /projects/:id/import`：multipart `file` ZIP 和可选 `targetDir`，始终不覆盖。
+- `GET /projects/:id/file?path=...&view=1`：返回 hash、binary、tooLarge、editable；超过 2MiB 时不把正文塞入编辑器。`raw=1` 获取原字节，原 CLI 读取行为兼容。
+- `GET /experts/:id`：expert 和 usage（projects、sessions、schedules）。`GET /versions` 返回版本元数据；`GET /files`、`GET /file?path=...` 和 `GET /export` 可带 digest 读取指定版本，即使专家已删除仍可按已知 digest 读取文件。
+- `POST /experts/:id/changes`：JSON `{baseDigest, metadata?, files?}`。metadata 支持 name（展示名）、description；files 每项使用 op=write/mkdir/rename/delete、path，rename 使用 to，write 使用 content 或 upload 字段名。multipart 将该 JSON 放在 changes 字段，二进制放在对应 upload 字段。校验或 CAS 失败不会发布部分内容。
+- `POST /experts/:id/copy`：克隆当前版本并生成新的内部标识。`DELETE /experts/:id` JSON `{baseDigest}`：删除目录登记并事务性清理关联；不可变版本仍保留。
+- 现有专家 ZIP／Git 更新同样必须提供 baseDigest；新导入不需要。已排队和运行任务使用提交时 ExpertVersions，运行器不再依赖最新专家目录记录。
+
+导航收起、文档、详情类型、尺寸和编辑草稿属于界面状态，不参与 Session/Harness ID。布局断点只改变 CSS；对话节点不会因详情开合重新挂载。专家详情通过 `#expert=ID` 恢复，专题仍通过 `#project=ID&session=ID` 定位。

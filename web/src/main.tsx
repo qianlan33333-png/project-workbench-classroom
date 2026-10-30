@@ -1,15 +1,9 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import CodeMirror from "@uiw/react-codemirror";
-import { markdown } from "@codemirror/lang-markdown";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   Folder,
   Plus,
   ArrowUp,
-  ArrowLeft,
-  Search,
   Settings,
   Library,
   FileText,
@@ -29,10 +23,6 @@ import {
   Terminal,
   ChevronDown,
   Archive,
-  PanelLeftClose,
-  FileCode,
-  Globe,
-  LogOut,
 } from "lucide-react";
 import { zipSync } from "fflate";
 import {
@@ -48,6 +38,15 @@ import {
   type FileEntry,
   type WorkEvent,
 } from "./api";
+import {
+  NavigationRail,
+  ProjectSidebar,
+  ConversationPane,
+  InspectorPane,
+} from "./workspace";
+import { RichText, FileContent, useUnsavedChanges } from "./file-ui";
+import { ProjectFiles } from "./project-files";
+import { ExpertDetail } from "./expert-detail";
 import "./style.css";
 
 type Field = {
@@ -71,10 +70,15 @@ const initialLocation = new URLSearchParams(location.hash.slice(1));
 function App() {
   const [auth, setAuth] = useState<boolean | null>(null),
     [page, setPage] = useState(
-      initialLocation.get("project") ? "project" : "projects",
+      initialLocation.get("expert")
+        ? "expert-detail"
+        : initialLocation.get("project")
+          ? "project"
+          : "projects",
     ),
     [projects, setProjects] = useState<Project[]>([]),
     [experts, setExperts] = useState<Expert[]>([]),
+    [expertId, setExpertId] = useState(initialLocation.get("expert") || ""),
     [projectId, setProjectId] = useState(initialLocation.get("project") || ""),
     [sessionId, setSessionId] = useState(initialLocation.get("session") || ""),
     [sessions, setSessions] = useState<Session[]>([]),
@@ -92,15 +96,22 @@ function App() {
     [saved, setSaved] = useState(""),
     [hash, setHash] = useState(""),
     [binary, setBinary] = useState(false),
+    [tooLarge, setTooLarge] = useState(false),
+    [detailView, setDetailView] = useState<Dialog | null>(null),
+    [runDetails, setRunDetails] = useState(""),
     [preview, setPreview] = useState(false),
-    [find, setFind] = useState(""),
-    [tab, setTab] = useState("files"),
+    [tab, setTab] = useState("sessions"),
+    [railCollapsed, setRailCollapsed] = useState(
+      () => localStorage.getItem("pwb.railCollapsed") !== "false",
+    ),
+    [projectPanelOpen, setProjectPanelOpen] = useState(false),
     [mobileNav, setMobileNav] = useState(false),
     [attachments, setAttachments] = useState<string[]>([]),
     [references, setReferences] = useState<
       { projectId: string; path: string }[]
-    >([]),
-    [searchResult, setSearchResult] = useState<any[] | null>(null);
+    >([]);
+  const fileRequest = useRef(0);
+  const expertGuard = useRef<(() => Promise<boolean>) | null>(null);
   const historyCursors = useRef<Record<string, string>>({});
   const chatEnd = useRef<HTMLDivElement>(null),
     projectRef = useRef(projectId),
@@ -197,6 +208,10 @@ function App() {
     if (auth && projectId) act(refresh);
   }, [projectId, auth, refresh, act]);
   useEffect(() => {
+    if (page === "project" && project && !sessionId)
+      setSessionId(project.defaultSessionId);
+  }, [page, project, sessionId]);
+  useEffect(() => {
     if (!sessionId || !auth) return;
     act(async () => {
       const history = await api<Run[]>(`/runs?sessionId=${sessionId}`);
@@ -235,41 +250,106 @@ function App() {
             project: projectId,
             session: sessionId,
           }).toString()
-        : "";
+        : page === "expert-detail"
+          ? new URLSearchParams({ expert: expertId }).toString()
+          : "";
     history.replaceState(
       null,
       "",
       location.pathname + location.search + (hash ? "#" + hash : ""),
     );
-  }, [page, projectId, sessionId]);
-  const openProject = (p: Project) => {
-    if (content !== saved && !window.confirm("文档有未保存的修改，仍然切换？"))
-      return;
+  }, [page, projectId, sessionId, expertId]);
+  const saveDocument = async () => {
+    if (!filePath || content === saved) return;
+    if (locked) throw new Error("任务正在写入，请等待任务结束或停止后再保存。");
+    const v = await api(
+      `/projects/${projectId}/file`,
+      { path: filePath, content, baseHash: hash },
+      "PUT",
+    );
+    setHash(v.after);
+    setSaved(content);
+    await refresh();
+    notify("已保存");
+  };
+  const { guard: documentGuard, dialog: unsavedDialog } = useUnsavedChanges(
+    !!filePath && content !== saved,
+    saveDocument,
+  );
+  const canLeave = async () =>
+    page === "expert-detail"
+      ? await (expertGuard.current?.() ?? Promise.resolve(true))
+      : await documentGuard();
+  const navigate = async (next: string) => {
+    if (!(await canLeave())) return;
+    fileRequest.current++;
+    setPage(next);
+    setMobileNav(false);
+    if (next !== "project") {
+      setFilePath("");
+      setContent("");
+      setSaved("");
+      setDetailView(null);
+      setRunDetails("");
+    }
+  };
+  const openExpert = async (id: string) => {
+    if (!(await canLeave())) return;
+    fileRequest.current++;
+    setExpertId(id);
+    setPage("expert-detail");
+    setFilePath("");
+    setContent("");
+    setSaved("");
+  };
+  const openProject = async (p: Project, targetSession?: string) => {
+    if (!(await canLeave())) return;
     setReferences([]);
     setAttachments([]);
     setText("");
     setProjectId(p.id);
-    setSessionId(p.defaultSessionId);
+    setSessionId(targetSession || p.defaultSessionId);
+    fileRequest.current++;
     setFilePath("");
-    setFind("");
-    setSearchResult(null);
+    setDetailView(null);
+    setRunDetails("");
     setContent("");
     setSaved("");
     setPage("project");
+    setTab("sessions");
+    setProjectPanelOpen(false);
     setMobileNav(false);
   };
+  const closeDocument = async () => {
+    if (!(await documentGuard())) return;
+    fileRequest.current++;
+    setFilePath("");
+    setContent("");
+    setSaved("");
+    setDetailView(null);
+    setRunDetails("");
+  };
   const openFile = async (path: string) => {
-    if (content !== saved && !window.confirm("放弃当前未保存的修改？")) return;
+    if (!(await documentGuard())) return;
+    const request = ++fileRequest.current;
+    setDetailView(null);
+    setRunDetails("");
     const v = await api(
-      `/projects/${projectId}/file?path=${encodeURIComponent(path)}`,
+      `/projects/${projectId}/file?view=1&path=${encodeURIComponent(path)}`,
     );
+    if (request !== fileRequest.current || projectId !== projectRef.current)
+      return;
     setFilePath(path);
     setContent(v.content);
     setSaved(v.content);
     setHash(v.hash);
     setBinary(!!v.binary);
+    setTooLarge(!!v.tooLarge);
+    setProjectPanelOpen(false);
     setPreview(
-      !!v.binary || /\.(png|jpe?g|gif|webp|pdf|mp4|webm)$/i.test(path),
+      !!v.binary ||
+        !!v.tooLarge ||
+        /\.(md|markdown|png|jpe?g|gif|webp|pdf|mp4|webm)$/i.test(path),
     );
   };
   const openLinkedFile = async (link: string) => {
@@ -359,29 +439,6 @@ function App() {
         const ss = await api<Session>(`/projects/${projectId}/sessions`, v);
         setSessions((old) => [...old, ss]);
         setSessionId(ss.id);
-        setFilePath("");
-      },
-    });
-  const createFile = () =>
-    setDialog({
-      title: "新建文档",
-      fields: [
-        {
-          key: "path",
-          label: "文件路径",
-          value: "新文档.md",
-          required: true,
-          hint: "可以输入目录/文件名.md",
-        },
-      ],
-      action: async (v) => {
-        await api(
-          `/projects/${projectId}/file`,
-          { path: v.path, content: "", baseHash: "" },
-          "PUT",
-        );
-        await refresh();
-        await openFile(v.path);
       },
     });
   const importFiles = async (
@@ -393,7 +450,11 @@ function App() {
     setBusy(true);
     try {
       const form = new FormData();
-      if (list.length === 1 && list[0].name.endsWith(".zip"))
+      if (
+        (archive || expert) &&
+        list.length === 1 &&
+        /\.zip$/i.test(list[0].name)
+      )
         form.append("file", list[0]);
       else if (archive || expert) {
         const input: Record<string, Uint8Array> = {};
@@ -410,6 +471,7 @@ function App() {
         );
       } else {
         form.append("file", list[0]);
+        form.append("conflict", "rename");
       }
       const path = expert
         ? "/experts/import"
@@ -453,10 +515,15 @@ function App() {
     }
   };
   const versions = async () => {
+    if (!(await documentGuard())) return;
+    setContent("");
+    setSaved("");
+    setFilePath("");
+    setRunDetails("");
     const revisions = await api<any[]>(
       `/projects/${projectId}/revisions?path=${encodeURIComponent(filePath)}`,
     );
-    setDialog({
+    setDetailView({
       title: filePath ? "文件历史" : "项目文件变化",
       content: (
         <div className="revision-list">
@@ -485,7 +552,7 @@ function App() {
                         read(v.before),
                         read(v.after),
                       ]);
-                      setDialog({
+                      setDetailView({
                         title: v.path,
                         description: "左侧为修改前，右侧为修改后。",
                         content: (
@@ -508,7 +575,7 @@ function App() {
                         `/revisions/${encodeURIComponent(v.id)}/undo`,
                         {},
                       );
-                      setDialog(null);
+                      setDetailView(null);
                       await refresh();
                       if (filePath) await openFile(filePath);
                       notify("已撤销；后续修改受到版本校验保护");
@@ -576,89 +643,30 @@ function App() {
     );
   return (
     <div className="app">
-      <aside className={`rail ${mobileNav ? "open" : ""}`}>
-        <a
-          className="brand"
-          onClick={() => {
-            setPage("projects");
-            setProjectId("");
-          }}
-        >
-          <span className="brand-mark">工</span>
-          <span>
-            项目工作台<small>让工作持续发生</small>
-          </span>
-        </a>
-        <nav>
-          <button
-            className={page.startsWith("project") ? "active" : ""}
-            onClick={() => {
-              setPage("projects");
-              setMobileNav(false);
-            }}
-          >
-            <Folder size={18} />
-            项目
-          </button>
-          <button
-            className={page === "experts" ? "active" : ""}
-            onClick={() => {
-              setPage("experts");
-              setMobileNav(false);
-            }}
-          >
-            <Library size={18} />
-            专家库
-          </button>
-          <button
-            className={page === "settings" ? "active" : ""}
-            onClick={() => {
-              setPage("settings");
-              setMobileNav(false);
-            }}
-          >
-            <Settings size={18} />
-            设置
-          </button>
-        </nav>
-        <div className="rail-title">
-          工作区{" "}
-          <button title="新建项目" onClick={newProject}>
-            <Plus size={15} />
-          </button>
-        </div>
-        <div className="project-links">
-          {projects
-            .filter((p) => !p.archived)
-            .map((p) => (
-              <button
-                className={
-                  page === "project" && p.id === projectId ? "chosen" : ""
-                }
-                key={p.id}
-                onClick={() => openProject(p)}
-              >
-                <span className="project-dot" />
-                {p.name}
-              </button>
-            ))}
-        </div>
-        <div className="rail-bottom">
-          <span className="online-dot" />
-          个人云端工作台
-          <button
-            aria-label="退出登录"
-            onClick={() =>
-              act(async () => {
-                await api("/logout", {});
-                setAuth(false);
-              })
-            }
-          >
-            <LogOut size={15} />
-          </button>
-        </div>
-      </aside>
+      <NavigationRail
+        collapsed={railCollapsed}
+        toggle={() => {
+          const next = !railCollapsed;
+          setRailCollapsed(next);
+          localStorage.setItem("pwb.railCollapsed", String(next));
+        }}
+        mobileOpen={mobileNav}
+        page={page}
+        projects={projects}
+        projectId={projectId}
+        navigate={(next) => {
+          void navigate(next);
+        }}
+        openProject={openProject}
+        newProject={newProject}
+        logout={() =>
+          act(async () => {
+            if (!(await canLeave())) return;
+            await api("/logout", {});
+            setAuth(false);
+          })
+        }
+      />
       <main>
         <header className="topbar">
           <button
@@ -675,7 +683,7 @@ function App() {
                 ? project?.name
                 : page === "projects"
                   ? "项目"
-                  : page === "experts"
+                  : page.startsWith("expert")
                     ? "专家库"
                     : "设置"}
             </span>
@@ -803,8 +811,7 @@ function App() {
                     onClick={() => {
                       const p = projects.find((p) => p.id === r.projectId);
                       if (p) {
-                        openProject(p);
-                        setSessionId(r.sessionId);
+                        void openProject(p, r.sessionId);
                       }
                     }}
                   >
@@ -851,7 +858,10 @@ function App() {
         )}
         {page === "project" && project && (
           <div className="workspace">
-            <aside className="project-panel">
+            <ProjectSidebar
+              open={projectPanelOpen}
+              close={() => setProjectPanelOpen(false)}
+            >
               <div className="project-title">
                 <span className="project-avatar small-avatar">
                   {project.name.slice(0, 1)}
@@ -867,16 +877,16 @@ function App() {
               </div>
               <div className="panel-tabs">
                 <button
-                  className={tab === "files" ? "selected" : ""}
-                  onClick={() => setTab("files")}
-                >
-                  文件
-                </button>
-                <button
                   className={tab === "sessions" ? "selected" : ""}
                   onClick={() => setTab("sessions")}
                 >
                   对话
+                </button>
+                <button
+                  className={tab === "files" ? "selected" : ""}
+                  onClick={() => setTab("files")}
+                >
+                  文件
                 </button>
                 <button
                   className={tab === "schedules" ? "selected" : ""}
@@ -886,119 +896,17 @@ function App() {
                 </button>
               </div>
               {tab === "files" && (
-                <>
-                  <div className="file-search">
-                    <Search size={14} />
-                    <input
-                      aria-label="搜索项目资料"
-                      placeholder="搜索资料…"
-                      value={find}
-                      onChange={(e) => {
-                        setFind(e.target.value);
-                        setSearchResult(null);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter")
-                          act(async () =>
-                            setSearchResult(
-                              await api(
-                                `/projects/${projectId}/search?q=${encodeURIComponent(find)}`,
-                              ),
-                            ),
-                          );
-                      }}
-                    />
-                  </div>
-                  <div className="file-tools">
-                    <button
-                      title="新建文档"
-                      disabled={locked}
-                      onClick={createFile}
-                    >
-                      <Plus size={15} />
-                    </button>
-                    <label
-                      title="导入目录"
-                      className={locked ? "disabled" : ""}
-                    >
-                      <Upload size={15} />
-                      <input
-                        type="file"
-                        multiple
-                        {...({ webkitdirectory: "" } as any)}
-                        disabled={locked}
-                        onChange={(e) => {
-                          importFiles(e.target.files, true);
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
-                    <label title="导入 ZIP">
-                      <FileCode size={15} />
-                      <input
-                        type="file"
-                        accept=".zip"
-                        disabled={locked}
-                        onChange={(e) => {
-                          importFiles(e.target.files, true);
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
-                    <button title="文件变化" onClick={() => act(versions)}>
-                      <History size={15} />
-                    </button>
-                    <a
-                      title="导出项目"
-                      href={endpoint(`/projects/${projectId}/export`)}
-                    >
-                      <Download size={15} />
-                    </a>
-                  </div>
-                  <div className="file-tree">
-                    {searchResult
-                      ? searchResult.map((r) => (
-                          <button
-                            key={r.path}
-                            className="search-hit"
-                            onClick={() => act(() => openFile(r.path))}
-                          >
-                            <strong>{r.path}</strong>
-                            <small>{r.snippet}</small>
-                          </button>
-                        ))
-                      : files
-                          .filter((f) =>
-                            f.path.toLowerCase().includes(find.toLowerCase()),
-                          )
-                          .map((f) => (
-                            <button
-                              key={f.path}
-                              className={`${filePath === f.path ? "selected" : ""} ${f.directory ? "directory" : ""}`}
-                              style={{
-                                paddingLeft: 14 + f.path.split("/").length * 10,
-                              }}
-                              onClick={() =>
-                                !f.directory && act(() => openFile(f.path))
-                              }
-                            >
-                              {f.directory ? (
-                                <Folder size={14} />
-                              ) : (
-                                <FileText size={14} />
-                              )}
-                              <span>{f.path.split("/").at(-1)}</span>
-                            </button>
-                          ))}
-                    {files.length === 0 && (
-                      <div className="panel-empty">
-                        这里还是空的。
-                        <br />
-                        新建文档或导入项目资料。
-                      </div>
-                    )}
-                  </div>
-                </>
+                <ProjectFiles
+                  key={projectId}
+                  projectId={projectId}
+                  files={files}
+                  selected={filePath}
+                  locked={locked}
+                  refresh={refresh}
+                  openFile={openFile}
+                  notify={notify}
+                  versions={() => act(versions)}
+                />
               )}
               {tab === "sessions" && (
                 <>
@@ -1013,7 +921,7 @@ function App() {
                         key={ss.id}
                         onClick={() => {
                           setSessionId(ss.id);
-                          setFilePath("");
+                          setProjectPanelOpen(false);
                         }}
                       >
                         <MessageSquare size={15} />
@@ -1064,6 +972,7 @@ function App() {
                 <button
                   onClick={() =>
                     act(async () => {
+                      if (!(await documentGuard())) return;
                       if (
                         !window.confirm(
                           "归档后项目仍保留，停止接收新任务。是否归档？",
@@ -1077,6 +986,9 @@ function App() {
                       );
                       setPage("projects");
                       setProjectId("");
+                      setFilePath("");
+                      setContent("");
+                      setSaved("");
                       await refresh();
                     })
                   }
@@ -1085,148 +997,16 @@ function App() {
                   归档项目
                 </button>
               </div>
-            </aside>
-            {filePath && (
-              <section className="editor-pane">
-                <header>
-                  <div>
-                    <FileText size={15} />
-                    <span title={filePath}>{filePath}</span>
-                    {content !== saved && <span className="unsaved" />}
-                  </div>
-                  <div>
-                    <button
-                      className={preview ? "selected" : ""}
-                      disabled={binary}
-                      onClick={() => setPreview(!preview)}
-                    >
-                      {preview ? "编辑" : "预览"}
-                    </button>
-                    <button title="文件历史" onClick={() => act(versions)}>
-                      <History size={15} />
-                    </button>
-                    <button
-                      className="primary small"
-                      disabled={binary || locked || content === saved}
-                      onClick={() =>
-                        act(async () => {
-                          const v = await api(
-                            `/projects/${projectId}/file`,
-                            { path: filePath, content, baseHash: hash },
-                            "PUT",
-                          );
-                          setHash(v.after);
-                          setSaved(content);
-                          await refresh();
-                          notify("已保存");
-                        })
-                      }
-                    >
-                      保存
-                    </button>
-                    <button
-                      title="关闭编辑器"
-                      onClick={() => {
-                        if (
-                          content === saved ||
-                          window.confirm("放弃未保存的修改？")
-                        ) {
-                          setFilePath("");
-                          setContent("");
-                          setSaved("");
-                        }
-                      }}
-                    >
-                      <X size={16} />
-                    </button>
-                  </div>
-                </header>
-                {locked && (
-                  <div className="lock-note">
-                    任务正在写入项目，可以查看和编辑草稿；任务结束或停止后再保存。
-                  </div>
-                )}
-                {preview ? (
-                  <div className="document-preview">
-                    {/\.(png|jpe?g|gif|webp)$/i.test(filePath) ? (
-                      <img
-                        src={endpoint(
-                          `/projects/${projectId}/file?raw=1&path=${encodeURIComponent(filePath)}`,
-                        )}
-                      />
-                    ) : /\.pdf$/i.test(filePath) ? (
-                      <iframe
-                        title="PDF 预览"
-                        src={endpoint(
-                          `/projects/${projectId}/file?raw=1&path=${encodeURIComponent(filePath)}`,
-                        )}
-                      />
-                    ) : /\.(mp4|webm)$/i.test(filePath) ? (
-                      <video
-                        controls
-                        src={endpoint(
-                          `/projects/${projectId}/file?raw=1&path=${encodeURIComponent(filePath)}`,
-                        )}
-                      />
-                    ) : binary ? (
-                      <p>此附件可下载查看，不能作为文本编辑。</p>
-                    ) : (
-                      <RichText
-                        text={content}
-                        onFile={(p) => act(() => openLinkedFile(p))}
-                      />
-                    )}
-                  </div>
-                ) : (
-                  <CodeMirror
-                    value={content}
-                    onChange={setContent}
-                    extensions={[markdown()]}
-                    height="100%"
-                    basicSetup={{ lineNumbers: true, foldGutter: true }}
-                  />
-                )}
-                <footer>
-                  <span>
-                    {binary ? "附件只读预览" : `${content.length} 字符`}
-                  </span>
-                  <a
-                    href={endpoint(
-                      `/projects/${projectId}/file?raw=1&download=1&path=${encodeURIComponent(filePath)}`,
-                    )}
-                  >
-                    <Download size={13} />
-                    下载
-                  </a>
-                  <button
-                    disabled={locked}
-                    onClick={() =>
-                      act(async () => {
-                        if (
-                          !window.confirm(
-                            `删除 ${filePath}？可从文件历史撤销。`,
-                          )
-                        )
-                          return;
-                        await api(
-                          `/projects/${projectId}/file?path=${encodeURIComponent(filePath)}&baseHash=${hash}`,
-                          undefined,
-                          "DELETE",
-                        );
-                        setFilePath("");
-                        setContent("");
-                        setSaved("");
-                        await refresh();
-                      })
-                    }
-                  >
-                    删除文件
-                  </button>
-                </footer>
-              </section>
-            )}
-            <section className={`chat ${filePath ? "compact" : ""}`}>
+            </ProjectSidebar>
+            <ConversationPane>
               <header className="chat-header">
+                <button
+                  className="mobile-only icon"
+                  aria-label="打开项目侧栏"
+                  onClick={() => setProjectPanelOpen(true)}
+                >
+                  <Menu size={18} />
+                </button>
                 <div>
                   <span className="assistant-icon">✦</span>
                   <div>
@@ -1264,9 +1044,7 @@ function App() {
                       {experts.find((e) => e.id === project.defaultExpertId)
                         ?.name || "通用助手"}
                     </option>
-                    {project.defaultExpertId && (
-                      <option value="general">通用助手</option>
-                    )}
+                    <option value="general">通用助手</option>
                     {experts
                       .filter((e) => project.expertIds?.includes(e.id))
                       .map((e) => (
@@ -1342,7 +1120,8 @@ function App() {
                       <div className="assistant-line">
                         <span className="assistant-icon">✦</span>
                         <strong>
-                          {experts.find((e) => e.id === r.expertId)?.name ||
+                          {r.expertName ||
+                            experts.find((e) => e.id === r.expertId)?.name ||
                             "项目助手"}
                         </strong>
                         <State state={r.state} />
@@ -1362,10 +1141,31 @@ function App() {
                           </button>
                         )}
                       </div>
-                      <RunActivity
-                        events={activity.filter((e) => e.runId === r.id)}
-                        running={r.state === "running"}
-                      />
+                      <button
+                        className="activity-summary"
+                        onClick={() =>
+                          act(async () => {
+                            if (!(await documentGuard())) return;
+                            setFilePath("");
+                            setContent("");
+                            setSaved("");
+                            setDetailView(null);
+                            setRunDetails(r.id);
+                          })
+                        }
+                      >
+                        <Terminal size={14} />
+                        执行过程 ·{" "}
+                        {
+                          activity.filter(
+                            (e) =>
+                              e.runId === r.id &&
+                              e.type === "harness.tool/call",
+                          ).length
+                        }{" "}
+                        次工具调用
+                        <ChevronRight size={13} />
+                      </button>
                       {r.result && (
                         <RichText
                           text={r.result}
@@ -1537,7 +1337,155 @@ function App() {
                   当前范围：{project.name} · 对话历史由助手持续维护
                 </small>
               </div>
-            </section>
+            </ConversationPane>
+            {(filePath || detailView || runDetails) && (
+              <InspectorPane
+                close={() => {
+                  void closeDocument();
+                }}
+              >
+                {filePath ? (
+                  <>
+                    <header>
+                      <div>
+                        <FileText size={15} />
+                        <span title={filePath}>{filePath}</span>
+                        {content !== saved && <span className="unsaved" />}
+                      </div>
+                      <div>
+                        <button
+                          className={preview ? "selected" : ""}
+                          disabled={binary || tooLarge}
+                          onClick={() => setPreview(!preview)}
+                        >
+                          {preview ? "编辑" : "预览"}
+                        </button>
+                        <button title="文件历史" onClick={() => act(versions)}>
+                          <History size={15} />
+                        </button>
+                        <button
+                          className="primary small"
+                          disabled={
+                            binary || tooLarge || locked || content === saved
+                          }
+                          onClick={() => act(saveDocument)}
+                        >
+                          保存
+                        </button>
+                        <button
+                          title="关闭编辑器"
+                          onClick={() => {
+                            void closeDocument();
+                          }}
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    </header>
+                    {locked && (
+                      <div className="lock-note">
+                        任务正在写入项目，可以查看和编辑草稿；任务结束或停止后再保存。
+                      </div>
+                    )}
+                    <FileContent
+                      file={{ path: filePath, content, hash, binary, tooLarge }}
+                      preview={preview}
+                      onChange={setContent}
+                      onAsk={() => {
+                        setAttachments((old) => [
+                          ...new Set([...old, filePath]),
+                        ]);
+                        setText(
+                          (old) =>
+                            old || `请按需读取并处理项目文件「${filePath}」。`,
+                        );
+                        void closeDocument();
+                      }}
+                      url={endpoint(
+                        `/projects/${projectId}/file?raw=1&path=${encodeURIComponent(filePath)}`,
+                      )}
+                      onFile={(p) => act(() => openLinkedFile(p))}
+                    />
+                    <footer>
+                      <span>
+                        {tooLarge
+                          ? "大文件 · 原件已保存"
+                          : binary
+                            ? "附件只读预览"
+                            : `${content.length} 字符`}
+                      </span>
+                      <a
+                        href={endpoint(
+                          `/projects/${projectId}/file?raw=1&download=1&path=${encodeURIComponent(filePath)}`,
+                        )}
+                      >
+                        <Download size={13} />
+                        下载
+                      </a>
+                      <button
+                        disabled={locked}
+                        onClick={() =>
+                          act(async () => {
+                            if (
+                              !window.confirm(
+                                `删除 ${filePath}？可从文件历史撤销。`,
+                              )
+                            )
+                              return;
+                            await api(
+                              `/projects/${projectId}/file?path=${encodeURIComponent(filePath)}&baseHash=${hash}`,
+                              undefined,
+                              "DELETE",
+                            );
+                            setFilePath("");
+                            setContent("");
+                            setSaved("");
+                            await refresh();
+                          })
+                        }
+                      >
+                        删除文件
+                      </button>
+                    </footer>
+                  </>
+                ) : (
+                  <>
+                    <header>
+                      <strong>
+                        {runDetails
+                          ? `执行详情 #T${runDetails.slice(0, 8)}`
+                          : detailView?.title}
+                      </strong>
+                      <button
+                        aria-label="关闭详情"
+                        onClick={() => {
+                          void closeDocument();
+                        }}
+                      >
+                        <X size={16} />
+                      </button>
+                    </header>
+                    <div className="inspector-detail">
+                      {runDetails ? (
+                        <RunActivity
+                          events={activity.filter(
+                            (e) => e.runId === runDetails,
+                          )}
+                          running={true}
+                        />
+                      ) : (
+                        <>
+                          {detailView?.description && (
+                            <p>{detailView.description}</p>
+                          )}
+                          {detailView?.content}
+                        </>
+                      )}
+                    </div>
+                  </>
+                )}
+              </InspectorPane>
+            )}
           </div>
         )}
         {page === "experts" && (
@@ -1630,7 +1578,13 @@ function App() {
             </div>
             <div className="expert-grid">
               {experts.map((e) => (
-                <article key={e.id} className="expert-card">
+                <button
+                  key={e.id}
+                  className="expert-card"
+                  onClick={() => {
+                    void openExpert(e.id);
+                  }}
+                >
                   <span className="expert-avatar">
                     <Library size={24} />
                   </span>
@@ -1638,41 +1592,11 @@ function App() {
                   <p>{e.description}</p>
                   <div>
                     <small>版本 {e.digest.slice(0, 10)}</small>
-                    <label className="button">
-                      更新 ZIP
-                      <input
-                        type="file"
-                        accept=".zip"
-                        onChange={(event) => {
-                          const f = event.target.files?.[0];
-                          if (f)
-                            act(async () => {
-                              const form = new FormData();
-                              form.append("file", f);
-                              form.append("id", e.id);
-                              await api("/experts/import", form);
-                              await refresh();
-                              notify("专家已更新；正在执行的任务保持原版本");
-                            });
-                          event.target.value = "";
-                        }}
-                      />
-                    </label>
-                    <button
-                      onClick={() =>
-                        act(async () => {
-                          const v = await api(`/experts/${e.id}/skill`);
-                          setDialog({
-                            title: e.name,
-                            content: <RichText text={v.content} />,
-                          });
-                        })
-                      }
-                    >
-                      查看方法 <ChevronRight size={13} />
-                    </button>
+                    <span>
+                      查看与编辑 <ChevronRight size={14} />
+                    </span>
                   </div>
-                </article>
+                </button>
               ))}
             </div>
             {!experts.length && (
@@ -1688,10 +1612,33 @@ function App() {
             )}
           </div>
         )}
+        {page === "expert-detail" && expertId && (
+          <ExpertDetail
+            key={expertId}
+            id={expertId}
+            projects={projects}
+            refresh={refresh}
+            notify={notify}
+            onBack={() => {
+              void navigate("experts");
+            }}
+            onOpenProject={(p) => {
+              void openProject(p);
+            }}
+            onCopy={(id) => {
+              fileRequest.current++;
+              setExpertId(id);
+            }}
+            onGuard={(guard) => {
+              expertGuard.current = guard;
+            }}
+          />
+        )}
         {page === "settings" && (
           <SettingsPage act={act} setDialog={setDialog} notify={notify} />
         )}
       </main>
+      {unsavedDialog}
       {dialog && (
         <Modal dialog={dialog} close={() => setDialog(null)} notify={notify} />
       )}{" "}
@@ -1770,58 +1717,6 @@ function Login({
 function State({ state }: { state: string }) {
   return (
     <span className={`state state-${state}`}>{labels[state] ?? state}</span>
-  );
-}
-function RichText({
-  text,
-  onFile,
-}: {
-  text: string;
-  onFile?: (p: string) => void;
-}) {
-  const transformed = text.replace(
-    /!?\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-    (_, path, label) => {
-      const [file, anchor] = path.split("#");
-      const target = /\.[^/]+$/.test(file) ? file : file + ".md";
-      return `[${label || path}](project:${encodeURIComponent(target + (anchor ? "#" + anchor : ""))})`;
-    },
-  );
-  return (
-    <div className="markdown">
-      <Markdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={(url) =>
-          url.startsWith("project:")
-            ? url
-            : /^(https?:|mailto:|\/|#)/.test(url)
-              ? url
-              : url.includes(":")
-                ? ""
-                : url
-        }
-        components={{
-          a: ({ href, children }) => {
-            const local = href?.startsWith("project:")
-              ? decodeURIComponent(href.slice(8))
-              : href && !/^https?:|mailto:|#/.test(href)
-                ? href.replace(/^\/workspace\//, "")
-                : "";
-            return local && onFile ? (
-              <button className="file-link" onClick={() => onFile(local)}>
-                {children}
-              </button>
-            ) : (
-              <a href={href} target="_blank" rel="noreferrer">
-                {children}
-              </a>
-            );
-          },
-        }}
-      >
-        {transformed}
-      </Markdown>
-    </div>
   );
 }
 function RunActivity({
@@ -2214,7 +2109,8 @@ function Schedules({
   const edit = (v: any = {}) =>
     setDialog({
       title: v.id ? "编辑定时任务" : "新建定时任务",
-      description: "每次独立执行，成果留在项目中，不刷入项目助手。",
+      description:
+        v.pausedReason || "每次独立执行，成果留在项目中，不刷入项目助手。",
       fields: [
         { key: "name", label: "任务名称", required: true, value: v.name },
         {
@@ -2266,6 +2162,7 @@ function Schedules({
             notifyConversationId: fields.notifyTarget?.split("|")[1] || "",
             projectId: project.id,
             enabled: v.enabled ?? true,
+            pausedReason: "",
           },
           v.id ? "PUT" : "POST",
         );
@@ -2286,11 +2183,16 @@ function Schedules({
             {v.cron} · {v.timezone}
           </small>
           <small>下次：{stamp(v.nextAt)}</small>
+          {v.pausedReason && <p className="lock-note">{v.pausedReason}</p>}
           <div>
             <button onClick={() => edit(v)}>编辑</button>
             <button
               onClick={() =>
                 act(async () => {
+                  if (v.pausedReason) {
+                    edit(v);
+                    return;
+                  }
                   await api(
                     `/schedules/${v.id}`,
                     { ...v, enabled: !v.enabled },
@@ -2300,7 +2202,7 @@ function Schedules({
                 })
               }
             >
-              {v.enabled ? "暂停" : "启用"}
+              {v.pausedReason ? "重新配置" : v.enabled ? "暂停" : "启用"}
             </button>
             <button
               onClick={() =>
