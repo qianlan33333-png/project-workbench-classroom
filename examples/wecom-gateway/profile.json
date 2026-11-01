@@ -1,0 +1,7 @@
+{
+  "baseUrl": "https://wecom-gw.example.com/api/v1",
+  "apiKeyFile": "api-key",
+  "webhookSecretFile": "webhook-secret",
+  "workbenchUrl": "https://workbench.example.com",
+  "passwordFile": "workbench-password"
+}

@@ -1,0 +1,12 @@
+{
+  "connectionId": "support-gateway",
+  "accountId": "acc_REPLACE",
+  "projectId": "REPLACE_PROJECT_ID",
+  "expertId": "REPLACE_EXPERT_ID",
+  "enabled": true,
+  "timeoutSeconds": 120,
+  "notifyChatId": "oc_REPLACE",
+  "toolIds": [],
+  "pluginIds": [],
+  "contactIds": ["ct_REPLACE_TEST_CUSTOMER"]
+}

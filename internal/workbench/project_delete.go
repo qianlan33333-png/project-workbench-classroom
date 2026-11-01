@@ -59,6 +59,7 @@ func (s *Store) DeleteProject(id string) error {
 			return err
 		}
 		statements := []string{
+			"UPDATE gateway_bindings SET data=json_set(data,'$.enabled',json('false'),'$.version',json_extract(data,'$.version')+1) WHERE json_extract(data,'$.projectId')=?",
 			"DELETE FROM deliveries WHERE json_extract(data,'$.sessionId') IN (SELECT id FROM sessions WHERE project_id=?)",
 			"DELETE FROM schedule_occurrences WHERE schedule_id IN (SELECT id FROM schedules WHERE project_id=?)",
 			"DELETE FROM schedules WHERE project_id=?",

@@ -76,6 +76,7 @@ type FileReference struct {
 	Path      string `json:"path"`
 }
 type Message struct {
+	Gateway      *GatewayRun     `json:"gateway,omitempty"`
 	ID           string          `json:"id"`
 	Incoming     Incoming        `json:"incoming"`
 	State        string          `json:"state"`
@@ -93,6 +94,7 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
+	Gateway              *GatewayRun       `json:"gateway,omitempty"`
 	PersonalRulesVersion int64             `json:"personalRulesVersion,omitempty"`
 	Capabilities         []Capability      `json:"capabilities,omitempty"`
 	Kind                 string            `json:"kind,omitempty"`
@@ -145,21 +147,22 @@ type Connection struct {
 	LastHeartbeat int64  `json:"lastHeartbeat"`
 }
 type Delivery struct {
-	ID             string   `json:"id"`
-	MessageID      string   `json:"messageId"`
-	RunID          string   `json:"runId"`
-	SessionID      string   `json:"sessionId"`
-	ConnectionID   string   `json:"connectionId"`
-	ConversationID string   `json:"conversationId"`
-	ActorID        string   `json:"actorId"`
-	ReplyTo        string   `json:"replyTo"`
-	Kind           string   `json:"kind"`
-	Text           string   `json:"text"`
-	State          string   `json:"state"`
-	Receipt        string   `json:"receipt"`
-	Receipts       []string `json:"receipts,omitempty"`
-	Error          string   `json:"error"`
-	CreatedAt      int64    `json:"createdAt"`
+	Gateway        *GatewayDelivery `json:"gateway,omitempty"`
+	ID             string           `json:"id"`
+	MessageID      string           `json:"messageId"`
+	RunID          string           `json:"runId"`
+	SessionID      string           `json:"sessionId"`
+	ConnectionID   string           `json:"connectionId"`
+	ConversationID string           `json:"conversationId"`
+	ActorID        string           `json:"actorId"`
+	ReplyTo        string           `json:"replyTo"`
+	Kind           string           `json:"kind"`
+	Text           string           `json:"text"`
+	State          string           `json:"state"`
+	Receipt        string           `json:"receipt"`
+	Receipts       []string         `json:"receipts,omitempty"`
+	Error          string           `json:"error"`
+	CreatedAt      int64            `json:"createdAt"`
 }
 type Schedule struct {
 	PausedReason         string `json:"pausedReason,omitempty"`

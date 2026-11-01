@@ -80,7 +80,8 @@ const personalTools = [
  ["propose_decision","给出2–3个选择及推荐，仅记录本次决定。",{question:z.string(),reason:z.string(),options:z.array(z.object({label:z.string(),tradeoff:z.string(),recommended:z.boolean()})).min(2).max(3)}],
  ["remember_explicit","仅本人明确要求记住或明确纠正时立即保存，quote必须为本轮原话。普通聊天由每日整理学习，不逐条保存。不从ABC选择推断偏好；临时情况无期限默认七天。",{quote:z.string(),intent:z.enum(["remember","correction"]).optional(),memory:z.object({id:z.string().optional(),version:z.number().optional(),text:z.string(),kind:z.enum(["fact","goal","temporary","feedback","principle"]),expiresAt:z.number().optional()})}],
 ];
-for(const [name,description,inputSchema] of (process.env.PW_PERSONAL==="true"?personalTools:businessTools))
+const gatewayTools=businessTools.filter(([name])=>name==="search_history"||name==="read_run").map(([name,description,schema])=>[name,description.replaceAll("当前项目", "当前客户会话"),schema]);
+for(const [name,description,inputSchema] of (process.env.PW_GATEWAY==="true"?gatewayTools:process.env.PW_PERSONAL==="true"?personalTools:businessTools))
   server.registerTool(name, { description, inputSchema }, async (args) =>
     call(name, args),
   );

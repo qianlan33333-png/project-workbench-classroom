@@ -60,6 +60,32 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 }
 
 func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {
+	if _, e := s.gatewaySession(in.Session.ID); e == nil || in.Run.Source == gatewaySource {
+		var a struct {
+			Query string `json:"query"`
+			RunID string `json:"runId"`
+		}
+		if len(args) > 0 {
+			if e = json.Unmarshal(args, &a); e != nil {
+				return nil, e
+			}
+		}
+		switch tool {
+		case "search_history":
+			return listJSON[Run](s.DB, "SELECT data FROM runs WHERE session_id=? AND (text LIKE ? OR data->>'$.result' LIKE ?) ORDER BY created_at DESC LIMIT 20", in.Session.ID, "%"+a.Query+"%", "%"+a.Query+"%")
+		case "read_run":
+			r, e := s.Run(a.RunID)
+			if e != nil {
+				return nil, e
+			}
+			if r.SessionID != in.Session.ID {
+				return nil, errors.New("只能读取当前客户会话")
+			}
+			return r, nil
+		default:
+			return nil, errors.New("外部会话没有工作台管理或跨会话权限")
+		}
+	}
 	if in.Project.ID == personalProjectID {
 		return s.personalTool(in, tool, args)
 	}

@@ -1,0 +1,6 @@
+{
+  "id": "support-gateway",
+  "label": "客户消息网关",
+  "accounts": ["acc_REPLACE"],
+  "enabled": true
+}

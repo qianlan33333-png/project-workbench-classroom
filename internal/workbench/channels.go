@@ -9,7 +9,7 @@ import (
 )
 
 func (s *Store) Connections() ([]Connection, error) {
-	return listJSON[Connection](s.DB, "SELECT data FROM connections ORDER BY id")
+	return listJSON[Connection](s.DB, "SELECT data FROM connections WHERE kind IN ('wechat','feishu') ORDER BY id")
 }
 func (s *Store) Connection(id string) (Connection, error) {
 	return getJSON[Connection](s.DB, "SELECT data FROM connections WHERE id=?", id)
@@ -30,6 +30,9 @@ func (s *Store) SaveConnection(c Connection, secrets map[string]any) (Connection
 	}
 	old, e := s.Connection(c.ID)
 	if e == nil {
+		if old.Kind == gatewaySource {
+			return c, errors.New("请通过网关连接接口管理此连接")
+		}
 		c.LastHeartbeat = old.LastHeartbeat
 		c.Status = old.Status
 	} else {
@@ -168,6 +171,9 @@ func (s *Store) RecoverDeliveries() error {
 		return err
 	}
 	for _, d := range ds {
+		if d.Gateway != nil {
+			continue
+		}
 		if err = s.FinishDelivery(d.ID, "unknown", "", "连接中断，平台是否接收尚未确认；不会自动重发"); err != nil {
 			return err
 		}

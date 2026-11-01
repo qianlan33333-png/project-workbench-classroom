@@ -77,6 +77,7 @@ func (a *API) Mount(r *gin.Engine) {
 	g.POST("/login", a.login)
 	owner := g.Group("")
 	owner.Use(a.authMiddleware)
+	a.mountGateway(g, owner)
 	a.mountToday(owner)
 	owner.GET("/browser/*path", a.projectBrowser)
 	owner.POST("/logout", func(c *gin.Context) {
@@ -342,6 +343,9 @@ func (a *API) Mount(r *gin.Engine) {
 		}
 		out := []map[string]any{}
 		for _, v := range cs {
+			if v.Kind != "wechat" && v.Kind != "feishu" {
+				continue
+			}
 			secrets, _ := getJSON[map[string]any](s.DB, "SELECT data FROM connection_secrets WHERE id=?", v.ID)
 			out = append(out, map[string]any{"connection": v, "secrets": secrets})
 		}

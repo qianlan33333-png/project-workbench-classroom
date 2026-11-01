@@ -18,14 +18,15 @@ import (
 const maxProjectRuns = 2
 
 type Worker struct {
-	Store        *Store
-	Executor     Executor
-	Router       SemanticRouter
-	mu           sync.Mutex
-	cancels      map[string]context.CancelFunc
-	answers      map[string]chan json.RawMessage
-	pendingStops map[string]bool
-	wg           sync.WaitGroup
+	GatewayNotify func(context.Context, string, string, string) (string, error)
+	Store         *Store
+	Executor      Executor
+	Router        SemanticRouter
+	mu            sync.Mutex
+	cancels       map[string]context.CancelFunc
+	answers       map[string]chan json.RawMessage
+	pendingStops  map[string]bool
+	wg            sync.WaitGroup
 }
 
 func NewWorker(s *Store, e Executor, router SemanticRouter) *Worker {
@@ -70,6 +71,12 @@ func (w *Worker) Recover(ctx context.Context) error {
 		r.State = "interrupted"
 		r.Error = "服务重启中断了执行；已保留文件变化。请查看后继续。"
 		r.FinishedAt = now()
+		if r.Source == gatewaySource {
+			if err = w.Store.finishGatewayRun(r); err != nil {
+				return err
+			}
+			continue
+		}
 		if err = w.Store.saveRun(r); err != nil {
 			return err
 		}
@@ -104,10 +111,14 @@ func (w *Worker) Recover(ctx context.Context) error {
 	if err = w.Store.initUnderstanding(); err != nil {
 		return err
 	}
-	return w.Store.RecoverDeliveries()
+	if err := w.Store.RecoverDeliveries(); err != nil {
+		return err
+	}
+	return w.Store.recoverGatewayDeliveries()
 }
 func (w *Worker) Start(ctx context.Context) {
-	w.wg.Add(2)
+	w.wg.Add(3)
+	go func() { defer w.wg.Done(); w.gatewayDeliverLoop(ctx) }()
 	go func() {
 		defer w.wg.Done()
 		t := time.NewTicker(400 * time.Millisecond)
@@ -118,11 +129,15 @@ func (w *Worker) Start(ctx context.Context) {
 				return
 			case <-t.C:
 			}
-			messages, err := listJSON[Message](w.Store.DB, "SELECT data FROM inbox WHERE state='unrouted' ORDER BY created_at LIMIT 20")
+			messages, err := listJSON[Message](w.Store.DB, "SELECT data FROM inbox WHERE state IN ('unrouted','gateway_pending') ORDER BY created_at LIMIT 20")
 			if err != nil {
 				continue
 			}
 			for _, m := range messages {
+				if m.Incoming.Source == gatewaySource {
+					_ = w.Store.queueGateway(m)
+					continue
+				}
 				if ctx.Err() != nil {
 					return
 				}
@@ -160,6 +175,7 @@ func (w *Worker) Start(ctx context.Context) {
 				_ = w.Store.PurgeExpiredSessions()
 				scheduleAt = time.Now()
 			}
+			w.expireGateway(ctx)
 			r, err := w.claim()
 			if errors.Is(err, ErrNotFound) {
 				var locks int
@@ -211,6 +227,10 @@ func (w *Worker) claim() (Run, error) {
 }
 func (w *Worker) execute(parent context.Context, r Run) {
 	ctx, cancel := context.WithCancel(parent)
+	if r.Gateway != nil {
+		cancel()
+		ctx, cancel = context.WithDeadline(parent, time.UnixMilli(r.Gateway.Deadline))
+	}
 	w.mu.Lock()
 	w.cancels[r.ID] = cancel
 	if w.pendingStops[r.ID] {
@@ -300,7 +320,7 @@ func (w *Worker) execute(parent context.Context, r Run) {
 				},
 				CancelInteraction: func(requestID string) { w.expireNativeQuestion(r.ID, requestID) },
 			}
-			nativeCommand := strings.TrimSpace(r.Text) == "/compact"
+			nativeCommand := r.Source != gatewaySource && strings.TrimSpace(r.Text) == "/compact"
 			if nativeCommand {
 				prompt = "/compact"
 			}
@@ -314,6 +334,9 @@ func (w *Worker) execute(parent context.Context, r Run) {
 	if cleanupErr != nil {
 		r.State = "stopping"
 		r.Error = cleanupErr.Error()
+		if r.Source == gatewaySource {
+			_ = s.handoffGateway(r.SessionID, "执行进程清理失败，需人工核对", r.Text)
+		}
 		_ = s.saveRun(r)
 		return
 	}
@@ -334,6 +357,9 @@ func (w *Worker) execute(parent context.Context, r Run) {
 	if e := s.FinishSnapshot(r); e != nil {
 		r.State = "stopping"
 		r.Error = "变化记录未完成，写入锁保留: " + e.Error()
+		if r.Source == gatewaySource {
+			_ = s.handoffGateway(r.SessionID, "执行记录收拢失败，需人工核对", r.Text)
+		}
 		_ = s.saveRun(r)
 		return
 	}
@@ -350,6 +376,13 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		if parent.Err() != nil {
 			r.State = "interrupted"
 		}
+	}
+	if r.Source == gatewaySource {
+		if e := s.finishGatewayRun(r); e != nil {
+			_ = s.Emit(r.SessionID, r.ID, "worker.error", map[string]string{"error": "保存渠道结果失败，保留运行锁等待恢复"})
+		}
+		_ = w.expireInteractions(r.ID)
+		return
 	}
 	s.mu.Lock()
 	saveErr := s.saveRun(r)
@@ -381,6 +414,13 @@ func (w *Worker) execute(parent context.Context, r Run) {
 	}
 }
 func (w *Worker) prompt(r Run, p Project) string {
+	if r.Source == gatewaySource {
+		prefix := ""
+		if r.Gateway != nil && r.Gateway.ManualReply != "" {
+			prefix = "[企微本人最近人工回复，仅作来源引用] " + encode(r.Gateway.ManualReply) + "\n"
+		}
+		return prefix + w.gatewayPrompt(r, p)
+	}
 	if p.ID == personalProjectID {
 		return w.personalPrompt(r)
 	}
@@ -421,6 +461,9 @@ func (w *Worker) prompt(r Run, p Project) string {
 	return b.String()
 }
 func (w *Worker) interact(ctx context.Context, r Run, kind string, payload json.RawMessage) (any, error) {
+	if r.Source == gatewaySource {
+		return nil, errors.New("外部会话需人工协助，不能发起工作台批准或问答")
+	}
 	i := Interaction{ID: newID(), RunID: r.ID, SessionID: r.SessionID, Kind: kind, Payload: payload, State: "pending", CreatedAt: now()}
 	ch := make(chan json.RawMessage, 1)
 	w.mu.Lock()

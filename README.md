@@ -23,6 +23,8 @@ Agent 写入期间可查看、编辑本地草稿、补充下一条指令或停�
 
 ## CLI 与 Agent 调用
 
+标准企微网关连接器提供独立的 `wecom-gw-cli` 发行包及工作台签名回调适配，通过配置绑定账号、项目和专家；支持私聊应答、人工停答与可靠通知。配置模板、命令和验收边界见 [接入说明](docs/WECOM_CONNECTOR.md)，设计见 [PRD](docs/WECOM_CONNECTOR_PRD.md)。默认不启用，不改变现有本人微信／飞书入口。
+
 独立的 `pwb` CLI 可通过现有工作台密码直接操作项目、文件、附件及其他 API 数据，不设鉴权过期时间。仅需 Python 3.9+；支持 JSON 输出、stdin、版本校验和 ZIP 导入导出。详见 [安装及 Agent 使用说明](cli/README.md)。构建和发行包自动包含 `/cli/pwb.py` 与 `/cli/README.md` 下载入口。
 
 这是调用工作台 API 的客户端。Agent 执行环境中的全局 CLI 是另一项能力：设置提供飞书 CLI、CRM CLI 的安装与授权，也支持指定 Linux amd64 独立命令 tar.gz 发行包。登录状态保存在项目目录外，工具输出仍写入当前项目。MCP 复用 Harness 原生 stdio／HTTPS 协议；不要求逐项目安装绑定。
