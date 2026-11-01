@@ -102,12 +102,13 @@ type PersonalDecision struct {
 	CreatedAt      int64            `json:"createdAt"`
 }
 type DailyContent struct {
-	DecisionID     string `json:"decisionId,omitempty"`
-	Day            string `json:"day"`
-	Version        int64  `json:"version"`
-	Text           string `json:"text"`
-	State          string `json:"state"`
-	Error          string `json:"error,omitempty"`
-	UpdatedAt      int64  `json:"updatedAt"`
-	ContextVersion string `json:"contextVersion"`
+	PersonalRulesVersion int64  `json:"personalRulesVersion,omitempty"`
+	DecisionID           string `json:"decisionId,omitempty"`
+	Day                  string `json:"day"`
+	Version              int64  `json:"version"`
+	Text                 string `json:"text"`
+	State                string `json:"state"`
+	Error                string `json:"error,omitempty"`
+	UpdatedAt            int64  `json:"updatedAt"`
+	ContextVersion       string `json:"contextVersion"`
 }

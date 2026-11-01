@@ -3828,3 +3828,13 @@ label input[type="file"] {
   }
 }
 @media(max-width:767px){.today-header>div:first-child{padding-left:28px}.today-header .today-nav-button{position:absolute;left:9px;top:16px;padding:5px;border:0;background:none}.today-header-actions{max-width:155px}.today-header-actions button{font-size:11px}}
+
+.personal-rules { max-width: 920px; }
+.personal-rules textarea { min-height: 42dvh; resize: vertical; line-height: 1.75; }
+.rules-tabs, .rules-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+.rules-tabs button[aria-pressed="true"] { background: var(--active, #e8eddf); color: #38543c; }
+.rules-toolbar small { margin-right: auto; }
+.rules-preview { height: 42dvh; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.rules-confirm { margin-top: 16px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.rules-confirm button { margin: 4px; }
+@media(max-width:767px) { .personal-rules { padding:16px; } .rules-tabs button { font-size:12px; } .today-header-actions { max-width:190px; } }

@@ -93,29 +93,30 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
-	Capabilities   []Capability      `json:"capabilities,omitempty"`
-	Kind           string            `json:"kind,omitempty"`
-	ExpertName     string            `json:"expertName,omitempty"`
-	ID             string            `json:"id"`
-	ProjectID      string            `json:"projectId"`
-	SessionID      string            `json:"sessionId"`
-	MessageID      string            `json:"messageId"`
-	EventID        string            `json:"eventId,omitempty"`
-	State          string            `json:"state"`
-	Source         string            `json:"source"`
-	Text           string            `json:"text"`
-	ExpertID       string            `json:"expertId"`
-	ExpertDigest   string            `json:"expertDigest"`
-	ExpertVersions map[string]string `json:"expertVersions,omitempty"`
-	Attachments    []string          `json:"attachments,omitempty"`
-	ReplyAnchor    string            `json:"replyAnchor,omitempty"`
-	AnchorExplicit bool              `json:"anchorExplicit"`
-	Result         string            `json:"result"`
-	Error          string            `json:"error,omitempty"`
-	ScheduleID     string            `json:"scheduleId,omitempty"`
-	CreatedAt      int64             `json:"createdAt"`
-	StartedAt      int64             `json:"startedAt"`
-	FinishedAt     int64             `json:"finishedAt"`
+	PersonalRulesVersion int64             `json:"personalRulesVersion,omitempty"`
+	Capabilities         []Capability      `json:"capabilities,omitempty"`
+	Kind                 string            `json:"kind,omitempty"`
+	ExpertName           string            `json:"expertName,omitempty"`
+	ID                   string            `json:"id"`
+	ProjectID            string            `json:"projectId"`
+	SessionID            string            `json:"sessionId"`
+	MessageID            string            `json:"messageId"`
+	EventID              string            `json:"eventId,omitempty"`
+	State                string            `json:"state"`
+	Source               string            `json:"source"`
+	Text                 string            `json:"text"`
+	ExpertID             string            `json:"expertId"`
+	ExpertDigest         string            `json:"expertDigest"`
+	ExpertVersions       map[string]string `json:"expertVersions,omitempty"`
+	Attachments          []string          `json:"attachments,omitempty"`
+	ReplyAnchor          string            `json:"replyAnchor,omitempty"`
+	AnchorExplicit       bool              `json:"anchorExplicit"`
+	Result               string            `json:"result"`
+	Error                string            `json:"error,omitempty"`
+	ScheduleID           string            `json:"scheduleId,omitempty"`
+	CreatedAt            int64             `json:"createdAt"`
+	StartedAt            int64             `json:"startedAt"`
+	FinishedAt           int64             `json:"finishedAt"`
 }
 type Event struct {
 	Seq       int64           `json:"seq"`

@@ -11,6 +11,7 @@ import {
   Square,
 } from "lucide-react";
 import { api, labels, stamp, type Project, type Run } from "./api";
+import { PersonalRulesPanel } from "./personal-rules";
 import { RichText } from "./file-ui";
 import { useMessageSubmissions } from "./message-submissions";
 export type Task = {
@@ -588,6 +589,7 @@ export function Today({
         localStorage.getItem("pwb.arrangements") !== "false",
     ),
     [memory, setMemory] = useState(false),
+    [rules, setRules] = useState(false),
     [busy, setBusy] = useState(false),
     [refreshing, setRefreshing] = useState(false);
   const end = useRef<HTMLDivElement>(null);
@@ -654,6 +656,7 @@ export function Today({
             <h1>今天</h1><button className="mobile-only today-nav-button" aria-label="打开导航" onClick={openNavigation}><Menu size={18}/></button>
           </div>
           <div className="today-header-actions">
+            <button onClick={() => setRules(true)}>助手规则</button>
             <button onClick={() => setMemory(true)}>你目前如何理解我</button>
             <button
               aria-label="更新今天"
@@ -890,6 +893,7 @@ export function Today({
           />
         </aside>
       )}
+      {rules && <PersonalRulesPanel close={() => setRules(false)} notify={notify} />}
       {memory && <MemoryPanel close={() => setMemory(false)} notify={notify} />}
     </div>
   );

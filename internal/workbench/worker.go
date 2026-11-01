@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,6 +242,16 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		err = s.MaterializeAttachments(&r)
 	}
 	var result RuntimeResult
+	var rules *PersonalRules
+	if err == nil && r.ProjectID == personalProjectID {
+		var v PersonalRules
+		v, err = s.PersonalRules()
+		if err == nil {
+			rules = &v
+			r.PersonalRulesVersion = v.Version
+			err = s.saveRun(r)
+		}
+	}
 	if err == nil {
 		var p Project
 		var ss Session
@@ -250,6 +261,9 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		}
 		if err == nil {
 			prompt := w.prompt(r, p)
+			if rules != nil {
+				prompt = fmt.Sprintf("本轮使用本人已保存的 SOUL.md 与 AGENT.md v%d（见当前规则上下文），取代历史中的旧规则。按当前规则回应本轮输入。\n", rules.Version) + prompt
+			}
 			hooks := RuntimeHooks{
 				Accepted: func(id string) error {
 					_, e := s.DB.Exec("UPDATE runtime_sessions SET state='active',last_message_id=? WHERE session_id=?", id, r.SessionID)
@@ -284,7 +298,7 @@ func (w *Worker) execute(parent context.Context, r Run) {
 			if nativeCommand {
 				prompt = "/compact"
 			}
-			result, err = w.Executor.Execute(ctx, RuntimeInput{Run: r, Session: ss, Project: p, Prompt: prompt, NativeCommand: nativeCommand}, hooks)
+			result, err = w.Executor.Execute(ctx, RuntimeInput{Run: r, Session: ss, Project: p, Prompt: prompt, NativeCommand: nativeCommand, PersonalRules: rules}, hooks)
 		}
 	}
 	// Cleanup is a hard prerequisite to recording a final snapshot and unlocking.

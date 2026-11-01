@@ -2,7 +2,7 @@
 # Run on the workbench host as root after isolated acceptance.
 set -euo pipefail
 base=/opt/project-workbench
-release=$base/releases/${PW_RELEASE:-cloud-20261101-13-today-inbox}
+release=$base/releases/${PW_RELEASE:-cloud-20261101-14-personal-rules}
 previous=$(readlink -f "$base/current")
 backup=$base/rollback-today-$(date +%Y%m%d-%H%M%S)
 test "$previous" != "$release"

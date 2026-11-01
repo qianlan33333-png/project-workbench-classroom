@@ -316,7 +316,7 @@ func jsonPayload(t string) string {
 
 var errMaintenanceYield = errors.New("后台整理让位于交互任务")
 
-func (w *Worker) compactCall(parent context.Context, purpose, prompt string) (RuntimeResult, error) {
+func (w *Worker) compactCall(parent context.Context, purpose, prompt string, rules ...*PersonalRules) (RuntimeResult, error) {
 	id := newID()
 	p, e := w.Store.PersonalSpace()
 	if e != nil {
@@ -359,6 +359,9 @@ func (w *Worker) compactCall(parent context.Context, purpose, prompt string) (Ru
 		}
 	}()
 	in := RuntimeInput{Purpose: purpose, Routing: true, Project: Project{ID: "router"}, Session: Session{ID: id, HarnessID: "maintenance-" + id}, Run: Run{ID: id}, Prompt: prompt}
+	if len(rules) > 0 {
+		in.PersonalRules = rules[0]
+	}
 	result, e := w.Executor.Execute(ctx, in, RuntimeHooks{})
 	yielded := errors.Is(context.Cause(ctx), errMaintenanceYield)
 	cancel(nil)

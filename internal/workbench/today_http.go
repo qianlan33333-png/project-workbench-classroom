@@ -8,6 +8,8 @@ import (
 
 func (a *API) mountToday(g *gin.RouterGroup) {
 	s := a.Store
+	g.GET("/personal/rules", func(c *gin.Context) { v, e := s.PersonalRules(); reply(c, v, e) })
+	g.PUT("/personal/rules", func(c *gin.Context) { bind(c, func(v PersonalRules) (any, error) { return s.SavePersonalRules(v) }) })
 	g.GET("/projects/:id/context", func(c *gin.Context) { v, e := s.ProjectContext(c.Param("id")); reply(c, v, e) })
 	g.POST("/projects/:id/context/refresh", func(c *gin.Context) {
 		bind(c, func(v struct {

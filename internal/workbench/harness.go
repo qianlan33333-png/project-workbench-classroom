@@ -22,6 +22,7 @@ import (
 )
 
 type RuntimeInput struct {
+	PersonalRules *PersonalRules
 	Purpose       string
 	Run           Run
 	Session       Session
@@ -262,8 +263,25 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 			patch = append(patch, map[string]any{"id": id, "disabled": true})
 		}
 	}
-	if personal {
-		patch = append(patch, map[string]any{"id": "system-prompt", "config": map[string]any{"personaPrefix": personalMethod}})
+	if personal || input.Purpose == "daily" {
+		rules := input.PersonalRules
+		if rules == nil {
+			v, e := h.Store.PersonalRules()
+			if e != nil {
+				return nil, nil, "", e
+			}
+			rules = &v
+		}
+		if c.RuntimeDir != "" {
+			runtimeDir := c.RuntimeDir
+			if c.RuntimeMode == "podman" {
+				runtimeDir = "/opt/workbench-runtime"
+			}
+			patch = append(patch, map[string]any{"id": "system-prompt", "config": map[string]any{"personaPrefix": personalProtocol + "\nworkbench-owner-rules 是本人在界面保存的当前规则，按该版本协作，取代历史中的旧规则。"}})
+			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "personal-owner-rules", "name": filepath.Join(runtimeDir, "personal-rules.mjs"), "config": map[string]any{"text": rules.Prompt()}}}})
+		} else {
+			patch = append(patch, map[string]any{"id": "system-prompt", "config": map[string]any{"personaPrefix": rules.Prompt()}})
+		}
 		if c.RuntimeMode == "podman" && c.RuntimeDir != "" {
 			mounts = append(mounts, "--volume", c.RuntimeDir+":/opt/workbench-runtime:ro")
 		}
