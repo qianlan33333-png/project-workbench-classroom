@@ -77,23 +77,16 @@ func (a *API) mountToday(g *gin.RouterGroup) {
 		}
 		daily, _ := getJSON[DailyContent](s.DB, "SELECT data FROM daily_contents ORDER BY day DESC LIMIT 1")
 		contexts, e := s.ContextCatalog()
+		notes, err := s.todayChannelNotes()
+		if err != nil {
+			reply(c, nil, err)
+			return
+		}
 		notice, _ := s.Setting("personal_reset_notice")
-		reply(c, gin.H{"contextResetAt": notice, "sessionId": p.DefaultSessionID, "runs": rs, "decisions": ds, "daily": daily, "contexts": contexts}, e)
+		reply(c, gin.H{"channelNotes": notes, "contextResetAt": notice, "sessionId": p.DefaultSessionID, "runs": rs, "decisions": ds, "daily": daily, "contexts": contexts}, e)
 	})
 	g.POST("/today/refresh", func(c *gin.Context) {
-		ps, e := s.Projects()
-		if e == nil {
-			for _, p := range ps {
-				if !p.Archived {
-					if e = s.RequestContext(p.ID, false); e != nil {
-						break
-					}
-				}
-			}
-		}
-		if e == nil {
-			e = s.RequestToday()
-		}
+		e := s.RequestToday()
 		reply(c, gin.H{"state": "pending"}, e)
 	})
 	g.POST("/today/continue", func(c *gin.Context) {

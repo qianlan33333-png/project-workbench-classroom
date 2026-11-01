@@ -51,14 +51,15 @@ export function TasksPanel({
   projects,
   begin,
   notify,
-  compact = false,
+  openTasks,
 }: {
   projectId?: string;
   projects: Project[];
-  begin: (d: PreparedTask) => Promise<void>;
+  begin?: (d: PreparedTask) => Promise<void>;
   notify: (s: string) => void;
-  compact?: boolean;
+  openTasks?: (id:string)=>void;
 }) {
+  const compact=!!openTasks;
   const [tasks, setTasks] = useState<Task[]>([]),
     [editing, setEditing] = useState<Partial<Task> | null>(null),
     [busy, setBusy] = useState(false);
@@ -87,6 +88,7 @@ export function TasksPanel({
   };
   const start = (t: Task, another = false) =>
     act(async () => {
+      if(!begin) return;
       let d: PreparedTask = await api(`/tasks/${t.id}/prepare`, { another });
       if (
         d.changed &&
@@ -136,10 +138,16 @@ export function TasksPanel({
         <p className="muted task-empty">
           {compact
             ? "目前没有安排。先聊聊你想关注什么。"
-            : "还没有任务。可以手动添加，也可以在“今天”明确决定后创建。"}
+            : "还没有任务。点击“新增任务”记录要做的事情。"}
         </p>
       )}
-      {sorted.map((t) => (
+      {sorted.map((t) => openTasks ? (
+        <article className="task-card" key={t.id}>
+          <small>{projects.find(p=>p.id===t.projectId)?.name} · {states[t.state]}</small>
+          <details><summary>{t.title}</summary><RichText text={t.description}/></details>
+          <p>{why(t)}</p><button onClick={()=>openTasks(t.projectId)}>进入项目任务 →</button>
+        </article>
+      ) : (
         <article className="task-card" key={t.id}>
           <small>
             {projects.find((p) => p.id === t.projectId)?.name} ·{" "}
@@ -353,7 +361,7 @@ function DecisionCard({
       <small>一起做个选择</small>
       <h3>{d.question}</h3>
       <p>{d.reason}</p>
-      {d.state === "pending" ? (
+      {d.state === "pending" && d.options.some((o:any)=>o.task) ? <p>此旧选项包含项目写操作。请进入项目任务页处理。</p> : d.state === "pending" ? (
         <>
           <div role="radiogroup" aria-label={d.question}>
             {d.options.map((o: any) => (
@@ -376,7 +384,7 @@ function DecisionCard({
                   <small>{o.tradeoff}</small>
                   {o.task && (
                     <small>
-                      提交后创建任务 ·{" "}
+                      项目任务 ·{" "}
                       {projects.find((p) => p.id === o.task.projectId)?.name} ·{" "}
                       {o.task.title}
                     </small>
@@ -561,13 +569,13 @@ function MemoryPanel({
 }
 export function Today({
   projects,
-  begin,
+  openTasks,
   notify,
   openNavigation,
 }: {
   openNavigation:()=>void;
   projects: Project[];
-  begin: (d: PreparedTask) => Promise<void>;
+  openTasks: (id:string)=>void;
   notify: (s: string) => void;
 }) {
   const [data, setData] = useState<any>(null),
@@ -681,13 +689,16 @@ export function Today({
         </header>
         <div className="today-subheading">
           <h2>个人助手</h2>
-          <p>把今天的选择，放回你想去的方向。</p>
+          <p>可查项目文件、对话和任务。微信、飞书与这里接续同一段对话。</p>
         </div>
         <div className="today-messages">
           {!data ? (
             <p>正在读取个人空间…</p>
           ) : (
             <>
+              {data.channelNotes?.length > 0 && (
+                <details className="context-status"><summary>机器人通知与回执</summary>{data.channelNotes.map((n:any)=><article key={n.id}><small>{n.kind==="notification"?"任务通知":"停止回执"} · {stamp(n.createdAt)} · {({sent:"已送达",accepted:"平台已接受",failed:"发送失败",unknown:"送达待核对",pending:"待发送",sending:"发送中"} as Record<string,string>)[n.state] || n.state}</small><RichText text={n.text}/></article>)}</details>
+              )}
               {data.contextResetAt && (
                 <p className="context-status">
                   原生上下文于 {new Date(data.contextResetAt).toLocaleString()}{" "}
@@ -761,6 +772,7 @@ export function Today({
                 .map((r) => (
                   <div className="personal-turn" key={r.id}>
                     <div className="personal-user">
+                      {["wechat","feishu"].includes(r.source) && <small style={{display:"block"}}>{r.source==="wechat"?"微信":"飞书"} · {stamp(r.createdAt)}</small>}
                       {r.text.startsWith("[已提交的个人决策")
                         ? "已提交本次选择"
                         : r.text}
@@ -872,9 +884,8 @@ export function Today({
           </header>
           <p className="muted">来自各项目的待处理与进行中任务</p>
           <TasksPanel
-            compact
             projects={projects}
-            begin={begin}
+            openTasks={openTasks}
             notify={notify}
           />
         </aside>

@@ -25,7 +25,7 @@ def run(text):
 try:
  r=run('隔离验收：请记住本次连续性标识 藤蔓628，不使用工具，只回复已记住。')
  r=run('只根据这个对话上文，原样回复刚才的连续性标识，不调用工具。');assert '藤蔓628' in r['result'];report['checks'].append('real native Harness history continuity')
- r=run('隔离边界验收：请直接用Shell或全局CRM CLI读取青山表达实验项目的原始资料.md全文。如果没有这些工具，只明确说明无法读取，不要猜测或复述摘要冒充原文。');assert any(x in r['result'] for x in ['无法','不能','没有','不提供']);report['checks'].append('personal refuses raw source execution path')
+ r=run('请只读查询青山表达实验的原始资料.md，原样引用最后一条关键反对意见并列出来源。');assert '不要为了快速上线而跳过需求验证' in r['result'] and '原始资料.md' in r['result'];report['checks'].append('personal reads scoped project source')
  api('/today/refresh',{})
  daily=wait(lambda:(lambda d:d if d.get('updatedAt',0)>int(time.time()*1000)-180000 and d.get('state')=='ready' and d.get('version',0)>0 else None)(api('/today')['daily']),420)
  report['daily']=daily;report['contexts']=api('/today')['contexts'];assert all(c['state']=='ready' for c in report['contexts']);report['checks'].append('real project summary and daily generation')

@@ -16,7 +16,7 @@ func TestScopedToolsReferencesAndVersions(t *testing.T) {
 		t.Fatal(e)
 	}
 	wx := channel(t, s, "wechat")
-	in := incoming(wx, "引用项目「青海」文件「定位.md」到项目「青山」：只引用品牌定位")
+	in := Incoming{Source: "web", SessionID: a.DefaultSessionID, EventID: newID(), Text: "只引用品牌定位", References: []FileReference{{ProjectID: b.ID, Path: "定位.md"}}}
 	m := submitRoute(t, s, in)
 	if m.SessionID != a.DefaultSessionID || len(m.References) != 1 {
 		t.Fatal(m)
@@ -39,7 +39,7 @@ func TestScopedToolsReferencesAndVersions(t *testing.T) {
 	if _, e = s.appTool(rt, "read_run", json.RawMessage(encode(map[string]string{"runId": other.RunID}))); e == nil {
 		t.Fatal("cross-project history exposed")
 	}
-	m2 := submitRoute(t, s, incoming(wx, "青山：继续"))
+	m2 := submitRoute(t, s, Incoming{Source: "web", SessionID: a.DefaultSessionID, EventID: newID(), Text: "继续"})
 	r2, _ := s.Run(m2.RunID)
 	if _, e = s.appTool(RuntimeInput{Run: r2, Project: a}, "read_reference", json.RawMessage(`{"index":0}`)); e == nil {
 		t.Fatal("grant leaked into next input")

@@ -174,7 +174,7 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		}
 	}
 	patch = append(patch, map[string]any{"id": "system-prompt", "config": map[string]any{"personaPrefix": persona}})
-	if c.HarnessPatch != "" {
+	if c.HarnessPatch != "" && !personal && !input.Routing {
 		b, e := os.ReadFile(c.HarnessPatch)
 		if e != nil {
 			return nil, nil, "", e

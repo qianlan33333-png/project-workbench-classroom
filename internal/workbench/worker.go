@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -643,114 +642,34 @@ func (w *Worker) Stop(id string) error {
 }
 func (w *Worker) handleControl(m Message) (bool, error) {
 	text := strings.TrimSpace(m.Incoming.Text)
-	if m.Incoming.Source == "web" {
+	if !isChatChannel(m.Incoming.Source) || (text != "停止" && !strings.HasPrefix(text, "停止 #T")) {
 		return false, nil
 	}
-	if text == "停止" || strings.HasPrefix(text, "停止 #T") {
-		if strings.HasPrefix(text, "停止 #T") {
-			prefix := strings.TrimSpace(strings.TrimPrefix(text, "停止 #T"))
-			if len(prefix) < 8 {
-				return true, errors.New("请使用至少 8 位任务编号")
-			}
-			runs, e := listJSON[Run](w.Store.DB, "SELECT data FROM runs WHERE id LIKE ? LIMIT 2", prefix+"%")
-			if e != nil {
-				return true, e
-			}
-			if len(runs) != 1 {
-				return true, errors.New("任务编号不唯一或不存在")
-			}
-			r := runs[0]
-			if e = w.Stop(r.ID); e != nil {
-				return true, e
-			}
-			m.State = "handled"
-			if e = w.Store.saveMessage(m); e != nil {
-				return true, e
-			}
-			return true, w.Store.QueueReply(m, r.ID, r.SessionID, "stopped", "已请求停止任务 #T"+r.ID[:8])
+	prefix := ""
+	if text != "停止" {
+		prefix = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(text, "停止 #T")))
+		if len(prefix) < 8 || len(prefix) > 36 || strings.Trim(prefix, "abcdef0123456789-") != "" {
+			return false, nil
 		}
-		focus, err := w.Store.Focus(m.Incoming)
-		if err != nil {
-			return true, err
-		}
-		runs, err := w.Store.Runs(focus.ID)
-		if err != nil {
-			return true, err
-		}
-		for _, r := range runs {
-			if r.State == "running" || r.State == "waiting" || r.State == "queued" {
-				if err = w.Stop(r.ID); err != nil {
-					return true, err
-				}
-				m.State = "handled"
-				_ = w.Store.saveMessage(m)
-				return true, w.Store.QueueReply(m, r.ID, r.SessionID, "stopped", "已请求停止任务 #T"+r.ID[:8])
-			}
-		}
-		return true, errors.New("当前对话没有正在执行的任务")
 	}
-	if strings.HasPrefix(text, "回答 #Q") {
-		parts := strings.SplitN(strings.TrimPrefix(text, "回答 #Q"), " ", 2)
-		if len(parts) != 2 || len(parts[0]) < 8 {
-			return true, errors.New("请使用：回答 #Q问题编号 你的答案")
-		}
-		items, e := listJSON[Interaction](w.Store.DB, "SELECT data FROM interactions WHERE id LIKE ? AND state='pending'", parts[0]+"%")
-		if e != nil {
-			return true, e
-		}
-		if len(items) != 1 {
-			return true, errors.New("问题已过期或编号不唯一")
-		}
-		i := items[0]
-		r, e := w.Store.Run(i.RunID)
-		if e != nil {
-			return true, e
-		}
-		original, e := w.Store.Message(r.MessageID)
-		if e != nil {
-			return true, e
-		}
-		if entryKey(original.Incoming) != entryKey(m.Incoming) {
-			return true, errors.New("请从提出问题的原入口回答")
-		}
-		var answer any
-		if i.Kind == "approval" {
-			outcome := "rejected"
-			if parts[1] == "同意" || parts[1] == "允许" {
-				outcome = "allowed-once"
-			}
-			answer = map[string]string{"outcome": outcome}
-		} else {
-			var p struct {
-				Questions []struct {
-					ID      string `json:"id"`
-					Options []struct {
-						Label string `json:"label"`
-					} `json:"options"`
-				} `json:"questions"`
-			}
-			_ = json.Unmarshal(i.Payload, &p)
-			if len(p.Questions) != 1 {
-				return true, errors.New("这组问题有多项，请在网页逐项回答")
-			}
-			selected := []string{}
-			custom := strings.TrimSpace(parts[1])
-			for n, opt := range p.Questions[0].Options {
-				if custom == opt.Label || custom == fmt.Sprint(n+1) {
-					selected = []string{opt.Label}
-					custom = ""
-					break
-				}
-			}
-			answer = map[string]any{"answers": []map[string]any{{"id": p.Questions[0].ID, "selected": selected, "custom": custom}}}
-		}
-		if e = w.Answer(i.ID, json.RawMessage(encode(answer))); e != nil {
-			return true, e
-		}
-		m.State = "handled"
-		return true, w.Store.saveMessage(m)
+	// Scope control at lookup time, including when the channel still has a legacy project focus.
+	rs, e := listJSON[Run](w.Store.DB, `SELECT data FROM runs WHERE project_id=? AND state IN ('running','waiting','queued') AND id LIKE ? ORDER BY state='queued',created_at LIMIT 2`, personalProjectID, prefix+"%")
+	if e != nil {
+		return false, e
 	}
-	return false, nil
+	if len(rs) == 0 || (prefix != "" && len(rs) != 1) {
+		return false, nil
+	}
+	r := rs[0]
+	if e = w.Stop(r.ID); e != nil {
+		return false, e
+	}
+	m.State = "handled"
+	m.SessionID = r.SessionID
+	if e = w.Store.saveMessage(m); e != nil {
+		return true, e
+	}
+	return true, w.Store.QueueReply(m, r.ID, r.SessionID, "stopped", "已请求停止今天的任务 #T"+r.ID[:8])
 }
 
 func (s *Store) History(session string) ([]Message, error) {

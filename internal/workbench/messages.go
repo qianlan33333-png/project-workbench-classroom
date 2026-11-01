@@ -209,7 +209,10 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 	if p.Archived {
 		return m, errors.New("项目已归档，不能继续执行")
 	}
-	if p.ID == personalProjectID && (len(m.Incoming.Capabilities) > 0 || len(m.Incoming.References) > 0 || len(m.Incoming.Attachments) > 0) {
+	if isChatChannel(m.Incoming.Source) && p.ID != personalProjectID {
+		return m, errors.New("机器人消息属于今天个人助手")
+	}
+	if p.ID == personalProjectID && (len(m.Incoming.Capabilities) > 0 || len(m.Incoming.References) > 0 || len(m.Incoming.Attachments) > 0 && !isChatChannel(m.Incoming.Source)) {
 		return m, errors.New("个人助手不接收业务文件或执行能力，请进入对应项目")
 	}
 	expert := m.Incoming.ExpertID
@@ -375,8 +378,14 @@ func (s *Store) ResolveMessage(id, session string) (Message, error) {
 	if err != nil {
 		return m, err
 	}
+	if session == "" && isChatChannel(m.Incoming.Source) && m.RunID != "" {
+		return m, nil
+	}
 	if m.State != "clarify" && m.State != "unrouted" && m.State != "error" {
 		return m, errors.New("这条消息已处理")
+	}
+	if session == "" && isChatChannel(m.Incoming.Source) {
+		return s.routeChannelToToday(m)
 	}
 	return s.queue(m, session, "", false)
 }
@@ -400,6 +409,9 @@ func (s *Store) Route(ctx context.Context, id string, semantic SemanticRouter) (
 		return m, err
 	}
 	in := m.Incoming
+	if isChatChannel(in.Source) {
+		return s.routeChannelToToday(m)
+	}
 	if in.SessionID != "" {
 		return s.queue(m, in.SessionID, "", false)
 	}

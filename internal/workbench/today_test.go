@@ -87,12 +87,12 @@ func TestDecisionDurabilityIdempotencyAndScope(t *testing.T) {
 	if _, e := s.appTool(in, "create_decided_task", json.RawMessage(`{"task":{"projectId":"`+p.ID+`","title":"建议"}}`)); e == nil {
 		t.Fatal("discussion created task")
 	}
-	d, e := s.ProposeDecision(in, PersonalDecision{Question: "先验证哪件事", Reason: "先获得反馈", Options: []DecisionOption{{Label: "试用", Tradeoff: "花30分钟", Recommended: true, Task: &ProjectTask{ProjectID: p.ID, Title: "真实试用", Description: "WHY：确认价值"}}, {Label: "暂时观察", Tradeoff: "延迟反馈"}}})
+	d, e := s.ProposeDecision(in, PersonalDecision{Question: "先验证哪件事", Reason: "先获得反馈", Options: []DecisionOption{{Label: "试用", Tradeoff: "花30分钟", Recommended: true}, {Label: "暂时观察", Tradeoff: "延迟反馈"}}})
 	if e != nil {
 		t.Fatal(e)
 	}
 	d, e = s.AnswerDecision(d.ID, d.Version, "A", "")
-	if e != nil || d.TaskID == "" {
+	if e != nil || d.TaskID != "" {
 		t.Fatal(e, d)
 	}
 	again, e := s.AnswerDecision(d.ID, 1, "A", "")
@@ -100,10 +100,10 @@ func TestDecisionDurabilityIdempotencyAndScope(t *testing.T) {
 		t.Fatal(e)
 	}
 	tasks, _ := s.Tasks(p.ID)
-	if len(tasks) != 1 {
+	if len(tasks) != 0 {
 		t.Fatal(tasks)
 	}
-	// Task creation itself changes context; a retry still returns the original receipt.
+	// A decision is personal history only, including after retry.
 	ms, _ := s.Memories()
 	if len(ms) != 0 {
 		t.Fatal("choice became preference")

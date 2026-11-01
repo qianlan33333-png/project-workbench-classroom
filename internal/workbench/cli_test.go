@@ -142,7 +142,13 @@ func TestDeleteProjectRemovesScopeAndPreservesDedup(t *testing.T) {
 	other := testProject(t, s, "保留乙")
 	c := channel(t, s, "wechat")
 	in := incoming(c, "删除甲：记住原文")
-	m := submitRoute(t, s, in)
+	// Restore a pre-upgrade project turn with its original channel delivery identity.
+	m := submitRoute(t, s, Incoming{Source: "web", SessionID: p.DefaultSessionID, EventID: in.EventID, Text: in.Text})
+	m.Incoming = in
+	if _, err := s.DB.Exec("UPDATE inbox SET source=?,connection_id=?,entry_key=?,data=? WHERE id=?", in.Source, c.ID, entryKey(in), encode(m), m.ID); err != nil {
+		t.Fatal(err)
+	}
+
 	w := NewWorker(s, &fakeExecutor{store: s}, nil)
 	run, e := w.claim()
 	if e != nil {

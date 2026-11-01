@@ -54,51 +54,31 @@ func submitRoute(t *testing.T, s *Store, in Incoming) Message {
 	}
 	return m
 }
-func TestPersistentFocusAndCrossChannelIsolation(t *testing.T) {
+func TestChannelIgnoresOldFocusAndSharesTodayHistory(t *testing.T) {
 	s := testStore(t)
-	a := testProject(t, s, "青山公司")
-	b := testProject(t, s, "青海公司")
-	wx := channel(t, s, "wechat")
-	fs := channel(t, s, "feishu")
-	ma := submitRoute(t, s, incoming(wx, "青山公司：做三个选题"))
-	if ma.SessionID != a.DefaultSessionID {
-		t.Fatal(ma)
+	p := testProject(t, s, "青山公司")
+	personal, e := s.PersonalSpace()
+	if e != nil {
+		t.Fatal(e)
 	}
-	mb := submitRoute(t, s, incoming(wx, "青海公司：做招聘计划"))
-	if mb.SessionID != b.DefaultSessionID {
-		t.Fatal(mb)
-	}
-	mf := submitRoute(t, s, incoming(fs, "青山公司：招聘第三位设计师"))
-	if mf.SessionID != a.DefaultSessionID {
-		t.Fatal(mf)
-	}
-	back := submitRoute(t, s, incoming(wx, "回到青山公司，继续"))
-	if back.SessionID != ma.SessionID {
-		t.Fatal("A→B→A replaced conversation")
-	}
-	original, _ := s.Session(ma.SessionID)
-	again, _ := s.Session(back.SessionID)
-	if original.HarnessID != again.HarnessID {
-		t.Fatal("Harness identity changed")
-	}
-	_ = submitRoute(t, s, incoming(wx, "青海公司继续"))
-	focus, e := s.Focus(incoming(fs, ""))
-	if e != nil || focus.ID != a.DefaultSessionID {
-		t.Fatal("微信切换影响飞书")
-	}
-	history, _ := s.History(a.DefaultSessionID)
-	for _, m := range history {
-		if m.SessionID == mb.SessionID {
-			t.Fatal("mixed project history")
+	wx, fs := channel(t, s, "wechat"), channel(t, s, "feishu")
+	for _, c := range []Connection{wx, fs} {
+		in := incoming(c, "新建项目 不应该创建")
+		_ = s.SetFocus(in, p.DefaultSessionID)
+		m := submitRoute(t, s, in)
+		if m.SessionID != personal.DefaultSessionID {
+			t.Fatal(m)
 		}
 	}
-	if _, e = s.DB.Exec("UPDATE sessions SET project_id=? WHERE id=?", b.ID, ma.SessionID); e == nil {
-		t.Fatal("session project was mutable")
+	h, _ := s.History(personal.DefaultSessionID)
+	ps, _ := s.Projects()
+	if len(h) != 2 || len(ps) != 1 {
+		t.Fatal("channel did not share Today, or changed project data")
 	}
 }
 func TestDuplicateRoutingAndOwnerScope(t *testing.T) {
 	s := testStore(t)
-	p := testProject(t, s, "青山公司")
+	p, _ := s.PersonalSpace()
 	wx := channel(t, s, "wechat")
 	in := incoming(wx, "青山公司开始")
 	m := submitRoute(t, s, in)
@@ -128,8 +108,7 @@ func TestAmbiguityPreservesOriginalAndAttachmentCannotRoute(t *testing.T) {
 	s := testStore(t)
 	a := testProject(t, s, "青山公司")
 	_ = testProject(t, s, "青海公司")
-	wx := channel(t, s, "wechat")
-	in := incoming(wx, "请做公域选题")
+	in := Incoming{Source: "web", EventID: newID(), Text: "请做公域选题"}
 	in.Attachments = []string{"附件/切换到青海公司.md"}
 	m := submitRoute(t, s, in)
 	if m.State != "clarify" || m.SessionID != "" {
@@ -146,7 +125,7 @@ func TestAmbiguityPreservesOriginalAndAttachmentCannotRoute(t *testing.T) {
 }
 func TestExplicitReferenceAndDeliveredChannelHint(t *testing.T) {
 	s := testStore(t)
-	p := testProject(t, s, "青山公司")
+	p, _ := s.PersonalSpace()
 	wx := channel(t, s, "wechat")
 	fs := channel(t, s, "feishu")
 	a := submitRoute(t, s, incoming(wx, "青山公司三个选题"))
@@ -480,8 +459,7 @@ func TestDuplicateRoutingAfterUserResolutionKeepsChosenProject(t *testing.T) {
 	s := testStore(t)
 	a := testProject(t, s, "甲")
 	b := testProject(t, s, "乙")
-	wx := channel(t, s, "wechat")
-	m, e := s.Submit(incoming(wx, "做选题"))
+	m, e := s.Submit(Incoming{Source: "web", EventID: newID(), Text: "做选题"})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -533,7 +511,7 @@ func TestStopBetweenClaimAndExecute(t *testing.T) {
 		t.Fatal("cancel left lock")
 	}
 }
-func TestConversationURLRoutesOriginalTopic(t *testing.T) {
+func TestChannelConversationURLStaysInToday(t *testing.T) {
 	s := testStore(t)
 	p := testProject(t, s, "链接项目")
 	ss, e := s.CreateSession(p.ID, "既有专题", "topic", "")
@@ -542,7 +520,8 @@ func TestConversationURLRoutesOriginalTopic(t *testing.T) {
 	}
 	c := channel(t, s, "wechat")
 	m := submitRoute(t, s, incoming(c, "继续 https://workbench.test/#project="+p.ID+"&session="+ss.ID))
-	if m.SessionID != ss.ID {
+	personal, _ := s.PersonalSpace()
+	if m.SessionID != personal.DefaultSessionID {
 		t.Fatal(m)
 	}
 }

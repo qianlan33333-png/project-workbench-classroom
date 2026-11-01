@@ -443,7 +443,7 @@ function App() {
     setContent("");
     setSaved("");
   };
-  const openProject = async (p: Project, targetSession?: string) => {
+  const openProject = async (p: Project, targetSession?: string, initialTab: "tasks" | "sessions"="sessions") => {
     if (!(await canLeave())) return;
     await flushTaskDraft();
     setReferences([]);
@@ -466,8 +466,8 @@ function App() {
     setContent("");
     setSaved("");
     setPage("project");
-    setTab("sessions");
-    setProjectPanelOpen(false);
+    setTab(initialTab);
+    setProjectPanelOpen(initialTab === "tasks" && window.innerWidth < 768);
     setMobileNav(false);
   };
   const closeDocument = async () => {
@@ -982,7 +982,7 @@ function App() {
         {page === "today" && (
           <Today
             projects={projects}
-            begin={beginTask}
+            openTasks={(id)=>{const p=projects.find(v=>v.id===id);if(p)act(()=>openProject(p,undefined,"tasks"))}}
             notify={notify}
             openNavigation={() => setMobileNav(true)}
           />
@@ -1014,6 +1014,8 @@ function App() {
                       <p>{m.incoming.text}</p>
                       <span>{m.question || "正在判断归属…"}</span>
                     </div>
+                    {["wechat","feishu"].includes(m.incoming.source) ?
+                      <button disabled={m.state==="unrouted"} onClick={()=>act(async()=>{await api(`/messages/${m.id}/resolve`,{});await refresh();await navigate("today")})}>{m.state==="unrouted"?"正在转到今天…":"转到今天并回复"}</button> :
                     <select
                       aria-label="为消息选择项目"
                       value=""
@@ -1034,7 +1036,7 @@ function App() {
                             {p.name}
                           </option>
                         ))}
-                    </select>
+                    </select>}
                   </div>
                 ))}
               </section>

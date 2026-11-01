@@ -46,6 +46,9 @@ func (s *Store) MaterializeAttachments(r *Run) error {
 	defer root.Close()
 	for _, reference := range m.Incoming.Attachments {
 		if !strings.HasPrefix(reference, "upload:") {
+			if isChatChannel(m.Incoming.Source) {
+				return errors.New("渠道附件需要已上传的本人附件标识")
+			}
 			if e = validPath(reference); e != nil {
 				return e
 			}
@@ -56,7 +59,7 @@ func (s *Store) MaterializeAttachments(r *Run) error {
 			continue
 		}
 		id := strings.TrimPrefix(reference, "upload:")
-		if e = validPath(id); e != nil || strings.Contains(id, "/") {
+		if e = validPath(id); e != nil || len(id) != 36 || strings.Contains(id, "/") {
 			return errors.New("附件标识无效")
 		}
 		dir := filepath.Join(s.Root, "uploads", id)
