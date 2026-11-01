@@ -42,4 +42,15 @@
 
 回滚：`bash scripts/rollback-today.sh /opt/project-workbench/rollback-today-<时间>`。只回退程序，不用旧数据库覆盖新任务/理解/决定；将排除记录同步为旧程序也能识别的 forgotten 状态，保留新表与遗忘账本。恢复历史快照也必须同时保留最新 forgotten-memories 目录。
 
-生产切换与重启读回另在本文件末尾记录。
+## 生产发布与重启读回
+
+2026-11-02 已切换至 `cloud-20261102-15-personal-memory`，实现源码 `8ee94966457cf2c46882cc44a5e8c20eeba8dee5`，Linux 二进制 SHA256 `ec8ea5c0f623d03d2232308b4fc1f3ba4abb89c2c532fdd524fcf52fee3794a4`。发布前任务和工具作业均为空，快照位于 `/opt/project-workbench/rollback-today-20261102-002957`。
+
+- 初始化已发布理解 v2，116 字符，增量游标 19；未为满足篇幅扩写。旧 AI 条目保持待核。
+- 发布前后 12 条应用会话、6 条原生会话映射及现有项目任务逐行一致。
+- 额外执行一次受控服务重启，个人理解、游标、应用会话、原生映射和项目任务保持一致；健康检查通过，微信及飞书均 connected，心跳在重启后更新。
+- 页面既有“原生上下文清理”提示时间为 00:20:51；该值在本次 00:29:57 发布前快照中已存在，发布和额外重启没有改变它。
+- 最终二进制的隔离跨端记忆回放：微信明确保存精确称呼、飞书调用记忆检索查回；只产生一条记忆，来源为微信原运行，重复入站不重复写入。使用真实 Harness 和隔离 API/outbox，不冒称本轮完成真实微信/飞书用户发信验收。
+- 生产浏览器已读回新版正文、待核标记及纠正/依据/忘记操作。截图 `artifacts/memory/production.png`，读回收据 `production-readback.json`、`production-restart.json`；跨端收据 `cross-channel.json`。
+
+真实模型归纳仍有语义误判可能；本轮没有测量供应商缓存命中率。上线保留原记忆和修订，不迁移删除历史数据。
