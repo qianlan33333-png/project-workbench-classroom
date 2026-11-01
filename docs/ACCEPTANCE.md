@@ -216,3 +216,5 @@ Chromium 脚本 `scripts/verify-workspace.mjs` 验证默认 80px 导航、216px 
 真实浏览器已验证：两文档切换、Markdown 预览、编辑保存、刷新恢复、关闭未保存修改提示、丢弃前确认、多页面版本冲突保留草稿、关闭面板保持聊天输入；390px 手机页面无整体横向溢出，保存/关闭均可达。截图 `artifacts/today/personal-rules-desktop.jpg` 与 `personal-rules-mobile.jpg`，模型记录 `personal-rules-model.json`，渠道记录 `channel-inbox-proof.json`。临时测试资料没有写入正式业务项目。
 
 行为文档属于模型指令，不保证自然语言逐字或格式完全确定。读取范围、项目只读、规则仅本人保存、版本冲突和会话身份则由代码约束。本版保留既有大前端 bundle 构建提示，不影响构建通过。
+
+发布完成：正式入口已切到 `cloud-20261101-14-personal-rules`，源码版本 `a1e00a4e69a434e4966bafcc0f23068f2dd7f004`。旧版本与数据快照 `/opt/project-workbench/rollback-today-20261101-232327`。冷启动后 health 正常，主服务及渠道消费者均 active；微信与飞书均恢复 connected，心跳分别在 6 秒和 12 秒内。公开 API 读取的规则 v1 与确认稿逐字一致，正式浏览器可进入规则并预览。发布二进制与规则 runtime 模块 SHA256 均匹配已验收产物。正式截图 `artifacts/today/personal-rules-live.jpg`。未重放旧消息、未重建个人会话、未改写正式业务项目。
