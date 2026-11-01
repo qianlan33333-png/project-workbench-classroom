@@ -73,12 +73,12 @@ const businessTools = [
 const sourceKinds=z.enum(["file","conversation","task"]);
 const personalTools = [
  ["project_contexts","仅读取各项目完整说明和72小时动态",{}],
- ["personal_memories","读取有效的本人事实、目标和约束",{}],
+ ["personal_memories","按关键词或依据ID限量查回准确个人事实与原话；不会返回完整记忆库。长原文用id和offset续读。",{query:z.string().optional(),id:z.string().optional(),paragraphId:z.string().optional(),offset:z.number().int().nonnegative().optional()}],
  ["find_project_sources","在一个指定项目按关键字查找文本文件、可见对话轮次或任务。空 query 列出资料。返回 key；更多结果按 offset 每页20条读取。",{projectId:z.string(),kind:sourceKinds,query:z.string().optional(),sessionId:z.string().optional(),offset:z.number().int().nonnegative().optional()}],
  ["read_project_source","按项目和 key 只读核对文件、对话或任务正文。回答标出来源，有更多原文时使用 nextOffset。",{projectId:z.string(),kind:sourceKinds,key:z.string(),offset:z.number().int().nonnegative().optional()}],
  ["read_message_attachment","按本轮序号只读已收到的文本附件。",{index:z.number().int().nonnegative(),offset:z.number().int().nonnegative().optional()}],
  ["propose_decision","给出2–3个选择及推荐，仅记录本次决定。",{question:z.string(),reason:z.string(),options:z.array(z.object({label:z.string(),tradeoff:z.string(),recommended:z.boolean()})).min(2).max(3)}],
- ["remember_explicit","只学习本人本轮明确表达，quote必须为原文。不能从ABC选择推断长期偏好；临时情况必须设expiresAt毫秒时间戳。",{quote:z.string(),memory:z.object({id:z.string().optional(),version:z.number().optional(),text:z.string(),kind:z.enum(["fact","goal","temporary","feedback","principle"]),expiresAt:z.number().optional()})}],
+ ["remember_explicit","仅本人明确要求记住或明确纠正时立即保存，quote必须为本轮原话。普通聊天由每日整理学习，不逐条保存。不从ABC选择推断偏好；临时情况无期限默认七天。",{quote:z.string(),intent:z.enum(["remember","correction"]).optional(),memory:z.object({id:z.string().optional(),version:z.number().optional(),text:z.string(),kind:z.enum(["fact","goal","temporary","feedback","principle"]),expiresAt:z.number().optional()})}],
 ];
 for(const [name,description,inputSchema] of (process.env.PW_PERSONAL==="true"?personalTools:businessTools))
   server.registerTool(name, { description, inputSchema }, async (args) =>

@@ -3838,3 +3838,30 @@ label input[type="file"] {
 .rules-confirm { margin-top: 16px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
 .rules-confirm button { margin: 4px; }
 @media(max-width:767px) { .personal-rules { padding:16px; } .rules-tabs button { font-size:12px; } .today-header-actions { max-width:190px; } }
+
+/* Personal understanding reuses the existing Today reading surface. */
+.understanding-modal { line-height:1.75; }
+.understanding-intro { margin:4px 0 16px; }
+.understanding-status { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:12px; color:var(--muted); padding-bottom:16px; border-bottom:1px solid var(--line); }
+.understanding-status button { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; }
+.understanding-prose { margin:20px 0; }
+.understanding-paragraph { position:relative; padding:10px 12px; margin:0 -12px 12px; border-radius:10px; }
+.understanding-paragraph.selected { background:var(--panel-soft,#f1f4ec); }
+.understanding-paragraph .rich-text > :first-child { margin-top:0; }
+.understanding-select { font-size:12px; opacity:.7; padding:3px 8px; }
+.understanding-observation { display:block; color:var(--muted); margin-bottom:4px; }
+.understanding-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.understanding-actions > span { font-size:12px; margin-left:4px; }
+.understanding-evidence { margin-top:20px; padding:16px; border:1px solid var(--line); border-radius:12px; }
+.understanding-evidence header { display:flex; justify-content:space-between; align-items:center; }
+.understanding-evidence h3 { margin:0; font-size:15px; }
+.understanding-evidence form { display:flex; gap:8px; margin:12px 0; }
+.understanding-evidence input { min-width:0; flex:1; }
+.understanding-evidence blockquote { margin:12px 0; border-left:2px solid var(--line); padding-left:12px; overflow-wrap:anywhere; }
+.understanding-evidence blockquote p { white-space:pre-wrap; }
+.understanding-evidence small { color:var(--muted); }
+.understanding-empty { padding:20px 0; }
+.understanding-error { color:#9a4439; }
+@media(max-width:767px) { .understanding-status { align-items:flex-start; } .understanding-modal { padding:20px; } .understanding-actions > span { flex-basis:100%; } }
+.understanding-prose .markdown { font-size:14px; line-height:1.85; }
+.understanding-paragraph .markdown > :first-child { margin-top:0; }

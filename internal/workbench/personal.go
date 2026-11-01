@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"context"
+	"database/sql"
 
 	"encoding/json"
 	"errors"
@@ -25,6 +26,9 @@ func (s *Store) Memories() ([]PersonalMemory, error) {
 	ms, e := listJSON[PersonalMemory](s.DB, "SELECT data FROM personal_memories WHERE coalesce(json_extract(data,'$.forgotten'),0)=0 ORDER BY json_extract(data,'$.updatedAt')")
 	out := []PersonalMemory{}
 	for _, m := range ms {
+		if s.memoryExcluded("m:"+m.ID) || m.Source != "" && s.memoryExcluded("r:"+m.Source) {
+			continue
+		}
 		if _, e := os.Stat(filepath.Join(s.Root, "forgotten-memories", m.ID)); e == nil {
 			continue
 		}
@@ -37,6 +41,9 @@ func (s *Store) Memories() ([]PersonalMemory, error) {
 				continue
 			}
 			if _, er = s.Session(r.SessionID); er != nil {
+				continue
+			}
+			if s.memoryUserText(r) == "" || m.Quote != "" && !strings.Contains(s.memoryUserText(r), m.Quote) {
 				continue
 			}
 		}
@@ -53,9 +60,13 @@ func (s *Store) SaveMemory(m PersonalMemory) (PersonalMemory, error) {
 	if !contains([]string{"fact", "goal", "temporary", "feedback", "principle"}, m.Kind) {
 		return m, errors.New("个人理解类型无效")
 	}
+	if m.Kind == "temporary" && m.ExpiresAt == 0 {
+		m.ExpiresAt = now() + 7*24*60*60*1000
+	}
 	if m.Kind == "temporary" && (m.ExpiresAt <= now()) {
 		return m, errors.New("临时情况需要未来的失效时间")
 	}
+	var previous *PersonalMemory
 	if m.ID != "" {
 		old, e := getJSON[PersonalMemory](s.DB, "SELECT data FROM personal_memories WHERE id=?", m.ID)
 		if e != nil {
@@ -65,13 +76,77 @@ func (s *Store) SaveMemory(m PersonalMemory) (PersonalMemory, error) {
 			return m, ErrConflict
 		}
 		m.Version++
-		_ = s.SetSetting("personal_context_reset", "true")
+		if old.Protected && m.Source != "" && !m.Correction {
+			return m, errors.New("人工纠正只能由本人在界面修改；可记录新的明确纠正，不覆盖旧依据")
+		}
+
+		previous = &old
 	} else {
 		m.ID = newID()
 		m.Version = 1
 	}
 	m.UpdatedAt = now()
-	_, e := s.DB.Exec("INSERT INTO personal_memories VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", m.ID, encode(m))
+	if m.Correction {
+		m.Protected = true
+	}
+	if m.Source == "" {
+		m.Confirmed = true
+		m.Protected = true
+		m.Quote = m.Text
+	} else {
+		m.Confirmed = true
+	}
+	// Repeated delivery/tool retries of the same explicit expression are idempotent.
+	if m.Source != "" {
+		existing, _ := listJSON[PersonalMemory](s.DB, "SELECT data FROM personal_memories WHERE json_extract(data,'$.source')=?", m.Source)
+		for _, x := range existing {
+			if !x.Forgotten && x.Text == m.Text && x.Quote == m.Quote {
+				return x, nil
+			}
+		}
+	}
+	refs, e := s.resolveMemoryReplacements(m.Replaces)
+	if len(m.Replaces) > 0 {
+		if len(m.BaseRefs) == 0 {
+			return m, ErrConflict
+		}
+		for id, version := range m.BaseRefs {
+			matched := false
+			for _, r := range refs {
+				if r.ID == id && r.Version == version {
+					matched = true
+				}
+			}
+			if !matched {
+				return m, ErrConflict
+			}
+		}
+	}
+	if e != nil {
+		return m, e
+	}
+	e = s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if previous != nil {
+			if previous.Source != "" && previous.Source != m.Source {
+				if _, e := tx.Exec("INSERT OR IGNORE INTO personal_memory_exclusions VALUES(?)", "r:"+previous.Source); e != nil {
+					return e
+				}
+			}
+			if _, e := tx.Exec("INSERT OR IGNORE INTO personal_memory_revisions VALUES(?,?,?)", previous.ID, previous.Version, encode(previous)); e != nil {
+				return e
+			}
+		}
+		for _, ref := range refs {
+			if ref.ID == "m:"+m.ID {
+				continue
+			}
+			if _, e := tx.Exec("INSERT OR IGNORE INTO personal_memory_exclusions VALUES(?)", ref.ID); e != nil {
+				return e
+			}
+		}
+		_, e := tx.Exec("INSERT INTO personal_memories VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", m.ID, encode(m))
+		return e
+	})
 	return m, e
 }
 func (s *Store) ForgetMemory(id string, version int64) error {
@@ -87,24 +162,7 @@ func (s *Store) ForgetMemory(id string, version int64) error {
 	if m.Version != version {
 		return ErrConflict
 	}
-	ledger := filepath.Join(s.Root, "forgotten-memories")
-	if e = os.MkdirAll(ledger, 0700); e != nil {
-		return e
-	}
-	if e = os.WriteFile(filepath.Join(ledger, m.ID), []byte("forgotten"), 0600); e != nil {
-		return e
-	}
-	m.Forgotten = true
-	m.Text = ""
-	m.Source = ""
-	m.Version++
-	m.UpdatedAt = now()
-	if _, e = s.DB.Exec("UPDATE personal_memories SET data=? WHERE id=?", encode(m), id); e != nil {
-		return e
-	}
-	// Native context may contain a forgotten fact. Explicitly invalidate it, never
-	// reconstruct it from app runs. Stable application/native IDs are retained.
-	return s.resetPersonalContext()
+	return s.forgetMemoryReferences(m.ID, []MemoryReference{memoryRecordReference(m)})
 }
 func (s *Store) resetPersonalContext() error {
 	p, e := s.PersonalSpace()
@@ -240,7 +298,11 @@ func (s *Store) personalTool(in RuntimeInput, tool string, args json.RawMessage)
 	case "project_contexts":
 		return s.ContextCatalog()
 	case "personal_memories":
-		return s.Memories()
+		var q MemoryEvidenceQuery
+		if e := json.Unmarshal(args, &q); e != nil {
+			return nil, e
+		}
+		return s.MemoryEvidence(q)
 	case "propose_decision":
 		var d PersonalDecision
 		if e := json.Unmarshal(args, &d); e != nil {
@@ -276,31 +338,27 @@ func (s *Store) personalTool(in RuntimeInput, tool string, args json.RawMessage)
 		var a struct {
 			Memory PersonalMemory `json:"memory"`
 			Quote  string         `json:"quote"`
+			Intent string         `json:"intent"`
 		}
 		if e := json.Unmarshal(args, &a); e != nil {
 			return nil, e
 		}
-		userText := in.Run.Text
-		if strings.HasPrefix(userText, "[已提交的个人决策") {
-			ds, _ := s.Decisions()
-			userText = ""
-			for _, d := range ds {
-				if "decision-answer:"+d.ID == in.Run.EventID && d.Answer == "other" {
-					userText = d.Other
-				}
-			}
-		}
+		userText := s.memoryUserText(in.Run)
 		if len([]rune(a.Quote)) < 3 || !strings.Contains(userText, a.Quote) {
 			return nil, errors.New("只能从本轮本人明确表达中学习；选项选择不能变为长期偏好")
 		}
+		a.Memory.ID = strings.TrimPrefix(a.Memory.ID, "m:")
+		a.Memory.Correction = a.Intent == "correction"
 		a.Memory.Source = in.Run.ID
+		a.Memory.Quote = a.Quote
+		a.Memory.Replaces = nil
 		return s.SaveMemory(a.Memory)
 	}
 	return nil, errors.New("今天只能查询项目资料；写操作请进入对应项目")
 
 }
 func (w *Worker) personalPrompt(r Run) string {
-	memories, _ := w.Store.Memories()
+
 	catalog, _ := w.Store.ContextCatalog()
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	channelName := func(source string) string {
@@ -336,7 +394,7 @@ func (w *Worker) personalPrompt(r Run) string {
 			}
 		}
 	}
-	return extra + "\n当前北京时间：" + time.Now().In(loc).Format("2006-01-02 15:04:05 MST") + "。今天的安排日期以此为准，不能猜测日期。\n当前有效个人理解：" + encode(memories) + "\n项目概况（核对具体事实可按需只读查原文）：" + encode(catalog) + "\n本人本轮输入：\n" + r.Text
+	return extra + "\n当前北京时间：" + time.Now().In(loc).Format("2006-01-02 15:04:05 MST") + "。今天的安排日期以此为准，不能猜测日期。\n当前有效个人理解：" + "见当前 workbench-personal-understanding 具名上下文；需要准确细节按需查询。" + "\n项目概况（核对具体事实可按需只读查原文）：" + encode(catalog) + "\n本人本轮输入：\n" + r.Text
 }
 func shanghaiDay() string {
 	loc, _ := time.LoadLocation("Asia/Shanghai")
@@ -375,8 +433,16 @@ func (w *Worker) maintainToday(ctx context.Context) bool {
 		_, _ = s.DB.Exec("UPDATE context_jobs SET due_at=min(due_at,?)", now())
 		_ = s.SetSetting("today_collected_day", dayNow)
 	}
-	if w.maintainContext(ctx) {
-		return true
+	requestNow, _ := s.Setting("today_refresh")
+	dailyNow, _ := getJSON[DailyContent](s.DB, "SELECT data FROM daily_contents WHERE day=?", dayNow)
+	dailyDue := requestNow != "" || time.Now().In(loc).Hour() >= 8 && dailyNow.State == ""
+	if !dailyDue {
+		if w.maintainUnderstanding(ctx) {
+			return true
+		}
+		if w.maintainContext(ctx) {
+			return true
+		}
 	}
 
 	request, _ := s.Setting("today_refresh")
@@ -393,13 +459,13 @@ func (w *Worker) maintainToday(ctx context.Context) bool {
 	// Keep non-empty prior suggestions even when yesterday was intentionally silent.
 	suggestions, _ := listJSON[DailyContent](s.DB, "SELECT data FROM daily_contents WHERE coalesce(json_extract(data,'$.text'),'') != '' ORDER BY day DESC LIMIT 14")
 	catalog, _ := s.ContextCatalog()
-	memories, _ := s.Memories()
+	memoryContext := s.MemoryContext()
 	version := s.contextVersion()
 	rules, rulesErr := s.PersonalRules()
 	if rulesErr != nil {
 		return false
 	}
-	r, e := w.compactCall(ctx, "daily", "本次执行每日建议生成。仅基于下面明确个人理解和项目两块上下文，只输出JSON {\"text\":\"一项中文Markdown建议或空字符串\",\"decision\":null}。text给至多一项值得今天考虑的建议，说明具体依据。无需强行安排小行动。必要时decision可为 {\"question\":\"问题\",\"reason\":\"推荐理由\",\"options\":[{\"label\":\"选项\",\"tradeoff\":\"取舍\",\"recommended\":true},{\"label\":\"另一选项\",\"tradeoff\":\"取舍\",\"recommended\":false}]}，恰有一个推荐，选项仅记录个人决定，无项目写操作。建议可以是学习、观察、取舍、减少投入，不只推任务。不要强行提问，不创建任务、不假称了解未覆盖资料。没有值得提出的新内容时输出空text和null decision。\n当前北京时间："+time.Now().In(loc).Format("2006-01-02 15:04:05 MST")+"\n个人理解："+encode(memories)+"\n项目："+encode(catalog)+"\n此前建议记录（未回复不代表拒绝，不凭时间过去重复旧话题，无实质新证据保持安静）："+encode(suggestions), &rules)
+	r, e := w.compactCall(ctx, "daily", "本次执行每日建议生成。仅基于下面明确个人理解和项目两块上下文，只输出JSON {\"text\":\"一项中文Markdown建议或空字符串\",\"decision\":null}。text给至多一项值得今天考虑的建议，说明具体依据。无需强行安排小行动。必要时decision可为 {\"question\":\"问题\",\"reason\":\"推荐理由\",\"options\":[{\"label\":\"选项\",\"tradeoff\":\"取舍\",\"recommended\":true},{\"label\":\"另一选项\",\"tradeoff\":\"取舍\",\"recommended\":false}]}，恰有一个推荐，选项仅记录个人决定，无项目写操作。建议可以是学习、观察、取舍、减少投入，不只推任务。不要强行提问，不创建任务、不假称了解未覆盖资料。没有值得提出的新内容时输出空text和null decision。\n当前北京时间："+time.Now().In(loc).Format("2006-01-02 15:04:05 MST")+"\n个人理解："+memoryContext+"\n项目："+encode(catalog)+"\n此前建议记录（未回复不代表拒绝，不凭时间过去重复旧话题，无实质新证据保持安静）："+encode(suggestions), &rules)
 	if errors.Is(e, errMaintenanceYield) {
 		return true
 	}
@@ -474,7 +540,19 @@ func (s *Store) ApplyForgottenMemories() error {
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			ids = append(ids, entry.Name())
-			_, e = s.DB.Exec("UPDATE personal_memories SET data=json_set(data,'$.forgotten',json('true'),'$.text','','$.source','') WHERE id=?", entry.Name())
+			raw, er := os.ReadFile(filepath.Join(s.Root, "forgotten-memories", entry.Name()))
+			if er != nil {
+				return er
+			}
+			var excluded []string
+			if json.Unmarshal(raw, &excluded) == nil {
+				for _, id := range excluded {
+					if _, er = s.DB.Exec("INSERT OR IGNORE INTO personal_memory_exclusions VALUES(?)", id); er != nil {
+						return er
+					}
+				}
+			}
+			_, e = s.DB.Exec("UPDATE personal_memories SET data=json_set(data,'$.forgotten',json('true'),'$.text','','$.source','','$.quote','') WHERE id=?", entry.Name())
 			if e != nil {
 				return e
 			}

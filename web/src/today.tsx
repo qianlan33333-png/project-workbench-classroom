@@ -11,6 +11,7 @@ import {
   Square,
 } from "lucide-react";
 import { api, labels, stamp, type Project, type Run } from "./api";
+import { MemoryPanel } from "./personal-understanding";
 import { PersonalRulesPanel } from "./personal-rules";
 import { RichText } from "./file-ui";
 import { useMessageSubmissions } from "./message-submissions";
@@ -439,133 +440,6 @@ function DecisionCard({
         </p>
       )}
     </article>
-  );
-}
-function MemoryPanel({
-  close,
-  notify,
-}: {
-  close: () => void;
-  notify: (s: string) => void;
-}) {
-  const [items, setItems] = useState<any[]>([]),
-    [edit, setEdit] = useState<any>(null);
-  const refresh = async () => setItems(await api("/personal/memories"));
-  useEffect(() => {
-    void refresh().catch((e) => notify(e.message));
-  }, []);
-  const act = async (f: () => Promise<any>) => {
-    try {
-      await f();
-      await refresh();
-    } catch (e: any) {
-      notify(e.message);
-    }
-  };
-  return (
-    <div className="today-modal-backdrop">
-      <section
-        className="today-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="你目前如何理解我"
-      >
-        <header>
-          <h2>你目前如何理解我</h2>
-          <button aria-label="关闭个人理解" onClick={close}>
-            <X size={18} />
-          </button>
-        </header>
-        <p className="muted">
-          只保留明确事实、方向与有时效的约束。你可以纠正，也可以忘记。
-        </p>
-        {items.map((m) => (
-          <article className="memory-item" key={m.id}>
-            <p>{m.text}</p>
-            {m.expiresAt > 0 && <small>有效至 {stamp(m.expiresAt)}</small>}
-            <div>
-              <button onClick={() => setEdit(m)}>纠正</button>
-              <button
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      "忘记这条理解，并清理可能包含它的原生会话上下文？可见聊天记录仍保留。",
-                    )
-                  )
-                    void act(async () => {
-                      await api(
-                        `/personal/memories/${m.id}?version=${m.version}`,
-                        undefined,
-                        "DELETE",
-                      );
-                      notify(
-                        "已忘记。原生上下文已清理，后续不会从旧聊天自动恢复。",
-                      );
-                    });
-                }}
-              >
-                忘记
-              </button>
-            </div>
-          </article>
-        ))}
-        {!items.length && (
-          <p>还没有记录。可以从想实现的目标、当前的时间安排聊起。</p>
-        )}
-        <button onClick={() => setEdit({ kind: "fact", text: "" })}>
-          补充理解
-        </button>
-        {edit && (
-          <div className="memory-editor">
-            <label>
-              内容
-              <textarea
-                value={edit.text}
-                onChange={(e) => setEdit({ ...edit, text: e.target.value })}
-              />
-            </label>
-            <label>
-              类型
-              <select
-                value={edit.kind}
-                onChange={(e) => setEdit({ ...edit, kind: e.target.value })}
-              >
-                <option value="fact">明确事实</option>
-                <option value="goal">目标方向</option>
-                <option value="principle">协作原则</option>
-                <option value="temporary">近期约束</option>
-                <option value="feedback">反馈效果</option>
-              </select>
-            </label>
-            {edit.kind === "temporary" && (
-              <label>
-                有效至
-                <input
-                  type="datetime-local"
-                  onChange={(e) =>
-                    setEdit({
-                      ...edit,
-                      expiresAt: new Date(e.target.value).getTime(),
-                    })
-                  }
-                />
-              </label>
-            )}
-            <button
-              className="primary"
-              onClick={() =>
-                act(async () => {
-                  await api("/personal/memories", edit);
-                  setEdit(null);
-                })
-              }
-            >
-              保存
-            </button>
-          </div>
-        )}
-      </section>
-    </div>
   );
 }
 export function Today({

@@ -98,6 +98,12 @@ func (w *Worker) Recover(ctx context.Context) error {
 	if err = w.Store.ApplyForgottenMemories(); err != nil {
 		return err
 	}
+	if err = w.Store.migrateMemoryRules(); err != nil {
+		return err
+	}
+	if err = w.Store.initUnderstanding(); err != nil {
+		return err
+	}
 	return w.Store.RecoverDeliveries()
 }
 func (w *Worker) Start(ctx context.Context) {

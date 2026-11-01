@@ -4,10 +4,18 @@ import (
 	"errors"
 	"github.com/gin-gonic/gin"
 	"strconv"
+	"strings"
 )
 
 func (a *API) mountToday(g *gin.RouterGroup) {
 	s := a.Store
+	g.GET("/personal/understanding", func(c *gin.Context) { v, e := s.Understanding(); reply(c, v, e) })
+	g.POST("/personal/understanding/refresh", func(c *gin.Context) { reply(c, gin.H{"state": "pending"}, s.RequestUnderstanding()) })
+	g.GET("/personal/understanding/evidence", func(c *gin.Context) {
+		offset, _ := strconv.Atoi(c.Query("offset"))
+		v, e := s.MemoryEvidence(MemoryEvidenceQuery{Query: c.Query("query"), ID: c.Query("id"), ParagraphID: c.Query("paragraphId"), Offset: offset})
+		reply(c, v, e)
+	})
 	g.GET("/personal/rules", func(c *gin.Context) { v, e := s.PersonalRules(); reply(c, v, e) })
 	g.PUT("/personal/rules", func(c *gin.Context) { bind(c, func(v PersonalRules) (any, error) { return s.SavePersonalRules(v) }) })
 	g.GET("/projects/:id/context", func(c *gin.Context) { v, e := s.ProjectContext(c.Param("id")); reply(c, v, e) })
@@ -121,7 +129,11 @@ func (a *API) mountToday(g *gin.RouterGroup) {
 			reply(c, nil, errors.New("需要 version"))
 			return
 		}
-		reply(c, nil, s.ForgetMemory(c.Param("id"), v))
+		if strings.HasPrefix(c.Param("id"), "p:") {
+			reply(c, nil, s.ForgetUnderstanding(c.Param("id"), v))
+		} else {
+			reply(c, nil, s.ForgetMemory(c.Param("id"), v))
+		}
 	})
 	g.POST("/personal/decisions/:id/answer", func(c *gin.Context) {
 		bind(c, func(v struct {

@@ -7,6 +7,10 @@ CREATE TABLE IF NOT EXISTS project_tasks(id TEXT PRIMARY KEY,project_id TEXT NOT
 CREATE TABLE IF NOT EXISTS project_contexts(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS context_versions(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,version INTEGER NOT NULL,data TEXT NOT NULL,PRIMARY KEY(project_id,version));
 CREATE TABLE IF NOT EXISTS context_jobs(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,due_at INTEGER NOT NULL,data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS personal_understanding_versions(version INTEGER PRIMARY KEY,data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS personal_memory_progress(id TEXT PRIMARY KEY,version INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS personal_memory_exclusions(id TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS personal_memory_revisions(id TEXT NOT NULL,version INTEGER NOT NULL,data TEXT NOT NULL,PRIMARY KEY(id,version));
 CREATE TABLE IF NOT EXISTS personal_memories(id TEXT PRIMARY KEY,data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS personal_decisions(id TEXT PRIMARY KEY,operation TEXT UNIQUE NOT NULL,data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS daily_contents(day TEXT PRIMARY KEY,data TEXT NOT NULL);
@@ -69,14 +73,20 @@ type contextJob struct {
 	RetryAt         int64           `json:"retryAt"`
 }
 type PersonalMemory struct {
-	ID        string `json:"id"`
-	Text      string `json:"text"`
-	Kind      string `json:"kind"`
-	ExpiresAt int64  `json:"expiresAt,omitempty"`
-	Source    string `json:"source,omitempty"`
-	Version   int64  `json:"version"`
-	Forgotten bool   `json:"forgotten,omitempty"`
-	UpdatedAt int64  `json:"updatedAt"`
+	Correction bool             `json:"correction,omitempty"`
+	BaseRefs   map[string]int64 `json:"baseRefs,omitempty"`
+	Quote      string           `json:"quote,omitempty"`
+	Confirmed  bool             `json:"confirmed"`
+	Protected  bool             `json:"protected"`
+	Replaces   []string         `json:"replaces,omitempty"`
+	ID         string           `json:"id"`
+	Text       string           `json:"text"`
+	Kind       string           `json:"kind"`
+	ExpiresAt  int64            `json:"expiresAt,omitempty"`
+	Source     string           `json:"source,omitempty"`
+	Version    int64            `json:"version"`
+	Forgotten  bool             `json:"forgotten,omitempty"`
+	UpdatedAt  int64            `json:"updatedAt"`
 }
 type DecisionOption struct {
 	ID          string       `json:"id"`

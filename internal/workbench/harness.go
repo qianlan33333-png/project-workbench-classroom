@@ -278,9 +278,9 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 				runtimeDir = "/opt/workbench-runtime"
 			}
 			patch = append(patch, map[string]any{"id": "system-prompt", "config": map[string]any{"personaPrefix": personalProtocol + "\nworkbench-owner-rules 是本人在界面保存的当前规则，按该版本协作，取代历史中的旧规则。"}})
-			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "personal-owner-rules", "name": filepath.Join(runtimeDir, "personal-rules.mjs"), "config": map[string]any{"text": rules.Prompt()}}}})
+			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "personal-owner-rules", "name": filepath.Join(runtimeDir, "personal-rules.mjs"), "config": map[string]any{"text": rules.Prompt(), "memory": h.Store.MemoryContext()}}}})
 		} else {
-			patch = append(patch, map[string]any{"id": "system-prompt", "config": map[string]any{"personaPrefix": rules.Prompt()}})
+			patch = append(patch, map[string]any{"id": "system-prompt", "config": map[string]any{"personaPrefix": rules.Prompt() + "\n" + h.Store.MemoryContext()}})
 		}
 		if c.RuntimeMode == "podman" && c.RuntimeDir != "" {
 			mounts = append(mounts, "--volume", c.RuntimeDir+":/opt/workbench-runtime:ro")
