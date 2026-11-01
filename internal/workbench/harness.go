@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -280,13 +281,13 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		if c.Podman == "" || c.RuntimeImage == "" {
 			return nil, nil, "", errors.New("执行容器尚未配置")
 		}
-		args := []string{c.Podman, "run", "--rm", "--interactive", "--name", "pw-" + input.Run.ID, "--label", "project-workbench=true", "--label", "project-workbench-root=" + digest([]byte(c.DataDir))[:16], "--userns=keep-id", "--security-opt=no-new-privileges", "--cap-drop=ALL", "--memory=2300m", "--pids-limit=256", "--workdir", "/workspace", "--volume", root + ":/workspace:rw", "--volume", home + ":/runtime:rw", "--env", "DSH_HOME=/runtime", "--env", "HOME=/runtime", "--env", "NODE_NO_WARNINGS=1", "--env", "DSH_MAX_TOKENS_AS_SUCCESS=false", "--env", "DSH_PRIMARY_RUNTIME=", "--env", "PATH=/tools/bin:/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+		args := []string{c.Podman, "run", "--rm", "--interactive", "--name", "pw-" + input.Run.ID, "--label", "project-workbench=true", "--label", "project-workbench-root=" + digest([]byte(c.DataDir))[:16], "--userns=keep-id", "--security-opt=no-new-privileges", "--cap-drop=ALL", "--memory=1024m", "--pids-limit=256", "--workdir", "/workspace", "--volume", root + ":/workspace:rw", "--volume", home + ":/runtime:rw", "--env", "DSH_HOME=/runtime", "--env", "HOME=/runtime", "--env", "NODE_NO_WARNINGS=1", "--env", "DSH_MAX_TOKENS_AS_SUCCESS=false", "--env", "DSH_PRIMARY_RUNTIME=", "--env", "PATH=/tools/bin:/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 		if !input.Routing && !personal {
-			args = append(args, "--publish", "127.0.0.1:6081:6080", "--env", "PW_VISUAL_BROWSER=1")
+			args = append(args, "--publish", "127.0.0.1::6080", "--env", "PW_VISUAL_BROWSER=1")
 		} else {
 			for i, arg := range args {
-				if arg == "--memory=2300m" {
-					args[i] = "--memory=600m"
+				if arg == "--memory=1024m" {
+					args[i] = "--memory=512m"
 				}
 			}
 		}
@@ -597,6 +598,22 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 	}
 	if err = json.Unmarshal(info, &handshake); err != nil || handshake.ServerInfo.Name != "deepseek-harness-sdk-runtime" {
 		return RuntimeResult{}, errors.New("Harness 协议不兼容")
+	}
+	if h.Config.RuntimeMode == "podman" && !input.Routing && input.Project.ID != personalProjectID {
+		lookup, stop := context.WithTimeout(ctx, 5*time.Second)
+		raw, err := exec.CommandContext(lookup, h.Config.Podman, "port", "pw-"+input.Run.ID, "6080/tcp").Output()
+		stop()
+		if err != nil {
+			return RuntimeResult{}, fmt.Errorf("读取任务浏览器端口: %w", err)
+		}
+		address := strings.TrimSpace(string(raw))
+		host, port, err := net.SplitHostPort(address)
+		n, parseErr := strconv.Atoi(port)
+		if err != nil || host != "127.0.0.1" || parseErr != nil || n < 1 || n > 65535 {
+			return RuntimeResult{}, errors.New("任务浏览器地址无效")
+		}
+		h.Store.browsers.Store(input.Run.ID, browserEndpoint{address, input.Project.Name})
+		defer h.Store.browsers.Delete(input.Run.ID)
 	}
 	var state string
 	_ = h.Store.DB.QueryRow("SELECT state FROM runtime_sessions WHERE session_id=?", input.Session.ID).Scan(&state)

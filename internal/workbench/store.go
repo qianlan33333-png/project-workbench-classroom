@@ -18,6 +18,7 @@ type Store struct {
 	Root               string
 	mu                 sync.Mutex
 	expertMu           sync.RWMutex
+	browsers           sync.Map // run ID -> browserEndpoint, only while its container is alive
 	notify             chan struct{}
 	toolManager        func(string, string, []string) (ToolJob, error)
 }

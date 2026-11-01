@@ -30,7 +30,7 @@ sudo APT_MIRROR=mirrors.tencentyun.com bash install-release.sh project-workbench
 
 正式根入口：BasePath 为空，PublicURL 是站点根 URL；BrowserURL 为 `/api/v1/browser/vnc.html?autoconnect=true&resize=scale&path=api/v1/browser/websockify`。Caddy 只把工作台入口代理到 127.0.0.1:3082。公司官网 `/company/` 与 `/robots.txt` 保持独立路由。
 
-首次启动需预热 `podman run --rm --userns=keep-id IMAGE dsh --version`。新镜像首次创建用户映射可能耗时约 80 秒；后续执行不重复该开销。容器 VNC 只发布在服务器 127.0.0.1:6081，由登录后的应用代理。
+首次启动需预热 `podman run --rm --userns=keep-id IMAGE dsh --version`。新镜像首次创建用户映射可能耗时约 80 秒；后续执行不重复该开销。每个普通项目执行容器由 Podman 分配独立的本机回环端口。登录后的浏览器接管入口可选择正在运行的项目，页面和 WebSocket 都固定到同一运行编号。任务结束后，该链接失效。
 
 ## 渠道与切换
 

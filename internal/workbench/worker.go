@@ -13,22 +13,23 @@ import (
 	"time"
 )
 
-// Worker has one business executor. Routing is separate so a long task never
-// prevents receiving, attributing or stopping another request.
+// A separate slot for the personal assistant keeps conversations available
+// when both project slots are occupied. Project leases serialize writes.
+const maxProjectRuns = 2
+
 type Worker struct {
 	Store        *Store
 	Executor     Executor
 	Router       SemanticRouter
 	mu           sync.Mutex
-	active       string
-	cancel       context.CancelFunc
+	cancels      map[string]context.CancelFunc
 	answers      map[string]chan json.RawMessage
 	pendingStops map[string]bool
 	wg           sync.WaitGroup
 }
 
 func NewWorker(s *Store, e Executor, router SemanticRouter) *Worker {
-	return &Worker{Store: s, Executor: e, Router: router, answers: map[string]chan json.RawMessage{}}
+	return &Worker{Store: s, Executor: e, Router: router, answers: map[string]chan json.RawMessage{}, cancels: map[string]context.CancelFunc{}}
 }
 func (w *Worker) Recover(ctx context.Context) error {
 	rows, e := w.Store.DB.Query("SELECT run_id FROM project_locks WHERE run_id LIKE 'maintenance:%'")
@@ -155,14 +156,17 @@ func (w *Worker) Start(ctx context.Context) {
 			}
 			r, err := w.claim()
 			if errors.Is(err, ErrNotFound) {
-				w.maintainToday(ctx)
+				var locks int
+				if w.Store.DB.QueryRow("SELECT count(*) FROM project_locks").Scan(&locks) == nil && locks == 0 {
+					w.maintainToday(ctx)
+				}
 				continue
 			}
 			if err != nil {
 				_ = w.Store.Emit("", "", "worker.error", map[string]string{"error": safeRuntimeError(err.Error())})
 				continue
 			}
-			w.execute(ctx, r)
+			w.wg.Go(func() { w.execute(ctx, r) })
 		}
 	}()
 }
@@ -174,7 +178,12 @@ func (w *Worker) claim() (Run, error) {
 	var r Run
 	err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var raw string
-		err := tx.QueryRow("SELECT r.data FROM runs r WHERE r.state='queued' AND NOT EXISTS(SELECT 1 FROM project_locks) AND NOT EXISTS(SELECT 1 FROM settings WHERE key='tool_install_running') ORDER BY r.priority,r.created_at,r.rowid LIMIT 1").Scan(&raw)
+		err := tx.QueryRow(`SELECT r.data FROM runs r WHERE r.state='queued'
+            AND NOT EXISTS(SELECT 1 FROM project_locks WHERE project_id=r.project_id)
+            AND NOT EXISTS(SELECT 1 FROM project_locks WHERE run_id LIKE 'maintenance:%')
+            AND NOT EXISTS(SELECT 1 FROM settings WHERE key='tool_install_running')
+            AND (r.project_id=? OR (SELECT count(*) FROM project_locks WHERE project_id<>?) < ?)
+            ORDER BY r.priority,r.created_at,r.rowid LIMIT 1`, personalProjectID, personalProjectID, maxProjectRuns).Scan(&raw)
 		if err == sql.ErrNoRows {
 			return ErrNotFound
 		}
@@ -195,6 +204,15 @@ func (w *Worker) claim() (Run, error) {
 	return r, err
 }
 func (w *Worker) execute(parent context.Context, r Run) {
+	ctx, cancel := context.WithCancel(parent)
+	w.mu.Lock()
+	w.cancels[r.ID] = cancel
+	if w.pendingStops[r.ID] {
+		delete(w.pendingStops, r.ID)
+		cancel()
+	}
+	w.mu.Unlock()
+	defer func() { cancel(); w.mu.Lock(); delete(w.cancels, r.ID); w.mu.Unlock() }()
 	if r.ProjectID == personalProjectID {
 		if flag, _ := w.Store.Setting("personal_context_reset"); flag == "true" {
 			if e := w.Store.resetPersonalContext(); e != nil {
@@ -208,19 +226,9 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		}
 	}
 	if r.Kind == "archive" {
-		w.executeArchive(parent, r)
+		w.executeArchive(ctx, r)
 		return
 	}
-	ctx, cancel := context.WithCancel(parent)
-	w.mu.Lock()
-	w.active = r.ID
-	w.cancel = cancel
-	if w.pendingStops[r.ID] {
-		delete(w.pendingStops, r.ID)
-		cancel()
-	}
-	w.mu.Unlock()
-	defer func() { cancel(); w.mu.Lock(); w.active = ""; w.cancel = nil; w.mu.Unlock() }()
 	s := w.Store
 	_ = s.Emit(r.SessionID, r.ID, "run.updated", r)
 	baseline, err := s.Snapshot(r.ProjectID)
@@ -590,8 +598,8 @@ func (w *Worker) expireNativeQuestion(run, requestID string) {
 }
 func (w *Worker) Stop(id string) error {
 	w.mu.Lock()
-	if w.active == id && w.cancel != nil {
-		w.cancel()
+	if cancel := w.cancels[id]; cancel != nil {
+		cancel()
 		w.mu.Unlock()
 		return nil
 	}
@@ -606,8 +614,8 @@ func (w *Worker) Stop(id string) error {
 		// A run can be claimed just before execute installs its cancel function.
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		if w.active == id && w.cancel != nil {
-			w.cancel()
+		if cancel := w.cancels[id]; cancel != nil {
+			cancel()
 		} else {
 			if w.pendingStops == nil {
 				w.pendingStops = map[string]bool{}

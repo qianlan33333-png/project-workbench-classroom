@@ -8,8 +8,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -80,26 +78,7 @@ func (a *API) Mount(r *gin.Engine) {
 	owner := g.Group("")
 	owner.Use(a.authMiddleware)
 	a.mountToday(owner)
-	owner.GET("/browser/*path", func(c *gin.Context) {
-		var count int
-		if e := s.DB.QueryRow("SELECT count(*) FROM runs WHERE state IN ('running','waiting')").Scan(&count); e != nil || count == 0 {
-			c.Data(409, "text/plain; charset=utf-8", []byte("浏览器随项目任务启动。请先让项目助手打开需要操作的网页。"))
-			return
-		}
-		target, _ := url.Parse("http://127.0.0.1:6081")
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		original := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			original(req)
-			req.URL.Path = c.Param("path")
-			req.Header.Del("Cookie")
-			req.Header.Del("Authorization")
-		}
-		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) {
-			http.Error(w, "浏览器正在启动，请稍后刷新。", 503)
-		}
-		proxy.ServeHTTP(c.Writer, c.Request)
-	})
+	owner.GET("/browser/*path", a.projectBrowser)
 	owner.POST("/logout", func(c *gin.Context) {
 		token, _ := c.Cookie("pw_session")
 		_, e := s.DB.Exec("DELETE FROM logins WHERE hash=?", digest([]byte(token)))
@@ -323,7 +302,7 @@ func (a *API) Mount(r *gin.Engine) {
 	})
 	owner.GET("/deliveries", func(c *gin.Context) { v, e := s.Deliveries(); reply(c, v, e) })
 	owner.GET("/settings", func(c *gin.Context) {
-		c.JSON(200, gin.H{"provider": a.Config.Provider, "model": a.Config.Model, "runtimeMode": a.Config.RuntimeMode, "browserUrl": a.Config.BrowserURL, "timezone": "Asia/Shanghai", "publicUrl": a.Config.PublicURL, "maxConcurrentRuns": 1})
+		c.JSON(200, gin.H{"provider": a.Config.Provider, "model": a.Config.Model, "runtimeMode": a.Config.RuntimeMode, "browserUrl": a.Config.BrowserURL, "timezone": "Asia/Shanghai", "publicUrl": a.Config.PublicURL, "maxConcurrentRuns": maxProjectRuns + 1, "maxProjectRuns": maxProjectRuns})
 	})
 	owner.POST("/settings/password", func(c *gin.Context) {
 		bind(c, func(v struct {

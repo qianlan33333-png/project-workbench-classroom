@@ -97,28 +97,19 @@ func (s *Store) ReadFile(project, p string) ([]byte, string, error) {
 }
 func (s *Store) blob(b []byte) (string, error) {
 	h := digest(b)
-	p := filepath.Join(s.Root, "blobs", h[:2], h)
-	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+	root, err := os.OpenRoot(filepath.Join(s.Root, "blobs"))
+	if err != nil {
 		return "", err
 	}
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if errors.Is(err, os.ErrExist) {
+	defer root.Close()
+	path := filepath.Join(h[:2], h)
+	if _, err := root.Stat(path); err == nil {
 		return h, nil
-	}
-	if err != nil {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
-	if _, err = f.Write(b); err != nil {
-		f.Close()
-		os.Remove(p)
-		return "", err
-	}
-	err = f.Sync()
-	closeErr := f.Close()
-	if err != nil {
-		return "", err
-	}
-	return h, closeErr
+	// Concurrent projects may snapshot the same bytes. Publish only complete blobs.
+	return h, atomicRoot(root, path, b)
 }
 func (s *Store) Blob(h string) ([]byte, error) {
 	if len(h) != 64 {

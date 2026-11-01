@@ -78,7 +78,7 @@ func TestRealCloudBrowserAndAppTools(t *testing.T) {
 		if res.StatusCode != 200 || !strings.Contains(string(body), "noVNC") {
 			t.Errorf("authenticated visual takeover unavailable: %d", res.StatusCode)
 		}
-		req, _ = http.NewRequest("GET", api.URL+"/api/v1/browser/websockify", nil)
+		req, _ = http.NewRequest("GET", api.URL+"/api/v1/browser/run/"+r.ID+"/websockify", nil)
 		for _, c := range login.Cookies() {
 			req.AddCookie(c)
 		}

@@ -2775,9 +2775,9 @@ function SettingsPage({
         <div className="setting-row">
           <div>
             <strong>任务并发</strong>
-            <p>一个业务任务执行，其余任务排队；消息入口保持可用。</p>
+            <p>最多 {settings.maxProjectRuns} 个不同项目同时执行，每个项目按顺序处理。「今天」有独立执行位。</p>
           </div>
-          <span>1</span>
+          <span>{settings.maxConcurrentRuns}</span>
         </div>
         {settings.browserUrl && (
           <div className="setting-row">

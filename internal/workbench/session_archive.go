@@ -10,17 +10,7 @@ import (
 	"time"
 )
 
-func (w *Worker) executeArchive(parent context.Context, r Run) {
-	ctx, cancel := context.WithCancel(parent)
-	w.mu.Lock()
-	w.active = r.ID
-	w.cancel = cancel
-	if w.pendingStops[r.ID] {
-		delete(w.pendingStops, r.ID)
-		cancel()
-	}
-	w.mu.Unlock()
-	defer func() { cancel(); w.mu.Lock(); w.active = ""; w.cancel = nil; w.mu.Unlock() }()
+func (w *Worker) executeArchive(ctx context.Context, r Run) {
 	s := w.Store
 	ss, err := s.rawSession(r.SessionID)
 	if err == nil && ss.RecycledAt > 0 {
