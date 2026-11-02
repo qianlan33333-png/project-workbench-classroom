@@ -84,7 +84,7 @@ func TestRealGatewayHarness(t *testing.T) {
 	ss, _ := s.Session(run.SessionID)
 	h := &Harness{Config: cfg, Store: s}
 	t.Cleanup(func() { _ = h.Cleanup(context.Background(), run.ID) })
-	ctx, cancel := context.WithDeadline(t.Context(), time.UnixMilli(run.Gateway.Deadline))
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	started := time.Now()
 	result, err := h.Execute(ctx, RuntimeInput{Run: run, Session: ss, Project: p, Prompt: w.gatewayPrompt(run, p)}, RuntimeHooks{})

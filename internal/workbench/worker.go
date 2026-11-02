@@ -144,7 +144,7 @@ func (w *Worker) Start(ctx context.Context) {
 		w.wg.Go(func() { w.crmDeliverLoop(ctx) })
 	}
 	go func() { defer w.wg.Done(); w.gatewayDeliverLoop(ctx) }()
-	go func() { defer w.wg.Done(); w.gatewayExpireLoop(ctx) }()
+	go func() { defer w.wg.Done(); w.gatewayRevocationLoop(ctx) }()
 	go func() {
 		defer w.wg.Done()
 		t := time.NewTicker(400 * time.Millisecond)
@@ -263,10 +263,6 @@ func (w *Worker) claim() (Run, error) {
 }
 func (w *Worker) execute(parent context.Context, r Run) {
 	ctx, cancel := context.WithCancel(parent)
-	if r.Gateway != nil {
-		cancel()
-		ctx, cancel = context.WithDeadline(parent, time.UnixMilli(r.Gateway.Deadline))
-	}
 	w.mu.Lock()
 	w.cancels[r.ID] = cancel
 	if w.pendingStops[r.ID] {

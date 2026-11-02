@@ -65,12 +65,7 @@ func (s *Store) claimGatewayTx(tx *sql.Tx, r *Run) error {
 		return e
 	}
 	m := r.Gateway
-	if active != 1 || !b.Enabled || g.Mode != "auto" || b.Version != m.BindingVersion || g.BindingVersion != m.BindingVersion || g.Version != m.Version || m.Deadline <= now() {
-		if m.Deadline <= now() && active == 1 && b.Enabled && g.Version == m.Version && g.BindingVersion == b.Version && g.Mode == "auto" {
-			if e = s.gatewayHandoffTx(tx, &g, b, "等待应答超时", r.Text); e != nil {
-				return e
-			}
-		}
+	if active != 1 || !b.Enabled || g.Mode != "auto" || b.Version != m.BindingVersion || g.BindingVersion != m.BindingVersion || g.Version != m.Version {
 		r.State = "cancelled"
 		r.FinishedAt = now()
 		if _, e = tx.Exec("UPDATE runs SET state=?,data=? WHERE id=?", r.State, encode(r), r.ID); e != nil {

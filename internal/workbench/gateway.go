@@ -62,7 +62,7 @@ type GatewayBinding struct {
 	ExpertID       string   `json:"expertId"`
 	Enabled        bool     `json:"enabled"`
 	Version        int64    `json:"version"`
-	TimeoutSeconds int      `json:"timeoutSeconds"`
+	TimeoutSeconds int      `json:"timeoutSeconds"` // Deprecated wire field, retained for older clients.
 	NotifyChatID   string   `json:"notifyChatId"`
 	ToolIDs        []string `json:"toolIds,omitempty"`
 	PluginIDs      []string `json:"pluginIds,omitempty"`
@@ -88,6 +88,7 @@ type GatewaySession struct {
 	LastMessageAt    int64  `json:"lastMessageAt"`
 }
 type GatewayRun struct {
+	LegacyDeadline int64    `json:"deadline,omitempty"` // Only read by the previous release on rollback.
 	HistoryFrom    int64    `json:"historyFrom,omitempty"`
 	HistoryThrough int64    `json:"historyThrough,omitempty"`
 	HistoryPreview string   `json:"historyPreview,omitempty"`
@@ -97,17 +98,17 @@ type GatewayRun struct {
 	ManualReply    string   `json:"manualReply,omitempty"`
 	Version        int64    `json:"version"`
 	BindingVersion int64    `json:"bindingVersion"`
-	Deadline       int64    `json:"deadline"`
 	ToolIDs        []string `json:"toolIds,omitempty"`
 	PluginIDs      []string `json:"pluginIds,omitempty"`
 }
 type GatewayDelivery struct {
+	PollErrors     int        `json:"pollErrors,omitempty"`
+	LegacyDeadline int64      `json:"deadline,omitempty"` // Only read by the previous release on rollback.
 	CRMKey         string     `json:"crmKey,omitempty"`
 	CRMNotice      *crmNotice `json:"crmNotice,omitempty"`
 	FirstAttemptAt int64      `json:"firstAttemptAt,omitempty"`
 	Version        int64      `json:"version"`
 	BindingVersion int64      `json:"bindingVersion"`
-	Deadline       int64      `json:"deadline"`
 	ContactID      string     `json:"contactId"`
 	AccountID      string     `json:"accountId"`
 	NotifyChatID   string     `json:"notifyChatId,omitempty"`
@@ -229,11 +230,10 @@ func (s *Store) SaveGatewayBinding(b GatewayBinding) (GatewayBinding, error) {
 	if b.ExpertID != "" && b.ExpertID != "general" && !contains(p.ExpertIDs, b.ExpertID) {
 		return b, errors.New("expert not in project")
 	}
-	if b.TimeoutSeconds == 0 {
-		b.TimeoutSeconds = 120
-	}
-	if b.TimeoutSeconds < 1 || b.TimeoutSeconds > 120 || b.NotifyChatID == "" {
-		return b, errors.New("timeout must be 1..120 seconds and notification chat required")
+	// Old clients and rollback releases expect a positive value; current scheduling ignores it.
+	b.TimeoutSeconds = 120
+	if b.NotifyChatID == "" {
+		return b, errors.New("notification chat required")
 	}
 	if e := validateGatewayKnowledge(b.KnowledgePaths); e != nil {
 		return b, e
@@ -574,7 +574,7 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 		if e = saveGatewaySession(tx, g); e != nil {
 			return e
 		}
-		msg := Message{ID: newID(), SessionID: g.ID, State: state, CreatedAt: at, Gateway: &GatewayRun{Version: g.Version, BindingVersion: b.Version, Deadline: at + int64(b.TimeoutSeconds)*1000, ToolIDs: b.ToolIDs, PluginIDs: b.PluginIDs, KnowledgePaths: b.KnowledgePaths}, Incoming: Incoming{Source: gatewaySource, ConnectionID: connection, ActorID: contact, ConversationID: contact, EventID: m.MessageID, SessionID: g.ID, ExpertID: b.ExpertID, Text: m.Content.Text}}
+		msg := Message{ID: newID(), SessionID: g.ID, State: state, CreatedAt: at, Gateway: &GatewayRun{LegacyDeadline: at + (2 * time.Minute).Milliseconds(), Version: g.Version, BindingVersion: b.Version, ToolIDs: b.ToolIDs, PluginIDs: b.PluginIDs, KnowledgePaths: b.KnowledgePaths}, Incoming: Incoming{Source: gatewaySource, ConnectionID: connection, ActorID: contact, ConversationID: contact, EventID: m.MessageID, SessionID: g.ID, ExpertID: b.ExpertID, Text: m.Content.Text}}
 		if state == "handled" && (event.Type == "message.self_sent" || m.Direction == "in") {
 			msg.Gateway.HistoryRole = "客户"
 			if event.Type == "message.self_sent" {
@@ -631,13 +631,10 @@ func (s *Store) gatewayRunMetadata(m Message) (*GatewayRun, error) {
 	return m.Gateway, nil
 }
 func (s *Store) queueGateway(m Message) error {
-	meta, e := s.gatewayRunMetadata(m)
+	_, e := s.gatewayRunMetadata(m)
 	if e != nil {
 		_, e = s.DB.Exec("UPDATE inbox SET state='handled',data=json_set(data,'$.state','handled','$.gateway.historyRole','客户') WHERE id=? AND state='gateway_pending'", m.ID)
 		return e
-	}
-	if meta.Deadline <= now() {
-		return s.handoffGatewayVersion(m.SessionID, m.Gateway, "等待应答超时", m.Incoming.Text)
 	}
 	_, e = s.queue(m, m.SessionID, "", false)
 	if e != nil {
@@ -695,14 +692,14 @@ func (s *Store) finishGatewayRun(r Run) error {
 			if parseErr == nil && dec.Decode(&trailing) != io.EOF {
 				parseErr = errors.New("trailing result")
 			}
-			if r.State != "completed" || r.Gateway.Deadline <= now() || parseErr != nil || !contains([]string{"reply", "handoff", "ignore"}, decision.Action) || decision.Action == "reply" && (strings.TrimSpace(decision.Text) == "" || len(decision.Text) > 16000) {
+			if r.State != "completed" || parseErr != nil || !contains([]string{"reply", "handoff", "ignore"}, decision.Action) || decision.Action == "reply" && (strings.TrimSpace(decision.Text) == "" || len(decision.Text) > 16000) {
 				decision.Action = "handoff"
-				decision.Reason = "专家应答失败、超时或结果格式不完整"
+				decision.Reason = "专家应答失败或结果格式不完整"
 				decision.Summary = ""
 			}
 			switch decision.Action {
 			case "reply":
-				d := Delivery{ID: newID(), MessageID: r.MessageID, RunID: r.ID, SessionID: r.SessionID, ConnectionID: g.ConnectionID, ConversationID: g.ContactID, Kind: "gateway.answer", Text: decision.Text, State: "pending", CreatedAt: now(), Gateway: &GatewayDelivery{Version: g.Version, BindingVersion: b.Version, Deadline: r.Gateway.Deadline, ContactID: g.ContactID, AccountID: g.AccountID}}
+				d := Delivery{ID: newID(), MessageID: r.MessageID, RunID: r.ID, SessionID: r.SessionID, ConnectionID: g.ConnectionID, ConversationID: g.ContactID, Kind: "gateway.answer", Text: decision.Text, State: "pending", CreatedAt: now(), Gateway: &GatewayDelivery{LegacyDeadline: now() + (2 * time.Minute).Milliseconds(), Version: g.Version, BindingVersion: b.Version, ContactID: g.ContactID, AccountID: g.AccountID}}
 				_, e = tx.Exec("INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?)", d.ID, "gateway-answer:"+r.ID, d.ConnectionID, d.State, d.CreatedAt, encode(d))
 			case "handoff":
 				if decision.Summary == "" {

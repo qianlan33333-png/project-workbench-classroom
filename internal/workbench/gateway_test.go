@@ -406,14 +406,10 @@ func (e *gatewayTestExecutor) Execute(ctx context.Context, in RuntimeInput, _ Ru
 	return RuntimeResult{Text: `{"action":"reply","text":"测试回复"}`}, nil
 }
 func (e *gatewayTestExecutor) Cleanup(context.Context, string) error { return nil }
-func TestGatewayFiveClientsRespectProjectLeaseAndQueueDeadline(t *testing.T) {
+func TestGatewayFiveClientsWaitForProjectLease(t *testing.T) {
 	s := testStore(t)
 	p := newGatewayProvider(t)
 	c, b := gatewaySetup(t, s, p)
-	b.TimeoutSeconds = 1
-	if _, e := s.SaveGatewayBinding(b); e != nil {
-		t.Fatal(e)
-	}
 	project, _ := s.Project(b.ProjectID)
 	internal := submitRoute(t, s, Incoming{Source: "web", EventID: newID(), SessionID: project.DefaultSessionID, Text: "长任务"})
 	ex := &gatewayTestExecutor{blockInternal: true}
@@ -424,20 +420,21 @@ func TestGatewayFiveClientsRespectProjectLeaseAndQueueDeadline(t *testing.T) {
 	w.Start(ctx)
 	waitFor(t, func() bool { r, _ := s.Run(internal.RunID); return r.State == "running" })
 	for i := range 5 {
-		receiveGateway(t, s, c, "account-A", fmt.Sprintf("customer-%d", i), "message.received", fmt.Sprintf("incoming-%d", i), "问题", time.Now())
+		receiveGateway(t, s, c, "account-A", fmt.Sprintf("customer-%d", i), "message.received", fmt.Sprintf("incoming-%d", i), "问题", time.Now().Add(-3*time.Minute))
 	}
 	waitFor(t, func() bool {
-		gs, _ := s.GatewaySessions()
-		if len(gs) != 5 {
-			return false
-		}
-		for _, g := range gs {
-			if g.Mode != "human" {
-				return false
-			}
-		}
-		return true
+		var n int
+		return s.DB.QueryRow("SELECT count(*) FROM runs WHERE state='queued' AND project_id=?", project.ID).Scan(&n) == nil && n == 5
 	})
+	gs, err := s.GatewaySessions()
+	if err != nil || len(gs) != 5 {
+		t.Fatal(gs, err)
+	}
+	for _, g := range gs {
+		if g.Mode != "auto" {
+			t.Fatal(g)
+		}
+	}
 	if ex.calls.Load() != 1 {
 		t.Fatal("customer bypassed project write lease")
 	}

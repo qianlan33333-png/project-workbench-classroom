@@ -48,7 +48,7 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 	server := &http.Server{BaseContext: func(net.Listener) context.Context { return lifetime }, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second}
 	if model != nil {
 		server.WriteTimeout = 0
-	} // Streaming is bounded by the run deadline.
+	} // Model and MCP streams enforce progress-based I/O timeouts.
 	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if gatewayMCP != nil && strings.HasPrefix(r.URL.Path, "/gateway-mcp/") {
 			gatewayMCP.ServeHTTP(w, r)

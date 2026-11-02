@@ -160,11 +160,6 @@ func (h *Harness) gatewayModelHandler(in RuntimeInput) (http.Handler, error) {
 			deny(403)
 			return
 		}
-		meta := in.Run.Gateway
-		if meta == nil || meta.Deadline <= now() {
-			deny(409)
-			return
-		}
 		if !h.Store.gatewayRunLive(in.Run) {
 			deny(409)
 			return
@@ -190,9 +185,7 @@ func (h *Harness) gatewayModelHandler(in RuntimeInput) (http.Handler, error) {
 			deny(400)
 			return
 		}
-		ctx, cancel := context.WithDeadline(r.Context(), time.UnixMilli(meta.Deadline))
-		defer cancel()
-		up, err := http.NewRequestWithContext(ctx, "POST", base+"/messages", bytes.NewReader(body))
+		up, err := http.NewRequestWithContext(r.Context(), "POST", base+"/messages", bytes.NewReader(body))
 		if err != nil {
 			deny(502)
 			return
@@ -209,7 +202,7 @@ func (h *Harness) gatewayModelHandler(in RuntimeInput) (http.Handler, error) {
 			deny(409)
 			return
 		}
-		res, err := client.Do(up)
+		res, err := gatewayReadStream(client, up, gatewayIOIdle)
 		if err != nil {
 			deny(502)
 			return
@@ -226,9 +219,47 @@ func (h *Harness) gatewayModelHandler(in RuntimeInput) (http.Handler, error) {
 	}), nil
 }
 
+// A healthy model/MCP stream may run as long as it keeps producing bytes.
+// Bound a silent upstream and a stalled downstream independently of queue age.
+const gatewayIOIdle = 5 * time.Minute
+
+type gatewayStreamBody struct {
+	io.ReadCloser
+	timer  *time.Timer
+	idle   time.Duration
+	cancel context.CancelFunc
+}
+
+func (s *gatewayStreamBody) Read(p []byte) (int, error) {
+	n, err := s.ReadCloser.Read(p)
+	if n > 0 {
+		s.timer.Reset(s.idle)
+	}
+	return n, err
+}
+func (s *gatewayStreamBody) Close() error {
+	s.timer.Stop()
+	s.cancel()
+	return s.ReadCloser.Close()
+}
+func gatewayReadStream(client *http.Client, req *http.Request, idle time.Duration) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(req.Context())
+	timer := time.AfterFunc(idle, cancel)
+	res, err := client.Do(req.WithContext(ctx))
+	if err != nil {
+		timer.Stop()
+		cancel()
+		return nil, err
+	}
+	timer.Reset(idle)
+	res.Body = &gatewayStreamBody{res.Body, timer, idle, cancel}
+	return res, nil
+}
+
 type gatewayFlusher struct{ http.ResponseWriter }
 
 func (w gatewayFlusher) Write(b []byte) (int, error) {
+	_ = http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now().Add(gatewayIOIdle))
 	n, e := w.ResponseWriter.Write(b)
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
@@ -239,7 +270,7 @@ func (w gatewayFlusher) Write(b []byte) (int, error) {
 // Use one database snapshot at each irreversible boundary. An in-flight provider
 // request cannot be revoked, so version is also checked before any answer is sent.
 func (s *Store) gatewayRunLive(r Run) bool {
-	if r.Gateway == nil || r.Gateway.Deadline <= now() {
+	if r.Gateway == nil {
 		return false
 	}
 	var active int

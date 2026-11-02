@@ -111,7 +111,7 @@ func TestGatewayEditRetainsManualModeAndCRMPair(t *testing.T) {
 	if err != nil || uncertain.State != "unknown" || uncertain.Gateway.NotifyChatID != "new-ops" {
 		t.Fatal(uncertain, err)
 	}
-	old.TimeoutSeconds--
+	old.NotifyChatID = "stale-ops"
 	if _, err = s.SaveGatewayBinding(old); !errors.Is(err, ErrConflict) {
 		t.Fatal("stale config update was accepted", err)
 	}

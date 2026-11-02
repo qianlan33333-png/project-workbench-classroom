@@ -280,96 +280,51 @@ func TestGatewayModelProxyCanonicalizesDuplicateModelKeys(t *testing.T) {
 	}
 }
 
-func TestGatewayPendingDeadlineIsIndependentOfSlowIngressRouter(t *testing.T) {
+// Legacy rows may already have an expired deadline when a new worker starts.
+// Age alone must not create a handoff at any transition.
+func TestGatewayLegacyDeadlineWaitsAndDeliversOnce(t *testing.T) {
 	s := testStore(t)
 	p := newGatewayProvider(t)
-	c, b := gatewaySetup(t, s, p)
-	b.TimeoutSeconds = 1
-	if _, e := s.SaveGatewayBinding(b); e != nil {
-		t.Fatal(e)
-	}
-	// This unbound owner input reaches the semantic router first and blocks it.
-	if _, e := s.Submit(Incoming{Source: "web", EventID: newID(), Text: "unmatched-owner-question"}); e != nil {
-		t.Fatal(e)
-	}
-	entered := make(chan struct{})
-	released := make(chan struct{})
-	router := func(ctx context.Context, _ Incoming, _ RouteCatalog) (RouteDecision, error) {
-		close(entered)
-		<-ctx.Done()
-		close(released)
-		return RouteDecision{}, ctx.Err()
-	}
-	w := NewWorker(s, &gatewayTestExecutor{}, router)
-	w.GatewayNotify = func(context.Context, string, string, string) (string, error) { return "receipt", nil }
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	w.Start(ctx)
-	select {
-	case <-entered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("router was not called")
-	}
-	receiveGateway(t, s, c, "account-A", "deadline-client", "message.received", "pending-timeout", "question", time.Now())
-	waitFor(t, func() bool { gs, _ := s.GatewaySessions(); return len(gs) == 1 && gs[0].Mode == "human" })
-	select {
-	case <-released:
-		t.Fatal("timeout waited for router")
-	default:
-	}
-	m, e := getJSON[Message](s.DB, "SELECT data FROM inbox WHERE event_id='pending-timeout'")
-	if e != nil || m.RunID != "" || m.State != "handled" {
-		t.Fatal("pending message not safely expired", m, e)
-	}
-	cancel()
-	w.Wait()
-}
-
-func TestGatewayPendingDeadlineDoesNotWaitForSlowNotifier(t *testing.T) {
-	s := testStore(t)
-	p := newGatewayProvider(t)
-	c, b := gatewaySetup(t, s, p)
-	b.TimeoutSeconds = 1
-	if _, e := s.SaveGatewayBinding(b); e != nil {
-		t.Fatal(e)
-	}
-	receiveGateway(t, s, c, "account-A", "notify-client", "message.received", "notify", "help", time.Now())
-	r := queueGatewayTest(t, s, "notify")
-	completeGatewayTest(t, s, r, `{"action":"handoff","reason":"manual"}`)
-	w := NewWorker(s, &gatewayTestExecutor{}, nil)
-	entered := make(chan struct{}, 1)
-	w.GatewayNotify = func(ctx context.Context, _, _, _ string) (string, error) {
-		select {
-		case entered <- struct{}{}:
-		default:
+	p.status = "queued"
+	c, binding := gatewaySetup(t, s, p)
+	at := time.Now().Add(-5 * time.Minute)
+	receiveGateway(t, s, c, binding.AccountID, "new-client", "message.received", "old-message", "question", at)
+	inject := func(table, id string) {
+		t.Helper()
+		if _, err := s.DB.Exec("UPDATE "+table+" SET data=json_set(data,'$.gateway.deadline',?) WHERE id=?", at.UnixMilli(), id); err != nil {
+			t.Fatal(err)
 		}
-		<-ctx.Done()
-		return "", ctx.Err()
 	}
-	// Hold the project lease so the second input expires while queued.
-	if _, e := s.DB.Exec("INSERT INTO project_locks VALUES(?,?,?)", r.ProjectID, "offline-held-lease", now()); e != nil {
-		t.Fatal(e)
+	msg, err := getJSON[Message](s.DB, "select data from inbox where event_id='old-message'")
+	if err != nil {
+		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	w.Start(ctx)
-	select {
-	case <-entered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("notifier was not called")
+	inject("inbox", msg.ID)
+	w := NewWorker(s, nil, nil)
+	r := queueGatewayTest(t, s, "old-message")
+	inject("runs", r.ID)
+	w.stopRevokedGatewayRuns(t.Context())
+	claimed, err := w.claim()
+	if err != nil || claimed.ID != r.ID || !s.gatewayRunLive(claimed) {
+		t.Fatal(claimed, err)
 	}
-	receiveGateway(t, s, c, "account-A", "deadline-client", "message.received", "notify-blocked", "question", time.Now())
-	waitFor(t, func() bool {
-		gs, _ := s.GatewaySessions()
-		for _, g := range gs {
-			if g.ContactID == "deadline-client" {
-				return g.Mode == "human"
-			}
-		}
-		return false
-	})
-	cancel()
-	w.Wait()
+	completeGatewayTest(t, s, claimed, `{"action":"reply","text":"answer"}`)
+	d := gatewayOutbox(t, s)[0]
+	inject("deliveries", d.ID)
+	w.gatewayDeliverOne(t.Context())
+	d = gatewayOutbox(t, s)[0]
+	if d.State != "accepted" || d.Receipt == "" {
+		t.Fatal(d)
+	}
+	if _, err = s.DB.Exec("UPDATE deliveries SET data=json_set(data,'$.gateway.deadline',?,'$.gateway.nextAt',0) WHERE id=?", at.UnixMilli(), d.ID); err != nil {
+		t.Fatal(err)
+	}
+	w.gatewayDeliverOne(t.Context())
+	ds := gatewayOutbox(t, s)
+	g, err := s.gatewaySession(r.SessionID)
+	if err != nil || len(ds) != 1 || ds[0].State != "accepted" || g.Mode != "auto" || p.sends != 1 {
+		t.Fatal(ds, g, err)
+	}
 }
 
 func TestGatewayModelProxyRefusesRedirectAndCancelsUpstream(t *testing.T) {
@@ -438,7 +393,7 @@ func TestGatewayModelProxyRefusesRedirectAndCancelsUpstream(t *testing.T) {
 }
 
 func TestGatewayOldDeliveryCannotPauseResumedConversation(t *testing.T) {
-	for _, outcome := range []string{"failed", "unknown", "poll-timeout", "recovery"} {
+	for _, outcome := range []string{"failed", "unknown", "recovery"} {
 		t.Run(outcome, func(t *testing.T) {
 			s := testStore(t)
 			p := newGatewayProvider(t)
@@ -455,21 +410,15 @@ func TestGatewayOldDeliveryCannotPauseResumedConversation(t *testing.T) {
 			receiveGateway(t, s, c, "account-A", "client", "message.received", "fresh", "fresh question", time.Now())
 			fresh := queueGatewayTest(t, s, "fresh")
 			var e error
-			if outcome == "poll-timeout" || outcome == "recovery" {
-				d.Gateway.Deadline = now() - 1
+			if outcome == "recovery" {
+				d.Gateway.FirstAttemptAt = now() - (3 * time.Minute).Milliseconds()
 				d.Gateway.NextAt = 0
-				if outcome == "recovery" {
-					d.State = "sending"
-				}
+				d.State = "sending"
 				_, e = s.DB.Exec("UPDATE deliveries SET state=?,data=? WHERE id=?", d.State, encode(d), d.ID)
 				if e != nil {
 					t.Fatal(e)
 				}
-				if outcome == "recovery" {
-					e = s.recoverGatewayDeliveries()
-				} else {
-					w.gatewayDeliverOne(t.Context())
-				}
+				e = s.recoverGatewayDeliveries()
 			} else {
 				raw, _ := json.Marshal(map[string]string{"messageId": d.Receipt, "status": outcome})
 				e = s.Transaction(t.Context(), func(tx *sql.Tx) error { return s.gatewayStatusTx(tx, c.ID, raw) })
@@ -573,5 +522,76 @@ func TestGatewayDisabledIngressCanBeReplacedWithoutRevivingOldWork(t *testing.T)
 	oldSession, _ := s.Session(old.SessionID)
 	if oldSession.ProjectID != old.ProjectID {
 		t.Fatal("old ownership changed")
+	}
+}
+
+func TestGatewayReceiptPollYieldsToWaitingReply(t *testing.T) {
+	s := testStore(t)
+	p := newGatewayProvider(t)
+	p.status = "sending"
+	c, b := gatewaySetup(t, s, p)
+	w := NewWorker(s, nil, nil)
+	answer := func(id string) {
+		receiveGateway(t, s, c, b.AccountID, id, "message.received", id, "question", time.Now())
+		r := queueGatewayTest(t, s, id)
+		completeGatewayTest(t, s, r, `{"action":"reply","text":"answer"}`)
+	}
+	// Outstanding receipts stay in sending. A fresh reply was ready before their next poll.
+	for i := 0; i < 6; i++ {
+		answer(fmt.Sprintf("old-%d", i))
+		w.gatewayDeliverOne(t.Context())
+	}
+	answer("fresh")
+	stamp := now()
+	_, err := s.DB.Exec(`UPDATE deliveries SET created_at=?,data=json_set(data,'$.gateway.nextAt',?) WHERE state='accepted'`, stamp-90000, stamp-1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec("UPDATE deliveries SET created_at=? WHERE state='pending'", stamp-2000); err != nil {
+		t.Fatal(err)
+	}
+	w.gatewayDeliverOne(t.Context())
+	if p.sends != 7 {
+		t.Fatal("receipt polls blocked an older waiting send", p.sends)
+	}
+	p.status = "invalid-state"
+	old := gatewayOutbox(t, s)[0]
+	w.gatewayDeliverOne(t.Context())
+	polled, err := getJSON[Delivery](s.DB, "SELECT data FROM deliveries WHERE id=?", old.ID)
+	if err != nil || polled.State != "accepted" || polled.Gateway.NextAt <= now() || polled.Gateway.PollErrors != 1 {
+		t.Fatal(polled, err)
+	}
+	if polled.Gateway.LegacyDeadline <= 0 {
+		t.Fatal("rollback reader would immediately expire a known receipt")
+	}
+}
+
+func TestGatewaySilentUpstreamReleasesRequest(t *testing.T) {
+	for _, sendHeaders := range []bool{false, true} {
+		t.Run(fmt.Sprint("headers=", sendHeaders), func(t *testing.T) {
+			done := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(done)
+				if sendHeaders {
+					w.(http.Flusher).Flush()
+				}
+				<-r.Context().Done()
+			}))
+			defer srv.Close()
+			req, _ := http.NewRequestWithContext(t.Context(), "GET", srv.URL, nil)
+			res, err := gatewayReadStream(srv.Client(), req, 150*time.Millisecond)
+			if err == nil {
+				_, err = io.ReadAll(res.Body)
+				res.Body.Close()
+			}
+			if err == nil {
+				t.Fatal("silent connection survived idle timeout")
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("upstream was not cancelled")
+			}
+		})
 	}
 }

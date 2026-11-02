@@ -167,7 +167,7 @@ func (h *Harness) gatewayPluginCurrent(in RuntimeInput, p Plugin) bool {
 }
 
 func (h *Harness) gatewayPluginContext(parent context.Context, in RuntimeInput, p Plugin) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithDeadline(parent, time.UnixMilli(in.Run.Gateway.Deadline))
+	ctx, cancel := context.WithCancel(parent)
 	go func() {
 		t := time.NewTicker(300 * time.Millisecond)
 		defer t.Stop()
@@ -251,7 +251,7 @@ func (h *Harness) gatewayMCPHandler(in RuntimeInput, transport http.RoundTripper
 			http.Error(w, "inactive gateway grant", 409)
 			return
 		}
-		res, e := client.Do(up)
+		res, e := gatewayReadStream(&client, up, gatewayIOIdle)
 		if e != nil {
 			http.Error(w, "MCP unavailable", 502)
 			return
