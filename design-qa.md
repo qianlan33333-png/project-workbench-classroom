@@ -1,3 +1,47 @@
+# Product Design QA — 菜单 SSE 动态更新 P2 复验（2026-11-02）
+
+## Target and state
+
+- 目标：保留既有菜单视觉，修复聊天自动滚动误关与会话重排导致弹层脱离触发器两项 P2。本节补充此前 13 组静态场景验收未覆盖的动态更新。
+- 源图：`artifacts/session-menu-p2/previous-after-desktop.png`、`previous-after-sidebar.png`、`previous-after-390.png`，均为本轮开始时保存的 758734f 已验收菜单截图；同条件实测负向对照在 `artifacts/session-menu-p2/baseline/`。
+- 实现：`artifacts/session-menu/after-desktop.png`、`after-sidebar.png`、`after-390.png`，以及 `sse-chat-before.png`、`sse-chat-after.png`、`sse-pin-before.png`、`sse-pin-reopened.png`、`sse-wrapped-title.png`、`sse-stable-metadata.png`、`sse-stable-append.png`。
+- 源与实现的同状态全图均为 1280×720 px，聚焦图 240×655 px；手机 390×844 px，deviceScaleFactor=1，无密度归一化。普通状态使用相同两条对话、空聊天、第一行菜单打开；SSE 状态中聊天滚动与会话顺序变化是预期差异。
+- 源与实现的聚焦图已在同一次图像工具输入中一起检查；SSE 自动滚动后保持打开、置顶后重新打开的全图亦已打开检查。普通状态源/实现的文件摘要与尺寸比较见 `validation.json`。
+
+## Findings and iteration
+
+- P2：document 捕获所有滚动会让聊天自动滚动关闭侧栏菜单。负向对照使用真实 HTTP SSE `harness.tool/call`，确认实际工具调用计数更新和聊天原生 scrollend 后，菜单数为 0；修复版菜单保留，且能打开原归档确认框。没有替换 EventSource 或调用组件内部处理函数。
+- P2：固定菜单只在打开时定位，SSE 置顶重排和前序标题换行后仍留在旧位置。负向对照两项均失败；修复版在 React 提交后比较触发器矩形，移位即关闭，重新打开后与新触发器间距 4px，重命名框仍对应原会话。
+- 没有几何变化的 `session.updated` 及其后台 refresh、追加后序 `session.created` 均保留菜单，避免将修复扩大为每次 SSE 都关闭。
+- 两项 P2 均已关闭，无待处理 P0/P1/P2。
+
+## Five fidelity surfaces
+
+- 字体：沿用系统字体栈、12px 菜单正文、现有字重与行距；没有字体修改。
+- 间距：原 115px 最小宽、4px 面板 padding、8px 操作 padding、8px 圆角和阴影保持；上下避让及窗口 8px 安全边距继续通过。
+- 颜色：沿用原 `--surface`、`--ink`、浅灰绿 hover/focus 和禁用透明度，无 token 修改。
+- 图像：原 15px Lucide 三个点及列表图标，无新图像或占位资产。
+- 文案：四项操作、归档中停止入口、确认框与禁用规则保持。截图中的长聊天和换行标题是隔离测试夹具。
+
+## Acceptance receipt and limits
+
+- 18 组浏览器检查通过，其中 5 组新增原生 SSE 场景，`regressionFailures:[]`、`consoleAndPageErrors:[]`、`unknownAPI:[]`。在未修复构建上同一测试记录三项预期断言失败。
+- 1280×720、1280×480、1154×828、390×844、320×568 五档视口，桌面键盘与移动 Chromium 触摸继续通过；未声称真实 iOS/Safari 验收。
+- TypeScript 检查/构建、4 项前端状态测试、Go 测试及 vet 通过；本轮的 Go 测试命中缓存。
+- 使用内存 API 和 HTTP SSE 夹具，实际编译网页、原生 EventSource、App 合并与刷新路径均参与测试。没有调用真实模型、发送平台消息或修改生产。
+
+## Implementation checklist
+
+- [x] 流程、官方参考及 PRD 补充先于实现
+- [x] 同一 SSE 测试在旧构建失败、修复版通过
+- [x] 全部既有菜单交互及移动视口复验
+- [x] 源/实现与 SSE 状态截图检查
+- [x] 测试收据、构建摘要及发布边界保存
+
+final result: passed
+
+---
+
 # Product Design QA — 个人理解
 
 ## Target and state

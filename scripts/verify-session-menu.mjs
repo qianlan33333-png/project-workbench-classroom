@@ -7,9 +7,11 @@ import path from "node:path";
 import { chromium } from "../runtime/node_modules/playwright/index.mjs";
 
 const baseline = process.env.PW_MENU_BASELINE === "1";
+const p2Baseline = process.env.PW_MENU_P2_BASELINE === "1";
+const sseOnly = p2Baseline || process.env.PW_MENU_SSE_ONLY === "1";
 const keepPreview = process.env.PW_MENU_PREVIEW === "1" && !baseline;
-const dir = path.resolve("artifacts/session-menu");
-const dist = path.resolve(baseline ? "artifacts/session-menu/before-dist" : "web/dist");
+const dir = path.resolve(p2Baseline ? "artifacts/session-menu-p2/baseline" : "artifacts/session-menu");
+const dist = path.resolve(p2Baseline ? "artifacts/session-menu-p2/before-dist" : baseline ? "artifacts/session-menu/before-dist" : "web/dist");
 await fs.mkdir(dir, { recursive: true });
 const project = {
   id: "menu-fixture", name: "小花ERP", description: "隔离 UI 验收",
@@ -21,6 +23,18 @@ const initialSessions = () => [
   { id: "s2", projectId: project.id, title: "项目助手", kind: "assistant", updatedAt: 1 },
 ];
 let sessions = initialSessions();
+let fixtureRuns = [], eventLog = [];
+let eventSequence = 0, streamConnections = 0, refreshes = 0;
+const streams = new Set();
+const sentEvents = [];
+const emit = (type, data, runId = "") => {
+  const event = { seq: ++eventSequence, type, data, sessionId: data.projectId ? data.id : "s1", runId, createdAt: 1 };
+  if (type.startsWith("harness.")) event.sessionId = "s1";
+  eventLog.push(event);
+  sentEvents.push({ seq: event.seq, type });
+  assert(streams.size > 0, "Expected a native EventSource connection");
+  for (const response of streams) response.write(`data: ${JSON.stringify(event)}\n\n`);
+};
 const requests = [], failures = [], unknown = [];
 const server = createServer(async (req, res) => {
   try {
@@ -29,15 +43,21 @@ const server = createServer(async (req, res) => {
     if (pathname.startsWith("/api/v1/")) {
       const route = pathname.slice("/api/v1".length);
       if (route === "/events" && !req.url.includes("json=1")) {
-        res.writeHead(200, { "Content-Type": "text/event-stream" });
-        res.end(": isolated fixture\n\n");
+        res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache" });
+        res.flushHeaders();
+        res.write(": isolated fixture\n\n");
+        streams.add(res);
+        streamConnections++;
+        res.on("close", () => streams.delete(res));
         return;
       }
       let result;
       if (route === "/auth") result = { authenticated: true };
-      else if (route === "/projects") result = [project];
+      else if (route === "/projects") { refreshes++; result = [project]; }
       else if (route === `/projects/${project.id}/sessions`) result = sessions;
-      else if (["/experts", "/runs", "/inbox", "/interactions", "/events",
+      else if (route === "/runs") result = fixtureRuns;
+      else if (route === "/events") result = eventLog;
+      else if (["/experts", "/inbox", "/interactions",
         `/projects/${project.id}/files`, `/projects/${project.id}/tasks`,
         `/projects/${project.id}/capabilities`].includes(route)) result = [];
       else if (route.startsWith("/sessions/")) {
@@ -85,8 +105,15 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, dev
 page.setDefaultTimeout(8000);
 page.on("pageerror", error => failures.push(error.message));
 page.on("console", message => { if (message.type() === "error") failures.push(message.text()); });
-const report = { passed: false, baseline, checks: [], screenshots: [], viewports: [] };
+const report = { passed: false, baseline, p2Baseline, checks: [], screenshots: [], viewports: [], regressionFailures: [] };
 const check = async (name, run) => { await run(); report.checks.push(name); };
+const checkSSE = async (name, run) => {
+  try { await check(name, run); }
+  catch (error) {
+    if (!p2Baseline) throw error;
+    report.regressionFailures.push({ name, error: error.message });
+  }
+};
 const waitFor = async (run) => {
   for (let i = 0; i < 60; i++) {
     try { return await run(); } catch (error) {
@@ -129,6 +156,18 @@ const load = async () => {
   await row("s1").waitFor();
   await page.getByLabel("发送消息", { exact: true }).waitFor();
 };
+const loadSSE = async (runs = []) => {
+  sessions = initialSessions(); fixtureRuns = runs; eventLog = [];
+  const connections = streamConnections;
+  await load();
+  await waitFor(async () => assert(streamConnections > connections));
+  await page.locator(".chat-scroll").evaluate(el => el.scrollTo({ top: el.scrollHeight, behavior: "instant" }));
+  await waitFor(async () => assert(await page.locator(".chat-scroll").evaluate(el => el.scrollTop + el.clientHeight >= el.scrollHeight - 2)));
+};
+const anchorRect = async () => trigger("s2").evaluate(el => {
+  const { x, y, width, height } = el.getBoundingClientRect();
+  return { x, y, width, height };
+});
 const bounds = async () => {
   const rect = await menu().boundingBox();
   const viewport = page.viewportSize();
@@ -162,7 +201,7 @@ try {
     await capture("before-second-row");
     await row("s1").locator("summary").click();
     await check("Old menus can remain open together", async () => assert.equal(await page.locator(".session-menu[open]").count(), 2));
-  } else {
+  } else if (!sseOnly) {
     await check("All four menu items escape list clipping", async () => {
       await open();
       assert.equal(await menu().getByRole("menuitem").count(), 4);
@@ -284,8 +323,86 @@ try {
       } finally { await context.close(); }
     });
   }
+  if (!baseline) {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await checkSSE("Native SSE chat auto-scroll preserves an actionable menu", async () => {
+      const run = { id: "sse-run", sessionId: "s1", projectId: project.id, state: "completed", text: "SSE 菜单回归夹具",
+        result: Array.from({ length: 60 }, (_, i) => `第 ${i} 段，验证聊天自动滚动不会关闭侧栏菜单。`).join("\n\n"),
+        createdAt: 1, startedAt: 1, finishedAt: 2, source: "web" };
+      await loadSSE([run]);
+      await page.locator(".chat-scroll").evaluate(el => el.scrollTo({ top: 0, behavior: "instant" }));
+      await waitFor(async () => assert.equal(await page.locator(".chat-scroll").evaluate(el => el.scrollTop), 0));
+      await open("s2");
+      const before = await anchorRect();
+      await capture("sse-chat-before");
+      await page.locator(".chat-scroll").evaluate(el => {
+        window.__sseMenuScrollEnded = false;
+        el.addEventListener("scrollend", () => { window.__sseMenuScrollEnded = true; }, { once: true });
+      });
+      emit("harness.tool/call", { callId: "sse-call", name: "菜单回归", arguments: {} }, run.id);
+      await waitFor(async () => assert.match(await page.locator(".activity-summary").innerText(), /1\s*次工具调用/));
+      await page.waitForFunction(() => window.__sseMenuScrollEnded);
+      assert(await page.locator(".chat-scroll").evaluate(el => el.scrollTop > 10));
+      assert.deepEqual(await anchorRect(), before);
+      assert.equal(await menu().count(), 1, "Chat auto-scroll must not close the sidebar menu");
+      await capture("sse-chat-after");
+      await menu().getByRole("menuitem", { name: "归档", exact: true }).click();
+      await closed();
+      await page.getByRole("dialog", { name: "归档对话" }).getByRole("button", { name: "关闭", exact: true }).click();
+    });
+    await checkSSE("Native SSE pin reorder dismisses stale placement and reopens at its anchor", async () => {
+      await loadSSE(); await open("s2");
+      const before = await anchorRect();
+      await capture("sse-pin-before");
+      sessions[1] = { ...sessions[1], pinnedAt: 99, updatedAt: 99 };
+      emit("session.updated", sessions[1]);
+      await waitFor(async () => assert.equal(await page.locator(".session-row").first().getAttribute("data-session-id"), "s2"));
+      assert.notEqual((await anchorRect()).y, before.y);
+      await closed();
+      await open("s2"); await bounds();
+      const anchor = await trigger("s2").boundingBox(), panel = await menu().boundingBox();
+      assert(Math.abs(panel.y - anchor.y - anchor.height - 4) < 1);
+      await capture("sse-pin-reopened");
+      await menu().getByRole("menuitem", { name: "重命名", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "重命名对话" });
+      assert.equal(await dialog.getByLabel("对话标题").inputValue(), "项目助手");
+      await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+    });
+    await checkSSE("Native SSE title wrapping dismisses a menu whose row moved", async () => {
+      await loadSSE(); await open("s2");
+      const before = await anchorRect();
+      sessions[0] = { ...sessions[0], title: "前序对话收到自动标题更新且换行。".repeat(5), updatedAt: 99 };
+      emit("session.updated", sessions[0]);
+      await waitFor(async () => assert.notEqual((await anchorRect()).y, before.y));
+      await closed(); await open("s2"); await bounds();
+      await capture("sse-wrapped-title");
+    });
+    await checkSSE("Native SSE metadata and refresh preserve a menu when its anchor stays put", async () => {
+      await loadSSE(); await open("s2");
+      const before = await anchorRect(), refreshed = refreshes;
+      sessions[0] = { ...sessions[0], pinnedAt: 99, updatedAt: 99 };
+      emit("session.updated", sessions[0]);
+      await row("s1").locator(".session-select .lucide-pin").waitFor();
+      await waitFor(async () => assert(refreshes > refreshed));
+      assert.deepEqual(await anchorRect(), before);
+      assert.equal(await menu().count(), 1);
+      await capture("sse-stable-metadata");
+    });
+    await checkSSE("Native SSE appending a session preserves a menu at an unchanged anchor", async () => {
+      await loadSSE(); await open("s2");
+      const before = await anchorRect();
+      const added = { ...sessions[1], id: "sse-added", title: "新到达的对话", updatedAt: 0 };
+      sessions.push(added);
+      emit("session.created", added);
+      await row(added.id).waitFor();
+      assert.deepEqual(await anchorRect(), before);
+      assert.equal(await menu().count(), 1);
+      await capture("sse-stable-append");
+    });
+  }
   assert.deepEqual(unknown, []);
   assert.deepEqual(failures, []);
+  assert.deepEqual(report.regressionFailures, [], "SSE regression assertions failed");
   report.passed = true;
   if (keepPreview) report.previewURL = url + `#project=${project.id}&session=s1`;
 } catch (error) {
@@ -296,9 +413,12 @@ try {
   report.requests = requests;
   report.consoleAndPageErrors = failures;
   report.unknownAPI = unknown;
+  report.sse = { nativeConnections: streamConnections, sent: sentEvents };
   await fs.writeFile(path.join(dir, baseline ? "baseline.json" : "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
   await browser.close();
-  if (!keepPreview || !report.passed) await new Promise(resolve => server.close(resolve));
-  else sessions = initialSessions();
+  if (!keepPreview || !report.passed) {
+    for (const response of streams) response.end();
+    await new Promise(resolve => server.close(resolve));
+  } else { sessions = initialSessions(); fixtureRuns = []; eventLog = []; }
 }

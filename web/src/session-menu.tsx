@@ -1,4 +1,11 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { MoreHorizontal } from "lucide-react";
 
 // Native auto popovers escape the list's overflow and provide light dismiss,
@@ -17,6 +24,7 @@ export function SessionMenu({
   const menu = useRef<HTMLDivElement>(null);
   const lastItem = useRef(false);
   const openingFrame = useRef<number | undefined>(undefined);
+  const placedAnchor = useRef<DOMRect | null>(null);
   const [open, setOpen] = useState(false);
   const items = () =>
     Array.from(
@@ -37,6 +45,7 @@ export function SessionMenu({
     const rightEdge = leftEdge + (viewport?.width ?? window.innerWidth) - 16;
     const bottomEdge = topEdge + (viewport?.height ?? window.innerHeight) - 16;
     const rect = anchor.getBoundingClientRect();
+    placedAnchor.current = rect;
     panel.style.maxHeight = `${bottomEdge - topEdge}px`;
     const size = panel.getBoundingClientRect();
     const below = Math.max(0, bottomEdge - rect.bottom - 4);
@@ -48,17 +57,42 @@ export function SessionMenu({
     panel.style.top = `${Math.max(topEdge, Math.min(upwards ? rect.top - height - 4 : rect.bottom + 4, bottomEdge - height))}px`;
   };
   useEffect(close, [context]);
-  useEffect(() => () => {
-    if (openingFrame.current !== undefined)
-      cancelAnimationFrame(openingFrame.current);
-  }, []);
+  // React can move this row without a scroll/resize (for example an SSE pin or
+  // a preceding title wrapping). Dismiss before painting a detached menu.
+  useLayoutEffect(() => {
+    const previous = placedAnchor.current;
+    if (
+      !previous ||
+      !trigger.current ||
+      !menu.current?.matches(":popover-open")
+    )
+      return;
+    const current = trigger.current.getBoundingClientRect();
+    if (
+      (["x", "y", "width", "height"] as const).some(
+        (key) => Math.abs(current[key] - previous[key]) > 0.5,
+      )
+    )
+      close();
+  });
+  useEffect(
+    () => () => {
+      if (openingFrame.current !== undefined)
+        cancelAnimationFrame(openingFrame.current);
+    },
+    [],
+  );
   useEffect(() => {
     if (!open) return;
     const onScroll = (event: Event) => {
-      // Moving within a short, internally scrolling menu must keep it open.
-      if (event.target instanceof Node && menu.current?.contains(event.target))
-        return;
-      close();
+      // Only ancestor scrolling can move the anchor. Chat auto-scroll and the
+      // menu's own scrolling must not interrupt an unrelated sidebar action.
+      if (
+        event.target instanceof Node &&
+        trigger.current &&
+        event.target.contains(trigger.current)
+      )
+        close();
     };
     document.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", close);
@@ -110,6 +144,7 @@ export function SessionMenu({
           if (openingFrame.current !== undefined)
             cancelAnimationFrame(openingFrame.current);
           openingFrame.current = undefined;
+          placedAnchor.current = null;
           setOpen(event.newState === "open");
           if (event.newState !== "open") return;
           openingFrame.current = requestAnimationFrame(() => {
