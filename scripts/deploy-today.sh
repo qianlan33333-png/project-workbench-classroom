@@ -23,7 +23,8 @@ if [[ -n "${PW_SNAPSHOT_BASE:-}" ]]; then
  test -f "$PW_SNAPSHOT_BASE/workbench.sqlite"
 fi
 uid=$(id -u projectwb)
-sudo -u projectwb env XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user stop "$preview_unit"
+preview_ctl=(sudo -u projectwb env XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user)
+if "${preview_ctl[@]}" is-active --quiet "$preview_unit"; then "${preview_ctl[@]}" stop "$preview_unit"; fi
 systemctl stop project-workbench-channels
 rollback(){
  ln -sfn "$previous" "$base/current.today-rollback"
