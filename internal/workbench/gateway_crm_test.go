@@ -272,11 +272,16 @@ func TestCRMProbeNotificationsAndRedirect(t *testing.T) {
 	g.CallbackURL = crm.URL + "/initial"
 	s.crmGrants[g.KeyID] = g
 	s.crmTransport = crm.Client().Transport
-	req := crmRequest{V: 1, Op: "configure", CallbackURL: crm.URL + "/new", RequestID: newID()}
+	req := crmRequest{V: 1, Op: "configure", Generation: 2, CallbackURL: crm.URL + "/new", RequestID: newID()}
 	crmCall(t, s, c, g, req, 200)
 	crmCall(t, s, c, g, req, 200)
+	obsolete := req
+	obsolete.RequestID = newID()
+	obsolete.Generation = 1
+	crmCall(t, s, c, g, obsolete, 409)
 	for _, target := range []string{crm.URL + "/bad", crm.URL + "/redirect", other.URL + "/evil"} {
 		r := req
+		r.Generation++
 		r.CallbackURL = target
 		r.RequestID = newID()
 		code := 503
@@ -383,5 +388,94 @@ func TestCRMPauseWhileModelRequestUploads(t *testing.T) {
 	handler.ServeHTTP(res, httptest.NewRequest("POST", "/gateway-model/v1/messages", body))
 	if res.Code != 409 {
 		t.Fatal("missing final dispatch gate", res.Code)
+	}
+}
+
+func TestCRMResumeLegacyPausedInboxAndCoarseClock(t *testing.T) {
+	s, c, _, _ := crmRig(t)
+	crmInbound(t, s, c, "one", "ext")
+	sessions, _ := s.GatewaySessions()
+	id := sessions[0].ID
+	if err := s.SetGatewayMode(id, "human", "legacy"); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().Add(-2 * time.Second)
+	receiveGateway(t, s, c, "account-A", "one", "message.received", "legacy-fact", "legacy-context", at)
+	receiveGateway(t, s, c, "account-A", "one", "message.self_sent", "legacy-human", "legacy-operator-answer", at.Add(time.Millisecond))
+	// Restore persisted rows to the previous release's shape and open the store again.
+	if _, err := s.DB.Exec("UPDATE inbox SET data=json_remove(data,'$.gateway.historyRole'); DELETE FROM gateway_history_index; DELETE FROM settings WHERE key='gateway_paused_history_v1'"); err != nil {
+		t.Fatal(err)
+	}
+	s.DB.Close()
+	upgraded, err := OpenStore(s.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.DB.Close()
+	if err = upgraded.SetGatewayMode(id, "auto", "resume"); err != nil {
+		t.Fatal(err)
+	}
+	g, err := upgraded.gatewaySession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A gateway with whole-second precision can send after recovery in the same second.
+	stamp := time.Unix(0, g.ResumeNS).Truncate(time.Second)
+	receiveGateway(t, upgraded, c, "account-A", "one", "message.received", "new-question", "new", stamp)
+	queueGatewayTest(t, upgraded, "new-question")
+	w := NewWorker(upgraded, nil, nil)
+	run, err := w.claim()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := w.prompt(run, Project{})
+	for _, expected := range []string{"legacy-context", "legacy-operator-answer"} {
+		if strings.Count(prompt, expected) != 1 {
+			t.Fatal("missing or duplicated legacy history", expected)
+		}
+	}
+	if !beforeGatewayResume(stamp.Add(-time.Second), g.ResumeNS) {
+		t.Fatal("old event escaped resume boundary")
+	}
+}
+
+func TestCRMLargeAcceptedHistoryRemainsReadableAfterFailure(t *testing.T) {
+	s, c, _, _ := crmRig(t)
+	crmInbound(t, s, c, "one", "ext")
+	sessions, _ := s.GatewaySessions()
+	id := sessions[0].ID
+	if err := s.SetGatewayMode(id, "human", "pause"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		receiveGateway(t, s, c, "account-A", "one", "message.received", fmt.Sprint(i), strings.Repeat("A", 5000)+fmt.Sprint(i), time.Now())
+	}
+	if err := s.SetGatewayMode(id, "auto", "done"); err != nil {
+		t.Fatal(err)
+	}
+	receiveGateway(t, s, c, "account-A", "one", "message.received", "next", "next", time.Now())
+	queueGatewayTest(t, s, "next")
+	w := NewWorker(s, nil, nil)
+	r, err := w.claim()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Gateway.HistoryFile {
+		t.Fatal("expected a spilled interval")
+	}
+	if err = s.acceptGatewayHistory(t.Context(), r, "native-accepted"); err != nil {
+		t.Fatal(err)
+	}
+	r.State = "failed"
+	if err = s.finishGatewayRun(r); err != nil {
+		t.Fatal(err)
+	}
+	args := json.RawMessage(encode(map[string]any{"runId": r.ID, "offset": 4}))
+	value, err := s.appTool(RuntimeInput{Run: Run{Source: gatewaySource}, Session: Session{ID: id}}, "read_paused_history", args)
+	if err != nil || !strings.Contains(encode(value), strings.Repeat("A", 5000)+"5") {
+		t.Fatal("missing durable tail", err)
+	}
+	if _, err = s.pausedHistoryPage("another-session", r.ID, 0); err == nil {
+		t.Fatal("cross-session history read")
 	}
 }

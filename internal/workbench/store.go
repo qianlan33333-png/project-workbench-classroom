@@ -98,6 +98,9 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{crmGrants: grants, DB: db, Root: root, notify: make(chan struct{}, 1)}
+	if err := s.migratePausedHistory(); err != nil {
+		return nil, err
+	}
 	if v, _ := s.Setting("global_mcp_migrated"); v == "" {
 		plugins, _ := listJSON[Plugin](db, "SELECT data FROM plugins")
 		projects, _ := s.Projects()

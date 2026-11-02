@@ -11,7 +11,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser()
-p.add_argument('--version', default='0.1.0')
+p.add_argument('--version', default='0.2.0')
 p.add_argument('--output', default='.var/connector-release')
 args = p.parse_args()
 if not args.version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-' for c in args.version):

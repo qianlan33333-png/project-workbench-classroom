@@ -81,6 +81,7 @@ const personalTools = [
  ["remember_explicit","仅本人明确要求记住或明确纠正时立即保存，quote必须为本轮原话。普通聊天由每日整理学习，不逐条保存。不从ABC选择推断偏好；临时情况无期限默认七天。",{quote:z.string(),intent:z.enum(["remember","correction"]).optional(),memory:z.object({id:z.string().optional(),version:z.number().optional(),text:z.string(),kind:z.enum(["fact","goal","temporary","feedback","principle"]),expiresAt:z.number().optional()})}],
 ];
 const gatewayTools=businessTools.filter(([name])=>name==="search_history"||name==="read_run").map(([name,description,schema])=>[name,description.replaceAll("当前项目", "当前客户会话"),schema]);
+gatewayTools.push(["read_paused_history","按运行编号分页读取该客户已记录的暂停历史，nextOffset=-1 表示结束。",{runId:z.string(),offset:z.number().int().nonnegative()}]);
 for(const [name,description,inputSchema] of (process.env.PW_GATEWAY==="true"?gatewayTools:process.env.PW_PERSONAL==="true"?personalTools:businessTools))
   server.registerTool(name, { description, inputSchema }, async (args) =>
     call(name, args),

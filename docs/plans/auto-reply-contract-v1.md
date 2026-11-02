@@ -9,6 +9,6 @@ POST W 恢复在同一请求字段上把 op 换为 resume，增加 sessionId、v
 
 POST C 状态变化 {"v":1,"op":"state.changed","eventId":"UUID","staffUserId":"staff-a","externalUserId":"external-a","sessionId":"s1","bindingVersion":1,"version":4,"mode":"human"}。CRM 在已启用绑定下作展示失效/版本刷新，侧边栏打开及操作后读取 W 的权威状态，200 {"ok":true}；未启用时验证来源后忽略并确认，零客户正文。
 
-地址配对：安装预置 W、C、keyId、secret 引用和受信 origin；CRM 管理员编辑 W/C 后，CRM 由后端向候选 W 发 {"v":1,"op":"configure","callbackUrl":"https://crm.example/...","requestId":"UUID"}。W 先向候选 C 签名发送 {"v":1,"op":"probe","nonce":"随机挑战"}，C 验签后 200 {"nonce":"原值"}（未启用也可探测）；W 验证后持久更新绑定回推目标，200 {"ok":true,"callbackUrl":"已生效地址"}。配置写限绑定、受信 origin、服务后端管理员路径；初始 secret/key/origin 的信任关系不能通过此操作改写。失败显示待生效，可用同一请求对账；切环境不得复用身份凭证。
+地址配对：安装预置 W、C、keyId、secret 引用和受信 origin；CRM 管理员编辑 W/C 后，CRM 由后端向候选 W 发 {"v":1,"op":"configure","generation":1,"callbackUrl":"https://crm.example/...","requestId":"UUID"}。W 先向候选 C 签名发送 {"v":1,"op":"probe","nonce":"随机挑战"}，C 验签后 200 {"nonce":"原值"}（未启用也可探测）；W 验证后持久更新绑定回推目标，200 {"ok":true,"callbackUrl":"已生效地址"}。配置写限绑定、受信 origin、服务后端管理员路径；初始 secret/key/origin 的信任关系不能通过此操作改写。generation 为 CRM 在发起前持久化的绑定内递增整数。W 在探测前和提交时核对 generation，同请求重放返回历史回执，较小或相等的其他请求拒绝。未知结果可用同一请求对账，改正目标或撤销候选须使用更高 generation；切环境不得复用身份凭证。
 
 共同错误形状 {"error":"code"}；400 invalid_request、401 invalid_signature、403 forbidden、404 not_bound、409 stale_version / ambiguous / request_conflict、503 unavailable。CRM 自身集成关闭时其侧边栏恢复 API 返回 403，禁止调用 W；不影响工作台项目。共享夹具为本目录 auto-reply-contract-fixture.json，其中所有身份与密钥均为合成测试值。

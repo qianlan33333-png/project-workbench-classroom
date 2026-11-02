@@ -81,8 +81,9 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {
 	if _, e := s.gatewaySession(in.Session.ID); e == nil || in.Run.Source == gatewaySource {
 		var a struct {
-			Query string `json:"query"`
-			RunID string `json:"runId"`
+			Offset int    `json:"offset"`
+			Query  string `json:"query"`
+			RunID  string `json:"runId"`
 		}
 		if len(args) > 0 {
 			if e = json.Unmarshal(args, &a); e != nil {
@@ -90,6 +91,8 @@ func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any
 			}
 		}
 		switch tool {
+		case "read_paused_history":
+			return s.pausedHistoryPage(in.Session.ID, a.RunID, a.Offset)
 		case "search_history":
 			return listJSON[Run](s.DB, "SELECT data FROM runs WHERE session_id=? AND (text LIKE ? OR data->>'$.result' LIKE ?) ORDER BY created_at DESC LIMIT 20", in.Session.ID, "%"+a.Query+"%", "%"+a.Query+"%")
 		case "read_run":

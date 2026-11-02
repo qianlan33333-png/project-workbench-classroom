@@ -506,7 +506,7 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 		if !m.SentAt.IsZero() {
 			eventTime = m.SentAt
 		}
-		historical := g.ResumeNS > 0 && eventTime.UnixNano() <= g.ResumeNS
+		historical := beforeGatewayResume(eventTime, g.ResumeNS)
 		at := event.OccurredAt.UnixMilli()
 		if !m.SentAt.IsZero() {
 			at = m.SentAt.UnixMilli()
@@ -514,10 +514,11 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 		if at > now() {
 			at = now()
 		}
+		earlierThan := func(mark int64) bool { return beforeGatewayResume(eventTime, mark*int64(time.Millisecond)) }
 		state := "gateway_pending"
 		if event.Type == "message.self_sent" {
 			state = "handled"
-			if !historical && at >= g.LastHumanAt {
+			if !historical && !earlierThan(g.LastHumanAt) {
 				g.LastHumanAt = at
 				if g.Mode != "human" {
 					if e = s.changeGatewayModeTx(tx, &g, "human", "人工已在企微回复"); e != nil {
@@ -539,12 +540,12 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 				}
 			}
 		}
-		if !historical && event.Type == "message.received" && at < g.LastMessageAt && g.Mode == "auto" {
+		if !historical && event.Type == "message.received" && earlierThan(g.LastMessageAt) && g.Mode == "auto" {
 			if e = s.gatewayHandoffTx(tx, &g, b, "消息乱序，需要核对完整上下文", m.Content.Text); e != nil {
 				return e
 			}
 		}
-		if historical || g.Mode != "auto" || at < g.LastMessageAt || at < g.LastHumanAt {
+		if historical || g.Mode != "auto" || earlierThan(g.LastMessageAt) || earlierThan(g.LastHumanAt) {
 			state = "handled"
 		}
 		if at > g.LastMessageAt {

@@ -83,7 +83,15 @@ func (s *Store) claimGatewayTx(tx *sql.Tx, r *Run) error {
 	if e = tx.QueryRow("SELECT coalesce(max(seq),0) FROM gateway_history_index WHERE session_id=? AND seq>?", g.ID, g.HistoryCursor).Scan(&m.HistoryThrough); e != nil {
 		return e
 	}
-	m.ManualReply = "" // New-format runs consume historical human replies only once.
+	// New-format human replies are indexed. Preserve the legacy latest reply
+	// when its inbox row was not retained by an older installation.
+	var indexedHuman bool
+	if e = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM gateway_history_index h JOIN inbox i ON i.id=h.message_id WHERE h.session_id=? AND i.created_at=? AND json_extract(i.data,'$.gateway.historyRole')='人工客服')`, g.ID, g.LastHumanAt).Scan(&indexedHuman); e != nil {
+		return e
+	}
+	if indexedHuman || g.HistoryCursor > 0 {
+		m.ManualReply = ""
+	}
 	if m.HistoryThrough == 0 {
 		return nil
 	}
@@ -123,4 +131,72 @@ func (s *Store) writeGatewayHistory(root string, r Run) error {
 	}
 	e = walkHistory(s.DB, r.SessionID, r.Gateway.HistoryFrom, r.Gateway.HistoryThrough, func(line string) error { _, e := io.WriteString(f, line); return e })
 	return errors.Join(e, f.Close())
+}
+
+// A timestamp precise only to a second cannot establish which side of a
+// sub-second recovery it fell on. Within that bucket use durable arrival order.
+func beforeGatewayResume(at time.Time, resume int64) bool {
+	if resume == 0 {
+		return false
+	}
+	boundary := time.Unix(0, resume)
+	if at.Nanosecond() == 0 {
+		return at.Unix() < boundary.Unix()
+	}
+	return at.Before(boundary)
+}
+
+// Older gateway inbox rows did not retain direction; only the most recent
+// manual reply has a separate, verifiable author/time record.
+func (s *Store) migratePausedHistory() error {
+	return s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		res, e := tx.Exec("INSERT OR IGNORE INTO settings(key,value) VALUES('gateway_paused_history_v1','1')")
+		if e != nil {
+			return e
+		}
+		n, e := res.RowsAffected()
+		if e != nil || n == 0 {
+			return e
+		}
+		_, e = tx.Exec(`UPDATE inbox AS i SET data=json_set(i.data,'$.gateway.historyRole',CASE WHEN
+     i.created_at=json_extract(g.data,'$.lastHumanAt') AND coalesce(json_extract(i.data,'$.incoming.text'),'')=coalesce(json_extract(g.data,'$.manualReply'),'') THEN '人工客服' ELSE '旧版会话（来源未核实）' END)
+     FROM gateway_sessions g WHERE i.session_id=g.id AND i.source='wecom-gateway' AND i.state='handled'
+     AND json_extract(i.data,'$.gateway.historyRole') IS NULL AND json_extract(g.data,'$.mode')='human'
+     AND json_extract(i.data,'$.gateway.version')>coalesce((SELECT max(json_extract(r.data,'$.gateway.version')) FROM runs r WHERE r.session_id=g.id AND r.state='completed'),0)`)
+		return e
+	})
+}
+
+func (s *Store) pausedHistoryPage(session, runID string, offset int) (any, error) {
+	r, e := s.Run(runID)
+	if e != nil {
+		return nil, e
+	}
+	if r.SessionID != session || r.Gateway == nil || !r.Gateway.HistoryFile || offset < 0 {
+		return nil, errors.New("不可读取这段历史")
+	}
+	rows, e := s.DB.Query(historyQuery+" LIMIT 5 OFFSET ?", session, r.Gateway.HistoryFrom, r.Gateway.HistoryThrough, offset)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	var entries []historyRow
+	next := -1
+	for rows.Next() {
+		if len(entries) == 4 {
+			next = offset + 4
+			break
+		}
+		var seq, at int64
+		var h historyRow
+		if e = rows.Scan(&seq, &at, &h.Role, &h.Text); e != nil {
+			return nil, e
+		}
+		h.Time = time.UnixMilli(at).UTC().Format(time.RFC3339Nano)
+		if h.Text == "" {
+			h.Text = "正文不可用"
+		}
+		entries = append(entries, h)
+	}
+	return map[string]any{"entries": entries, "nextOffset": next}, rows.Err()
 }

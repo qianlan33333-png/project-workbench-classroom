@@ -65,6 +65,7 @@ type crmRequest struct {
 	Version        int64  `json:"version,omitempty"`
 	BindingVersion int64  `json:"bindingVersion,omitempty"`
 	CallbackURL    string `json:"callbackUrl,omitempty"`
+	Generation     int64  `json:"generation,omitempty"`
 }
 type crmState struct {
 	Mode           string `json:"mode"`
@@ -207,14 +208,17 @@ func (a *API) crmHook(c *gin.Context) {
 		crmFailure(c, crmError("forbidden"))
 		return
 	}
+	if q.Op == "configure" && q.Generation < 1 {
+		crmFailure(c, crmError("invalid_request"))
+		return
+	}
 	if q.Op == "resume" && (q.SessionID == "" || q.Version <= 0 || q.BindingVersion <= 0) {
 		crmFailure(c, crmError("invalid_request"))
 		return
 	}
 	s := a.Store
 	connection := c.Param("id")
-	// Keep a slow earlier probe from overwriting a later completed pairing.
-	var observedRoute string
+	// Recheck the generation after the HTTPS probe, inside the same write transaction as registration.
 	var out json.RawMessage
 	transact := func(probed bool) error {
 		return s.Transaction(r.Context(), func(tx *sql.Tx) error {
@@ -242,19 +246,21 @@ func (a *API) crmHook(c *gin.Context) {
 				if !trustedCRM(g.CallbackOrigin, q.CallbackURL) {
 					return crmError("forbidden")
 				}
-				var current string
-				re := tx.QueryRow("SELECT url FROM gateway_crm_routes WHERE grant=?", g.scope()).Scan(&current)
-				if re != nil && !errors.Is(re, sql.ErrNoRows) {
-					return re
+				var applied int64
+				routeRevision := "crm_route_revision:" + g.scope()
+				if e = tx.QueryRow("SELECT coalesce((SELECT CAST(value AS INTEGER) FROM settings WHERE key=?),0)", routeRevision).Scan(&applied); e != nil {
+					return e
+				}
+				if q.Generation <= applied {
+					return crmError("stale_version")
 				}
 				if !probed {
-					observedRoute = current
 					return errCRMProbe
 				}
-				if observedRoute != current {
-					return crmError("request_conflict")
+				if _, e = tx.Exec("INSERT INTO gateway_crm_routes(grant,url) VALUES(?,?) ON CONFLICT DO UPDATE SET url=excluded.url", g.scope(), q.CallbackURL); e != nil {
+					return e
 				}
-				if _, e = tx.Exec("INSERT INTO gateway_crm_routes VALUES(?,?) ON CONFLICT DO UPDATE SET url=excluded.url", g.scope(), q.CallbackURL); e != nil {
+				if _, e = tx.Exec("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", routeRevision, strconv.FormatInt(q.Generation, 10)); e != nil {
 					return e
 				}
 				result = map[string]any{"ok": true, "callbackUrl": q.CallbackURL}
@@ -305,7 +311,7 @@ func (a *API) crmHook(c *gin.Context) {
 func crmFields(raw []byte, op string) bool {
 	names := []string{"v", "op"}
 	if op == "configure" {
-		names = append(names, "callbackUrl", "requestId")
+		names = append(names, "callbackUrl", "requestId", "generation")
 	} else {
 		names = append(names, "staffUserId", "externalUserId", "actor")
 		if op == "resume" {

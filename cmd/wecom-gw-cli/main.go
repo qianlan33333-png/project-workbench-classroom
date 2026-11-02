@@ -17,7 +17,7 @@ import (
 	"projectworkbench/pkg/wecomgateway"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
 
 func main() {
 	if e := run(os.Args[1:], os.Stdin, os.Stdout); e != nil {
