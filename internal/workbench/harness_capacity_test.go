@@ -1,31 +1,11 @@
 package workbench
 
 import (
-	"context"
-	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
-
-func TestHarnessCapacityCancelAndRelease(t *testing.T) {
-	slots := make(chan struct{}, 1)
-	ready := func() bool { return true }
-	release, err := acquireHarnessSlot(t.Context(), slots, ready)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Millisecond)
-	defer cancel()
-	if _, err = acquireHarnessSlot(ctx, slots, ready); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatal(err)
-	}
-	release()
-	ctx, stop := context.WithCancel(t.Context())
-	_, err = acquireHarnessSlot(ctx, slots, func() bool { stop(); return false })
-	if !errors.Is(err, context.Canceled) || len(slots) != 0 {
-		t.Fatal("waiting retained an execution slot", err)
-	}
-}
 
 func TestHarnessMemoryFloor(t *testing.T) {
 	for _, tc := range []struct {
@@ -43,10 +23,50 @@ func TestHarnessMemoryFloor(t *testing.T) {
 	}
 }
 
-func TestConcurrentColdStartsCannotSpendSameHeadroom(t *testing.T) {
-	var w launchWindow
+func TestHarnessReservationSpansPrepareAndFailedCleanup(t *testing.T) {
+	pool := harnessPool{slots: make(map[*harnessSlot]struct{})}
 	at := time.Now()
-	if !w.admit(at, 400, 300) || w.admit(at, 400, 300) || !w.admit(at.Add(6*time.Second), 400, 300) {
-		t.Fatal("cold-start memory allowance did not bound burst and recover")
+	s := pool.try(at, 400, 300)
+	if s == nil {
+		t.Fatal("not admitted")
 	}
+	if pool.try(at.Add(time.Minute), 400, 300) != nil {
+		t.Fatal("unstarted task lost its reservation")
+	}
+	s.markStarted()
+	s.setQuarantine(true)
+	s.finish()
+	if len(pool.slots) != 1 {
+		t.Fatal("released before cleanup")
+	}
+	s.setQuarantine(false)
+	s.finish()
+	if len(pool.slots) != 0 {
+		t.Fatal("cleanup did not release slot")
+	}
+}
+
+func TestFailedPodmanRemovalPreventsSeventhLaunch(t *testing.T) {
+	root := t.TempDir()
+	tool := filepath.Join(root, "podman")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\ntest -e \"$0.allow\""), 0700); err != nil {
+		t.Fatal(err)
+	}
+	h := Harness{Config: Config{Podman: tool, RuntimeMode: "podman", DataDir: root}}
+	p := harnessPool{slots: make(map[*harnessSlot]struct{})}
+	var s *harnessSlot
+	for range maxConcurrentRuns {
+		s = p.try(time.Now(), 10000, 10)
+	}
+	if err := h.cleanupProcessSlot(t.Context(), "orphan", s); err == nil {
+		t.Fatal("expected failed removal")
+	}
+	s.finish()
+	if got := p.try(time.Now(), 10000, 10); got != nil {
+		t.Fatal("seventh admitted with orphan")
+	}
+	if err := os.WriteFile(tool+".allow", nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return p.try(time.Now(), 10000, 10) != nil })
 }

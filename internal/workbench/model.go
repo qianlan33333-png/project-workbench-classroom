@@ -95,6 +95,7 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
+	hostSlot             *harnessSlot      // Process-only reservation; never persisted.
 	ConversationOutput   bool              `json:"conversationOutput,omitempty"`
 	ScheduledFor         int64             `json:"scheduledFor,omitempty"`
 	ScheduleConfig       *Schedule         `json:"scheduleConfig,omitempty"`

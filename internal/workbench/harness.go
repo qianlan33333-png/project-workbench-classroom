@@ -472,16 +472,16 @@ func (h *Harness) CleanupOrphans(ctx context.Context) error {
 }
 
 func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks RuntimeHooks) (resultOut RuntimeResult, executeErr error) {
+	slot := input.Run.hostSlot
 	if h.Config.RuntimeMode == "podman" {
-		cost := int64(192 * 1024)
-		if !input.Routing && input.Run.Gateway == nil && input.Project.ID != personalProjectID {
-			cost = 384 * 1024
+		if slot == nil {
+			var err error
+			slot, err = waitHostSlot(parent, input)
+			if err != nil {
+				return RuntimeResult{}, err
+			}
 		}
-		release, err := acquireHarnessSlot(parent, hostHarnessSlots, func() bool { return containerStarts.admit(time.Now(), hostStartHeadroom(), cost) })
-		if err != nil {
-			return RuntimeResult{}, err
-		}
-		defer release()
+		defer slot.finish()
 	}
 	args, env, cwd, err := h.prepare(input)
 	if err == nil && !input.Routing && (h.Config.RuntimeMode == "podman" || h.Config.RuntimeDir != "") {
@@ -518,6 +518,7 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 	if err = cmd.Start(); err != nil {
 		return RuntimeResult{}, fmt.Errorf("启动 Harness: %w", err)
 	}
+	slot.markStarted()
 	processDone := make(chan error, 1)
 	go func() { processDone <- cmd.Wait() }()
 	defer func() {
@@ -536,7 +537,9 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 		defer stop()
-		_ = h.Cleanup(cleanupCtx, input.Run.ID)
+		if err := h.cleanupProcessSlot(cleanupCtx, input.Run.ID, slot); err != nil {
+			executeErr = errors.Join(executeErr, err)
+		}
 	}()
 	var stderrMu sync.Mutex
 	stderrTail := ""
