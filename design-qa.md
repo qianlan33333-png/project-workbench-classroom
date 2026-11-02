@@ -1,3 +1,16 @@
+# Product Design QA — 正式菜单与 SSE 验收（2026-11-02）
+
+- 正式入口：`https://dsh.qianlan333.cloud/`；前端 `66c4a10`。源为本地已验收 `artifacts/session-menu/after-desktop.png`；实现为 `artifacts/session-menu-live/desktop-menu.png`、`live-harness-sse-menu-open.png`、`live-sse-pin-reopened.png`、`live-sse-title-wrapping.png`、`live-bottom-menu.png`、`live-mobile-390.png`、`live-mobile-320.png`。
+- 源/正式桌面均为 1280×720 CSS/像素、1× 密度，手机 390×844 / 320×568，底部窗口 1280×480。源全图、正式桌面、真实 SSE 后菜单及手机图已放在同一次图像输入中检查。正式使用专用测试项目、真实聊天、置顶状态和长列表，内容/换行差异来自测试数据；验收范围是菜单与锚点交互，不声称不同内容的整页像素一致。
+- 字体、颜色、间距、图标与文案均沿用已验收 CSS/组件，公开资源字节摘要一致。菜单 12px、115px 最小宽、8px 圆角与原阴影；四项可达，无裁切或视口溢出；正常“取消置顶”随真实状态变化。无新图片或占位资产。
+- 10 组线上验收全部通过；使用实际 API、原生 EventSource 与真实 Harness。SSE 自动滚动保留可操作菜单，置顶/换行使旧菜单关闭且正确重开，无位移更新保持打开。手机触摸与草稿保持，控制台和页面错误为空。
+- 首次测试标题超过既有 80 字限制，已回退后修正夹具重发同一前端字节；首次失败记录保留。最终无待修复 P0/P1/P2。两轮测试项目均清理，最终服务/配置/原有会话映射读回一致；真实平台发送和物理手机不在本轮证明范围。
+- 证据：`artifacts/session-menu-live/report.json`、`deployment.json`；回滚见 `docs/OPERATIONS.md`。
+
+final result: passed
+
+---
+
 # Product Design QA — 菜单 SSE 动态更新 P2 复验（2026-11-02）
 
 ## Target and state
