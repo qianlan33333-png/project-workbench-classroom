@@ -73,6 +73,9 @@ func (h *Harness) gatewayWorkspace(in RuntimeInput) (string, error) {
 			return "", e
 		}
 	}
+	if e := h.Store.writeGatewayHistory(root, in.Run); e != nil {
+		return "", e
+	}
 	return root, nil
 }
 
@@ -162,14 +165,11 @@ func (h *Harness) gatewayModelHandler(in RuntimeInput) (http.Handler, error) {
 			deny(409)
 			return
 		}
-		g, err := h.Store.gatewaySession(in.Session.ID)
-		run, re := h.Store.Run(in.Run.ID)
-		b, be := h.Store.gatewayBinding(g.BindingID)
-		c, _, ce := h.Store.gatewayConnection(g.ConnectionID)
-		if err != nil || re != nil || run.State != "running" || be != nil || ce != nil || !c.Enabled || !b.Enabled || g.Mode != "auto" || g.Version != meta.Version || b.Version != meta.BindingVersion || g.BindingVersion != meta.BindingVersion {
+		if !h.Store.gatewayRunLive(in.Run) {
 			deny(409)
 			return
 		}
+
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<20))
 		var request map[string]json.RawMessage
 		var model string
@@ -229,4 +229,18 @@ func (w gatewayFlusher) Write(b []byte) (int, error) {
 		f.Flush()
 	}
 	return n, e
+}
+
+// Use one database snapshot at each irreversible boundary. An in-flight provider
+// request cannot be revoked, so version is also checked before any answer is sent.
+func (s *Store) gatewayRunLive(r Run) bool {
+	if r.Gateway == nil || r.Gateway.Deadline <= now() {
+		return false
+	}
+	var active int
+	e := s.DB.QueryRow(`SELECT count(*) FROM runs r JOIN gateway_sessions g ON r.session_id=g.id JOIN sessions ss ON ss.id=g.id JOIN projects p ON p.id=ss.project_id JOIN gateway_bindings b ON b.id=g.binding_id JOIN connections c ON c.id=b.connection_id
+ WHERE r.id=? AND r.state='running' AND g.id=? AND p.archived=0 AND coalesce(json_extract(ss.data,'$.recycledAt'),0)=0
+ AND json_extract(g.data,'$.mode')='auto' AND json_extract(g.data,'$.version')=? AND json_extract(g.data,'$.bindingVersion')=?
+ AND json_extract(b.data,'$.version')=? AND json_extract(b.data,'$.enabled')=1 AND json_extract(c.data,'$.enabled')=1`, r.ID, r.SessionID, r.Gateway.Version, r.Gateway.BindingVersion, r.Gateway.BindingVersion).Scan(&active)
+	return e == nil && active == 1
 }

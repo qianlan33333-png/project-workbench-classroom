@@ -163,6 +163,28 @@ func run(args []string, in io.Reader, out io.Writer) error {
 			}
 			method = "POST"
 			path = "/gateway/sessions/" + url.PathEscape(*id) + "/" + strings.Split(cmd, " ")[1]
+			if cmd == "session resume" {
+				// Fetch the current version once. Never re-read and retry a rejected write.
+				rr, e := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(c.WorkbenchURL, "/")+"/api/v1/gateway/sessions/"+url.PathEscape(*id), nil)
+				if e != nil {
+					return e
+				}
+				rr.SetBasicAuth("owner", password)
+				cl := http.Client{Timeout: 25 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+				res, e := cl.Do(rr)
+				if e != nil {
+					return errors.New("workbench state unavailable")
+				}
+				defer res.Body.Close()
+				var state struct {
+					Version        int64 `json:"version"`
+					BindingVersion int64 `json:"bindingVersion"`
+				}
+				if res.StatusCode != 200 || json.NewDecoder(io.LimitReader(res.Body, 65536)).Decode(&state) != nil || state.Version <= 0 || state.BindingVersion <= 0 {
+					return errors.New("workbench conversation state unavailable")
+				}
+				body = state
+			}
 		default:
 			return errors.New("unknown management command")
 		}

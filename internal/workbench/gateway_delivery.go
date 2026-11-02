@@ -149,7 +149,7 @@ func (w *Worker) gatewayDeliverLoop(ctx context.Context) {
 }
 func (w *Worker) gatewayDeliverOne(ctx context.Context) {
 	s := w.Store
-	ds, e := listJSON[Delivery](s.DB, "SELECT data FROM deliveries WHERE state IN ('pending','accepted') AND json_extract(data,'$.gateway') IS NOT NULL AND coalesce(json_extract(data,'$.gateway.nextAt'),0)<=? ORDER BY created_at,rowid LIMIT 1", now())
+	ds, e := listJSON[Delivery](s.DB, "SELECT data FROM deliveries WHERE state IN ('pending','accepted') AND json_extract(data,'$.kind') IN ('gateway.answer','gateway.handoff') AND coalesce(json_extract(data,'$.gateway.nextAt'),0)<=? ORDER BY created_at,rowid LIMIT 1", now())
 	if e != nil || len(ds) == 0 {
 		return
 	}

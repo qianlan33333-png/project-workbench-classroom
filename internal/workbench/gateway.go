@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"strings"
+	"time"
 
 	gw "projectworkbench/pkg/wecomgateway"
 )
@@ -54,22 +55,31 @@ type GatewayBinding struct {
 	PluginIDs      []string `json:"pluginIds,omitempty"`
 }
 type GatewaySession struct {
-	ManualReply    string `json:"manualReply,omitempty"`
-	ID             string `json:"id"`
-	BindingID      string `json:"bindingId"`
-	BindingVersion int64  `json:"bindingVersion"`
-	ConnectionID   string `json:"connectionId"`
-	TenantID       string `json:"tenantId"`
-	AccountID      string `json:"accountId"`
-	ContactID      string `json:"contactId"`
-	Name           string `json:"name"`
-	Mode           string `json:"mode"`
-	Version        int64  `json:"version"`
-	Reason         string `json:"reason,omitempty"`
-	LastHumanAt    int64  `json:"lastHumanAt"`
-	LastMessageAt  int64  `json:"lastMessageAt"`
+	ExternalUserID   string `json:"externalUserId,omitempty"`
+	IdentityConflict bool   `json:"identityConflict,omitempty"`
+	ResumeNS         int64  `json:"resumeNs,omitempty"`
+	HistoryCursor    int64  `json:"historyCursor,omitempty"`
+	ManualReply      string `json:"manualReply,omitempty"`
+	ID               string `json:"id"`
+	BindingID        string `json:"bindingId"`
+	BindingVersion   int64  `json:"bindingVersion"`
+	ConnectionID     string `json:"connectionId"`
+	TenantID         string `json:"tenantId"`
+	AccountID        string `json:"accountId"`
+	ContactID        string `json:"contactId"`
+	Name             string `json:"name"`
+	Mode             string `json:"mode"`
+	Version          int64  `json:"version"`
+	Reason           string `json:"reason,omitempty"`
+	LastHumanAt      int64  `json:"lastHumanAt"`
+	LastMessageAt    int64  `json:"lastMessageAt"`
 }
 type GatewayRun struct {
+	HistoryFrom    int64    `json:"historyFrom,omitempty"`
+	HistoryThrough int64    `json:"historyThrough,omitempty"`
+	HistoryPreview string   `json:"historyPreview,omitempty"`
+	HistoryFile    bool     `json:"historyFile,omitempty"`
+	HistoryRole    string   `json:"historyRole,omitempty"`
 	KnowledgePaths []string `json:"knowledgePaths,omitempty"`
 	ManualReply    string   `json:"manualReply,omitempty"`
 	Version        int64    `json:"version"`
@@ -79,15 +89,17 @@ type GatewayRun struct {
 	PluginIDs      []string `json:"pluginIds,omitempty"`
 }
 type GatewayDelivery struct {
-	FirstAttemptAt int64  `json:"firstAttemptAt,omitempty"`
-	Version        int64  `json:"version"`
-	BindingVersion int64  `json:"bindingVersion"`
-	Deadline       int64  `json:"deadline"`
-	ContactID      string `json:"contactId"`
-	AccountID      string `json:"accountId"`
-	NotifyChatID   string `json:"notifyChatId,omitempty"`
-	Attempts       int    `json:"attempts"`
-	NextAt         int64  `json:"nextAt"`
+	CRMKey         string     `json:"crmKey,omitempty"`
+	CRMNotice      *crmNotice `json:"crmNotice,omitempty"`
+	FirstAttemptAt int64      `json:"firstAttemptAt,omitempty"`
+	Version        int64      `json:"version"`
+	BindingVersion int64      `json:"bindingVersion"`
+	Deadline       int64      `json:"deadline"`
+	ContactID      string     `json:"contactId"`
+	AccountID      string     `json:"accountId"`
+	NotifyChatID   string     `json:"notifyChatId,omitempty"`
+	Attempts       int        `json:"attempts"`
+	NextAt         int64      `json:"nextAt"`
 }
 
 func (s *Store) GatewayConnections() ([]GatewayConnection, error) {
@@ -239,6 +251,7 @@ func (s *Store) SaveGatewayBinding(b GatewayBinding) (GatewayBinding, error) {
 	e = s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var raw string
 		err := tx.QueryRow("SELECT data FROM gateway_bindings WHERE connection_id=? AND account_id=?", b.ConnectionID, b.AccountID).Scan(&raw)
+		requestedVersion := b.Version
 		b.Version = 1
 		if err == nil {
 			var old GatewayBinding
@@ -249,6 +262,9 @@ func (s *Store) SaveGatewayBinding(b GatewayBinding) (GatewayBinding, error) {
 				return errors.New("account already bound")
 			}
 			providedID := b.ID
+			if providedID != "" && requestedVersion > 0 && requestedVersion != old.Version {
+				return ErrConflict
+			}
 			b.ID = old.ID
 			b.Version = old.Version
 			if encode(b) == encode(old) {
@@ -306,31 +322,44 @@ func (s *Store) SetGatewayMode(id, mode, reason string) error {
 		if e != nil {
 			return e
 		}
-		if g.Mode == mode {
-			return nil
-		}
-		if mode == "auto" {
-			b, e := gatewayBindingTx(tx, g.BindingID)
-			if e != nil {
-				return e
-			}
-			var active int
-			if e = tx.QueryRow("SELECT count(*) FROM sessions WHERE id=? AND coalesce(json_extract(data,'$.recycledAt'),0)=0", g.ID).Scan(&active); e != nil {
-				return e
-			}
-			if !b.Enabled || b.Version != g.BindingVersion || active != 1 {
-				return errors.New("old or recycled binding cannot be resumed")
-			}
-		}
-		g.Version++
-		g.Mode = mode
-		g.Reason = reason
-		if e = saveGatewaySession(tx, g); e != nil {
+		return s.changeGatewayModeTx(tx, &g, mode, reason)
+	})
+}
+func (s *Store) changeGatewayModeTx(tx *sql.Tx, g *GatewaySession, mode, reason string) error {
+	if mode == "auto" {
+		var active int
+		e := tx.QueryRow(`SELECT count(*) FROM gateway_bindings b JOIN connections c ON c.id=b.connection_id JOIN sessions ss ON ss.id=? JOIN projects p ON p.id=ss.project_id WHERE b.id=? AND json_extract(b.data,'$.projectId')=p.id AND json_extract(b.data,'$.enabled')=1 AND json_extract(c.data,'$.enabled')=1 AND json_extract(b.data,'$.version')=? AND coalesce(json_extract(ss.data,'$.recycledAt'),0)=0 AND p.archived=0`, g.ID, g.BindingID, g.BindingVersion).Scan(&active)
+		if e != nil {
 			return e
 		}
-		_, e = tx.Exec("UPDATE deliveries SET state='cancelled',data=json_set(data,'$.state','cancelled') WHERE json_extract(data,'$.sessionId')=? AND state='pending' AND json_extract(data,'$.kind')='gateway.answer'", id)
+		if active != 1 {
+			return crmError("not_bound")
+		}
+	}
+	if g.Mode == mode {
+		return nil
+	}
+	g.Mode = mode
+	g.Version++
+	g.Reason = reason
+	if mode == "auto" {
+		g.ResumeNS = time.Now().UnixNano()
+	}
+	if mode == "human" {
+		if _, e := tx.Exec(`UPDATE inbox SET state=CASE state WHEN 'gateway_pending' THEN 'handled' ELSE state END,
+      data=json_set(data,'$.gateway.historyRole','客户','$.state',CASE state WHEN 'gateway_pending' THEN 'handled' ELSE state END)
+      WHERE source=? AND session_id=? AND state IN ('gateway_pending','queued') AND NOT EXISTS (SELECT 1 FROM runs WHERE message_id=inbox.id AND state<>'queued')`, gatewaySource, g.ID); e != nil {
+			return e
+		}
+	}
+	if e := saveGatewaySession(tx, *g); e != nil {
 		return e
-	})
+	}
+	if e := s.crmNotifyTx(tx, *g); e != nil {
+		return e
+	}
+	_, e := tx.Exec("UPDATE deliveries SET state='cancelled',data=json_set(data,'$.state','cancelled') WHERE json_extract(data,'$.sessionId')=? AND state='pending' AND json_extract(data,'$.kind')='gateway.answer'", g.ID)
+	return e
 }
 
 // ReceiveGateway commits the signed event, normalized message and conversation
@@ -456,6 +485,28 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 		} else {
 			return e
 		}
+		if event.Type == "message.received" && m.Direction == "in" {
+			external := m.ExternalUserID
+			if m.Sender.ContactID == "" || m.Sender.ContactID == contact {
+				if external == "" {
+					external = m.Sender.ExternalUserID
+				} else if m.Sender.ExternalUserID != "" && external != m.Sender.ExternalUserID {
+					g.IdentityConflict = true
+				}
+			}
+			if external != "" {
+				if g.ExternalUserID != "" && g.ExternalUserID != external {
+					g.IdentityConflict = true
+				} else {
+					g.ExternalUserID = external
+				}
+			}
+		}
+		eventTime := event.OccurredAt
+		if !m.SentAt.IsZero() {
+			eventTime = m.SentAt
+		}
+		historical := g.ResumeNS > 0 && eventTime.UnixNano() <= g.ResumeNS
 		at := event.OccurredAt.UnixMilli()
 		if !m.SentAt.IsZero() {
 			at = m.SentAt.UnixMilli()
@@ -466,10 +517,13 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 		state := "gateway_pending"
 		if event.Type == "message.self_sent" {
 			state = "handled"
-			if at >= g.LastHumanAt {
+			if !historical && at >= g.LastHumanAt {
 				g.LastHumanAt = at
-				g.Mode = "human"
-				g.Version++
+				if g.Mode != "human" {
+					if e = s.changeGatewayModeTx(tx, &g, "human", "人工已在企微回复"); e != nil {
+						return e
+					}
+				}
 				g.Reason = "人工已在企微回复"
 				g.ManualReply = m.Content.Text
 				if e = saveGatewaySession(tx, g); e != nil {
@@ -479,18 +533,18 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 		}
 		if event.Type == "message.received" && (m.Direction != "in" || m.Type != "text" || strings.TrimSpace(m.Content.Text) == "" || len(m.Content.Text) > 16000) {
 			state = "handled"
-			if m.Direction == "in" {
+			if m.Direction == "in" && !historical {
 				if e = s.gatewayHandoffTx(tx, &g, b, "首期仅自动处理文字消息", ""); e != nil {
 					return e
 				}
 			}
 		}
-		if event.Type == "message.received" && at < g.LastMessageAt && g.Mode == "auto" {
+		if !historical && event.Type == "message.received" && at < g.LastMessageAt && g.Mode == "auto" {
 			if e = s.gatewayHandoffTx(tx, &g, b, "消息乱序，需要核对完整上下文", m.Content.Text); e != nil {
 				return e
 			}
 		}
-		if g.Mode != "auto" || at < g.LastMessageAt || at < g.LastHumanAt {
+		if historical || g.Mode != "auto" || at < g.LastMessageAt || at < g.LastHumanAt {
 			state = "handled"
 		}
 		if at > g.LastMessageAt {
@@ -500,6 +554,12 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 			return e
 		}
 		msg := Message{ID: newID(), SessionID: g.ID, State: state, CreatedAt: at, Gateway: &GatewayRun{Version: g.Version, BindingVersion: b.Version, Deadline: at + int64(b.TimeoutSeconds)*1000, ToolIDs: b.ToolIDs, PluginIDs: b.PluginIDs, KnowledgePaths: b.KnowledgePaths}, Incoming: Incoming{Source: gatewaySource, ConnectionID: connection, ActorID: contact, ConversationID: contact, EventID: m.MessageID, SessionID: g.ID, ExpertID: b.ExpertID, Text: m.Content.Text}}
+		if state == "handled" && (event.Type == "message.self_sent" || m.Direction == "in") {
+			msg.Gateway.HistoryRole = "客户"
+			if event.Type == "message.self_sent" {
+				msg.Gateway.HistoryRole = "人工客服"
+			}
+		}
 		_, e = tx.Exec("INSERT INTO inbox VALUES(?,?,?,?,?,?,?,?,?)", msg.ID, gatewaySource, connection, m.MessageID, entryKey(msg.Incoming), state, g.ID, msg.CreatedAt, encode(msg))
 		return e
 	})
@@ -509,10 +569,7 @@ func (s *Store) gatewayHandoffTx(tx *sql.Tx, g *GatewaySession, b GatewayBinding
 	if g.Mode == "human" {
 		return nil
 	}
-	g.Mode = "human"
-	g.Version++
-	g.Reason = reason
-	if e := saveGatewaySession(tx, *g); e != nil {
+	if e := s.changeGatewayModeTx(tx, g, "human", reason); e != nil {
 		return e
 	}
 	text := fmt.Sprintf("需要人工接管\n会话：%s\n账号：%s\n客户：%s (%s)\n原因：%s\n摘要：%s\n请在企微直接回复；恢复AI需明确操作。", g.ID, g.AccountID, g.Name, g.ContactID, reason, summary)
@@ -555,7 +612,7 @@ func (s *Store) gatewayRunMetadata(m Message) (*GatewayRun, error) {
 func (s *Store) queueGateway(m Message) error {
 	meta, e := s.gatewayRunMetadata(m)
 	if e != nil {
-		_, e = s.DB.Exec("UPDATE inbox SET state='handled',data=json_set(data,'$.state','handled') WHERE id=? AND state='gateway_pending'", m.ID)
+		_, e = s.DB.Exec("UPDATE inbox SET state='handled',data=json_set(data,'$.state','handled','$.gateway.historyRole','客户') WHERE id=? AND state='gateway_pending'", m.ID)
 		return e
 	}
 	if meta.Deadline <= now() {
@@ -585,7 +642,7 @@ func (s *Store) handoffGatewayVersion(session string, expected *GatewayRun, reas
 		if e = s.gatewayHandoffTx(tx, &g, b, reason, summary); e != nil {
 			return e
 		}
-		_, e = tx.Exec("UPDATE inbox SET state='handled',data=json_set(data,'$.state','handled') WHERE session_id=? AND state='gateway_pending'", session)
+		_, e = tx.Exec("UPDATE inbox SET state='handled',data=json_set(data,'$.state','handled','$.gateway.historyRole','客户') WHERE session_id=? AND state='gateway_pending'", session)
 		return e
 	})
 }

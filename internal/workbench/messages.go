@@ -314,6 +314,15 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		if currentSession.RecycledAt > 0 || currentSession.Lifecycle != "" {
 			return errors.New("对话正在归档或已在回收站")
 		}
+		if run.Gateway == nil {
+			var external int
+			if e := tx.QueryRow("SELECT count(*) FROM gateway_sessions WHERE id=?", sess.ID).Scan(&external); e != nil {
+				return e
+			}
+			if external != 0 {
+				return errors.New("此客户对话仅由已接入的客户新消息触发")
+			}
+		}
 		if run.Gateway != nil {
 			g, e := txGatewaySession(tx, sess.ID)
 			if e != nil {

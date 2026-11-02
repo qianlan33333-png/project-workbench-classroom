@@ -723,6 +723,9 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 	if input.NativeCommand {
 		method = "session/query"
 	}
+	if input.Run.Gateway != nil && !h.Store.gatewayRunLive(input.Run) {
+		return RuntimeResult{}, errors.New("客户会话已暂停或绑定已变更")
+	}
 	accepted, err := rpc(method, map[string]any{"sessionId": input.Session.HarnessID, "contentBlocks": []map[string]string{{"type": "text", "text": input.Prompt}}})
 	if err != nil {
 		return RuntimeResult{}, err
@@ -761,6 +764,9 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 	}
 	if err = json.Unmarshal(accepted, &receipt); err != nil {
 		return RuntimeResult{}, err
+	}
+	if input.Run.Gateway != nil && receipt.MessageID == "" {
+		return RuntimeResult{}, errors.New("外部会话没有持久接收回执")
 	}
 	if hooks.Accepted != nil {
 		if err = hooks.Accepted(receipt.MessageID); err != nil {

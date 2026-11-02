@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"database/sql"
 	"io"
 	"net/http"
 	"time"
@@ -12,6 +13,10 @@ import (
 func (a *API) mountGateway(public, owner *gin.RouterGroup) {
 	s := a.Store
 	public.POST("/gateway/hooks/:id", func(c *gin.Context) {
+		if isCRM(c.Request) {
+			a.crmHook(c)
+			return
+		}
 		_, secret, e := s.gatewayConnection(c.Param("id"))
 		if e != nil {
 			c.AbortWithStatus(404)
@@ -44,9 +49,38 @@ func (a *API) mountGateway(public, owner *gin.RouterGroup) {
 		reply(c, v, e)
 	})
 	owner.POST("/gateway/bindings", func(c *gin.Context) { bind(c, func(v GatewayBinding) (any, error) { return s.SaveGatewayBinding(v) }) })
-	owner.GET("/gateway/sessions", func(c *gin.Context) { v, e := s.GatewaySessions(); reply(c, v, e) })
+	owner.GET("/gateway/sessions", func(c *gin.Context) {
+		if project := c.Query("projectId"); project != "" {
+			v, e := listJSON[GatewaySession](s.DB, "SELECT gs.data FROM gateway_sessions gs JOIN sessions ss ON ss.id=gs.id WHERE ss.project_id=? ORDER BY gs.rowid DESC", project)
+			reply(c, v, e)
+			return
+		}
+		v, e := s.GatewaySessions()
+		reply(c, v, e)
+	})
+	owner.GET("/gateway/sessions/:id", func(c *gin.Context) { v, e := s.gatewaySession(c.Param("id")); reply(c, v, e) })
 	owner.POST("/gateway/sessions/:id/pause", func(c *gin.Context) { reply(c, nil, s.SetGatewayMode(c.Param("id"), "human", "负责人暂停AI")) })
 	owner.POST("/gateway/sessions/:id/resume", func(c *gin.Context) {
-		reply(c, nil, s.SetGatewayMode(c.Param("id"), "auto", "负责人明确恢复AI"))
+		bind(c, func(q struct {
+			Version        int64 `json:"version"`
+			BindingVersion int64 `json:"bindingVersion"`
+		}) (any, error) {
+			var g GatewaySession
+			if q.Version < 1 || q.BindingVersion < 1 {
+				return nil, crmError("invalid_request")
+			}
+			e := s.Transaction(c.Request.Context(), func(tx *sql.Tx) error {
+				var e error
+				g, e = txGatewaySession(tx, c.Param("id"))
+				if e != nil {
+					return e
+				}
+				if g.Mode != "human" || g.Version != q.Version || g.BindingVersion != q.BindingVersion {
+					return ErrConflict
+				}
+				return s.changeGatewayModeTx(tx, &g, "auto", "负责人明确恢复AI")
+			})
+			return g, e
+		})
 	})
 }

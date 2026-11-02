@@ -452,6 +452,7 @@ func (s *Store) purgeSession(ss Session) error {
 			}
 		}
 		for _, q := range []string{
+			"DELETE FROM gateway_crm_receipts WHERE session_id=?",
 			"DELETE FROM deliveries WHERE json_extract(data,'$.sessionId')=?",
 			"DELETE FROM interactions WHERE run_id IN (SELECT id FROM runs WHERE session_id=?)",
 			"DELETE FROM baselines WHERE run_id IN (SELECT id FROM runs WHERE session_id=?)",

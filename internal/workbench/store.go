@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,6 +14,8 @@ import (
 )
 
 type Store struct {
+	crmGrants          map[string]crmGrant
+	crmTransport       http.RoundTripper // nil uses the platform trust store
 	BackupScrubCommand []string
 	DB                 *sql.DB
 	Root               string
@@ -80,7 +83,7 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(schema + todaySchema + gatewaySchema); err != nil {
+	if _, err := db.Exec(schema + todaySchema + gatewaySchema + crmSchema); err != nil {
 		return nil, fmt.Errorf("数据库初始化: %w", err)
 	}
 	var version int
@@ -90,7 +93,11 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 	if version != 1 {
 		return nil, fmt.Errorf("不支持数据库版本 %d", version)
 	}
-	s := &Store{DB: db, Root: root, notify: make(chan struct{}, 1)}
+	grants, err := loadCRMGrants()
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{crmGrants: grants, DB: db, Root: root, notify: make(chan struct{}, 1)}
 	if v, _ := s.Setting("global_mcp_migrated"); v == "" {
 		plugins, _ := listJSON[Plugin](db, "SELECT data FROM plugins")
 		projects, _ := s.Projects()

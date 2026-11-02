@@ -116,19 +116,21 @@ func (c Client) Do(ctx context.Context, method, path string, body any, key strin
 }
 
 type Message struct {
-	MessageID  string    `json:"messageId"`
-	AccountID  string    `json:"accountId"`
-	Direction  string    `json:"direction"`
-	ContactID  string    `json:"contactId"`
-	RoomID     string    `json:"roomId"`
-	Type       string    `json:"type"`
-	Historical bool      `json:"historical"`
-	Status     string    `json:"status"`
-	FailReason string    `json:"failReason"`
-	SentAt     time.Time `json:"sentAt"`
-	Sender     struct {
-		ContactID string `json:"contactId"`
-		Name      string `json:"name"`
+	ExternalUserID string    `json:"externalUserId,omitempty"`
+	MessageID      string    `json:"messageId"`
+	AccountID      string    `json:"accountId"`
+	Direction      string    `json:"direction"`
+	ContactID      string    `json:"contactId"`
+	RoomID         string    `json:"roomId"`
+	Type           string    `json:"type"`
+	Historical     bool      `json:"historical"`
+	Status         string    `json:"status"`
+	FailReason     string    `json:"failReason"`
+	SentAt         time.Time `json:"sentAt"`
+	Sender         struct {
+		ExternalUserID string `json:"externalUserId,omitempty"`
+		ContactID      string `json:"contactId"`
+		Name           string `json:"name"`
 	} `json:"sender"`
 	Content struct {
 		Type string `json:"type"`
