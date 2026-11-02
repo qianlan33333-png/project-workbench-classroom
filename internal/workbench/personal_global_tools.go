@@ -173,6 +173,10 @@ func (h *Harness) serveIsolatedStdio(lifetime context.Context, in RuntimeInput, 
 		return
 	}
 	defer conn.Close()
+	// Server.Close cannot close hijacked sockets. Unblock both output copying
+	// and the incoming reader as soon as the run or grant is cancelled.
+	stopClose := context.AfterFunc(lifetime, func() { _ = conn.Close() })
+	defer stopClose()
 	_ = conn.SetDeadline(time.Time{})
 	ctx, cancel := context.WithCancel(lifetime)
 	defer cancel()
@@ -190,12 +194,15 @@ func (h *Harness) serveIsolatedStdio(lifetime context.Context, in RuntimeInput, 
 	if e = rw.Flush(); e != nil {
 		return
 	}
+	if external && !h.gatewayPluginCurrent(in, p) {
+		return
+	}
 	if e = cmd.Start(); e != nil {
 		return
 	}
 	go func() { _, _ = io.Copy(stdin, rw.Reader); _ = stdin.Close(); cancel() }()
 	_ = cmd.Wait()
-	if ctx.Err() != nil {
+	if external || ctx.Err() != nil {
 		h.cleanupExternal(name)
 	}
 }

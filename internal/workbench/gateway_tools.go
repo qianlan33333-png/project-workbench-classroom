@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -111,11 +112,87 @@ func (h *Harness) gatewayPlugin(in RuntimeInput, id, transport string) (Plugin, 
 	return p, err == nil && p.Transport == transport && (p.ProjectID == "" || p.ProjectID == in.Project.ID) && (p.Enabled == nil || *p.Enabled)
 }
 
+// One native MCP client is installed for each granted plugin in a run, with
+// reconnect disabled. A disconnected or failed launch cannot consume another
+// host container until the customer starts a new run.
+type gatewayStdioStarts struct {
+	mu      sync.Mutex
+	started map[string]bool
+	closed  bool
+	work    sync.WaitGroup
+}
+
+func (s *gatewayStdioStarts) claim(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.started[id] {
+		return false
+	}
+	s.started[id] = true
+	s.work.Add(1)
+	return true
+}
+
+// Bound host-side requests before decoding customer-controlled bodies or
+// opening a provider connection. The budget is private to this run.
+func boundGatewayHTTP(next http.Handler, concurrent, total int32) http.Handler {
+	slots := make(chan struct{}, concurrent)
+	var used atomic.Int32
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		default:
+			http.Error(w, "gateway request concurrency exceeded", http.StatusTooManyRequests)
+			return
+		}
+		// Saturate permanently instead of wrapping the counter on rejected calls.
+		for {
+			n := used.Load()
+			if n >= total {
+				http.Error(w, "gateway request budget exhausted", http.StatusTooManyRequests)
+				return
+			}
+			if used.CompareAndSwap(n, n+1) {
+				break
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (h *Harness) gatewayPluginCurrent(in RuntimeInput, p Plugin) bool {
+	current, ok := h.gatewayPlugin(in, p.ID, p.Transport)
+	return ok && encode(current) == encode(p)
+}
+
+func (h *Harness) gatewayPluginContext(parent context.Context, in RuntimeInput, p Plugin) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithDeadline(parent, time.UnixMilli(in.Run.Gateway.Deadline))
+	go func() {
+		t := time.NewTicker(300 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				// Plugin revocation or credential/target replacement can occur
+				// independently of the run's normal stop/timeout cancellation.
+				if !h.gatewayPluginCurrent(in, p) {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return ctx, cancel
+}
+
 // Resolve the owner-configured HTTPS endpoint on the host. Only the run's
 // granted plugin can receive its headers. Session handles cannot cross runs.
 func (h *Harness) gatewayMCPHandler(in RuntimeInput, transport http.RoundTripper) http.Handler {
 	client := http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	type session struct{ external, local string }
+	type session struct{ external, local, config string }
 	var sessions sync.Map
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/gateway-mcp/")
@@ -137,7 +214,7 @@ func (h *Harness) gatewayMCPHandler(in RuntimeInput, transport http.RoundTripper
 			}
 			body = bytes.NewReader(raw)
 		}
-		ctx, cancel := context.WithDeadline(r.Context(), time.UnixMilli(in.Run.Gateway.Deadline))
+		ctx, cancel := h.gatewayPluginContext(r.Context(), in, p)
 		defer cancel()
 		up, e := http.NewRequestWithContext(ctx, r.Method, p.URL, body)
 		if e != nil {
@@ -156,9 +233,12 @@ func (h *Harness) gatewayMCPHandler(in RuntimeInput, transport http.RoundTripper
 		if r.Method == "POST" {
 			up.Header.Set("Content-Type", "application/json")
 		}
+		// A plugin may be repointed between calls. An old server-issued handle
+		// must never be presented to the replacement URL or credential.
+		config := digest([]byte(encode(p)))
 		if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
 			cur, ok := sessions.Load(id)
-			if !ok || cur.(session).local != sid {
+			if !ok || cur.(session).local != sid || cur.(session).config != config {
 				http.Error(w, "unknown MCP session", 404)
 				return
 			}
@@ -167,8 +247,8 @@ func (h *Harness) gatewayMCPHandler(in RuntimeInput, transport http.RoundTripper
 		for name, v := range p.Headers {
 			up.Header.Set(name, v)
 		}
-		if !h.Store.gatewayRunLive(in.Run) {
-			http.Error(w, "inactive gateway run", 409)
+		if !h.gatewayPluginCurrent(in, p) {
+			http.Error(w, "inactive gateway grant", 409)
 			return
 		}
 		res, e := client.Do(up)
@@ -187,8 +267,8 @@ func (h *Harness) gatewayMCPHandler(in RuntimeInput, transport http.RoundTripper
 		}
 		if sid := res.Header.Get("Mcp-Session-Id"); sid != "" {
 			cur, ok := sessions.Load(id)
-			if !ok || cur.(session).external != sid {
-				cur = session{external: sid, local: newID()}
+			if !ok || cur.(session).external != sid || cur.(session).config != config {
+				cur = session{external: sid, local: newID(), config: config}
 				sessions.Store(id, cur)
 			}
 			w.Header().Set("Mcp-Session-Id", cur.(session).local)

@@ -1,13 +1,16 @@
 package workbench
 
 import (
+	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGatewayToolSecretsAndStateMounts(t *testing.T) {
@@ -174,6 +177,13 @@ func TestGatewayMCPHostUsesBoundCredentialsAndSession(t *testing.T) {
 	if request("POST", path+"?target=https://bad", "").Code != 400 || request("POST", "/gateway-mcp/"+newID(), "").Code != 403 {
 		t.Fatal("target selection accepted")
 	}
+	p.Headers = map[string]string{"Authorization": "new-owner-token"}
+	if _, err := s.SavePlugin(p); err != nil {
+		t.Fatal(err)
+	}
+	if request("GET", path, sid).Code != 404 {
+		t.Fatal("previous provider session handle accepted after credential change")
+	}
 	if e = s.SetGatewayMode(in.Session.ID, "human", "test"); e != nil {
 		t.Fatal(e)
 	}
@@ -200,5 +210,167 @@ func TestGatewayStdioHasNoHostOrCustomerWritableState(t *testing.T) {
 	args := strings.Join(a, " ")
 	if !strings.Contains(args, "--tmpfs /tools/state/"+cli.ID+":rw") || strings.Contains(args, filepath.Join(s.Root, "tools/state")) || strings.Contains(args, "bridge.sock") || strings.Contains(args, "/runtime:rw") {
 		t.Fatal("MCP process received untrusted/host state")
+	}
+}
+
+func TestGatewayStdioConcurrentHandshakesLaunchOnceAndRevoke(t *testing.T) {
+	s, h, in := gatewayRuntimeFixture(t)
+	run, err := NewWorker(s, nil, nil).claim()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Run = run
+	p, err := s.SavePlugin(Plugin{Name: "one MCP", Transport: "stdio", Command: "fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Run.Gateway.PluginIDs = []string{p.ID}
+	log := filepath.Join(t.TempDir(), "podman-actions")
+	h.Config.Podman = filepath.Join(t.TempDir(), "podman")
+	// One line per actual host process operation; stay attached like a real MCP.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + log + "'\nif [ \"$1\" = run ]; then exec cat; fi\n"
+	if err = os.WriteFile(h.Config.Podman, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	stop, err := h.startBridge(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	tr := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", bridgeSocket(in))
+	}}
+	defer tr.CloseIdleConnections()
+	client := &http.Client{Transport: tr}
+	get := func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(t.Context(), "GET", "http://bridge/gateway-stdio/"+p.ID, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "pwb-stdio")
+		return client.Do(req)
+	}
+	type result struct {
+		res *http.Response
+		err error
+	}
+	const contenders = 12
+	results := make(chan result, contenders)
+	begin := make(chan struct{})
+	for i := 0; i < contenders; i++ {
+		go func() { <-begin; r, e := get(); results <- result{r, e} }()
+	}
+	close(begin)
+	var stream io.ReadCloser
+	accepted := 0
+	for i := 0; i < contenders; i++ {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		switch result.res.StatusCode {
+		case 101:
+			accepted++
+			stream = result.res.Body
+		case 429:
+			result.res.Body.Close()
+		default:
+			result.res.Body.Close()
+			t.Fatalf("unexpected handshake status %d", result.res.StatusCode)
+		}
+	}
+	if accepted != 1 {
+		t.Fatal("actual successful handshakes", accepted)
+	}
+	defer stream.Close()
+	waitActions := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(deadline) {
+			data, _ := os.ReadFile(log)
+			if string(data) == want {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		data, _ := os.ReadFile(log)
+		t.Fatalf("expected %q, got %q", want, data)
+	}
+	waitActions("run\n")
+	disabled := false
+	p.Enabled = &disabled
+	if _, err = s.SavePlugin(p); err != nil {
+		t.Fatal(err)
+	}
+	waitActions("run\nrm\n")
+	// Re-enabling the plugin cannot multiply starts within this run.
+	enabled := true
+	p.Enabled = &enabled
+	if _, err = s.SavePlugin(p); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry.Body.Close()
+	if retry.StatusCode != 429 {
+		t.Fatalf("retry status=%d", retry.StatusCode)
+	}
+}
+
+func TestGatewayHTTPBoundsRequestsAndCancelsOpenMCP(t *testing.T) {
+	s, h, in := gatewayRuntimeFixture(t)
+	run, e := NewWorker(s, nil, nil).claim()
+	if e != nil {
+		t.Fatal(e)
+	}
+	in.Run = run
+	started := make(chan struct{}, 2)
+	closed := make(chan struct{}, 2)
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		rctx := r.Context()
+		<-rctx.Done()
+		closed <- struct{}{}
+	}))
+	defer up.Close()
+	p, e := s.SavePlugin(Plugin{Name: "stream", Transport: "http", URL: up.URL})
+	if e != nil {
+		t.Fatal(e)
+	}
+	in.Run.Gateway.PluginIDs = []string{p.ID}
+	proxy := boundGatewayHTTP(h.gatewayMCPHandler(in, up.Client().Transport), 1, 1)
+	path := "/gateway-mcp/" + p.ID
+	do := func() int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", path, nil)
+		proxy.ServeHTTP(w, r)
+		return w.Code
+	}
+	done := make(chan int, 1)
+	go func() { done <- do() }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not start")
+	}
+	if got := do(); got != 429 {
+		t.Fatal("parallel call accepted", got)
+	}
+	if e := s.SetGatewayMode(in.Session.ID, "human", "pause MCP"); e != nil {
+		t.Fatal(e)
+	}
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("open upstream survived pause")
+	}
+	if got := <-done; got != 502 {
+		t.Fatal("cancelled upstream", got)
+	}
+	if got := do(); got != 429 {
+		t.Fatal("exhausted budget was reused", got)
 	}
 }

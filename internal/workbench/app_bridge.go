@@ -20,15 +20,17 @@ import (
 func bridgeSocket(in RuntimeInput) string {
 	return filepath.Join(os.TempDir(), "pw-"+in.Run.ID+".sock")
 }
-func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
+func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), error) {
 	var model, gatewayMCP http.Handler
+	stdio := gatewayStdioStarts{started: make(map[string]bool)}
 	if h.gatewayInput(in) {
 		var e error
-		gatewayMCP = h.gatewayMCPHandler(in, nil)
+		gatewayMCP = boundGatewayHTTP(h.gatewayMCPHandler(in, nil), 8, 256)
 		model, e = h.gatewayModelHandler(in)
 		if e != nil {
 			return nil, e
 		}
+		model = boundGatewayHTTP(model, 2, 64)
 	}
 	socket := bridgeSocket(in)
 	if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
@@ -42,7 +44,7 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 		listener.Close()
 		return nil, err
 	}
-	lifetime, cancel := context.WithCancel(context.Background())
+	lifetime, cancel := context.WithCancel(parent)
 	server := &http.Server{BaseContext: func(net.Listener) context.Context { return lifetime }, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second}
 	if model != nil {
 		server.WriteTimeout = 0
@@ -54,12 +56,23 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 		}
 		if strings.HasPrefix(r.URL.Path, "/gateway-stdio/") {
 			id := strings.TrimPrefix(r.URL.Path, "/gateway-stdio/")
-			p, ok := h.gatewayPlugin(in, id, "stdio")
-			if gatewayMCP == nil || !ok || r.URL.RawQuery != "" || r.Method != "GET" || r.Header.Get("Upgrade") != "pwb-stdio" {
+			if gatewayMCP == nil || in.Run.Gateway == nil || !contains(in.Run.Gateway.PluginIDs, id) || r.URL.RawQuery != "" || r.Method != "GET" || r.Header.Get("Upgrade") != "pwb-stdio" {
 				http.Error(w, "MCP unavailable", 403)
 				return
 			}
-			h.serveIsolatedStdio(lifetime, in, p, true, w)
+			if !stdio.claim(id) {
+				http.Error(w, "MCP startup budget exhausted", http.StatusTooManyRequests)
+				return
+			}
+			defer stdio.work.Done()
+			p, ok := h.gatewayPlugin(in, id, "stdio")
+			if !ok {
+				http.Error(w, "MCP unavailable", 403)
+				return
+			}
+			live, stop := h.gatewayPluginContext(lifetime, in, p)
+			defer stop()
+			h.serveIsolatedStdio(live, in, p, true, w)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/global-mcp/") {
@@ -110,7 +123,15 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 		json.NewEncoder(w).Encode(value)
 	})
 	go server.Serve(listener)
-	return func() { cancel(); server.Close(); os.Remove(socket) }, nil
+	return func() {
+		stdio.mu.Lock()
+		stdio.closed = true
+		stdio.mu.Unlock()
+		cancel()
+		server.Close()
+		stdio.work.Wait()
+		os.Remove(socket)
+	}, nil
 }
 
 func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {

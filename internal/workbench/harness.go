@@ -475,7 +475,7 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 	args, env, cwd, err := h.prepare(input)
 	if err == nil && !input.Routing && (h.Config.RuntimeMode == "podman" || h.Config.RuntimeDir != "") {
 		var closeBridge func()
-		closeBridge, err = h.startBridge(input)
+		closeBridge, err = h.startBridge(parent, input)
 		if err == nil {
 			defer closeBridge()
 		}
