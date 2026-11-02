@@ -53,6 +53,7 @@ const server = createServer(async (req, res) => {
       }
       let result;
       if (route === "/auth") result = { authenticated: true };
+      else if (route === "/notices/count") result = { unread: 0 };
       else if (route === "/projects") { refreshes++; result = [project]; }
       else if (route === `/projects/${project.id}/sessions`) result = sessions;
       else if (route === "/runs") result = fixtureRuns;

@@ -1,3 +1,20 @@
+# Product Design QA — 其他弹出菜单（2026-11-02）
+
+- 目标/源：当前 `f1a6ed0` 编译网页与其原生菜单；基线截图 `artifacts/popup-audit/baseline/`，修复截图 `candidate/`。二者源构建入口摘要匹配当前已安装版本，排查期间同步了日历/计划/任务新页面。
+- 同条件比较：桌面 1280×720、短窗口 1280×340、手机 390×568，deviceScaleFactor=1。项目添加完整图、专家短窗口、项目 8 标签能力建议、SSE 改名提示的源/实现均在同一次图像工具调用中成对检查；手机添加、个人能力建议和 SSE 聊天后建议也逐图查看。无需密度缩放。
+- 修复：两个添加菜单外部/Esc/动作后关闭；低窗口避让、手机最末项可达；能力建议不再从窗口顶部裁掉，连续选择后输入不被旧 RAF 改光标，失焦取消待执行的移焦；项目提示 Esc/滚动/resize 消失，SSE 读最新名称。专家初始化的短暂 busy 状态需等加载完成；开菜单前自动滚入视口的迟到 scroll 不再误关已正确定位菜单。
+- 字体：既有系统字体与 12px 文件菜单/能力建议字号；图中清晰可读。
+- 间距：原菜单155px最小宽、5px padding、8px圆角及阴影；视口留8px，短窗口向上展开。能力建议贴实际输入框，覆盖部分标签属于本次避让行为；外部聊天与页面布局沿用现状。
+- 颜色：沿用 `--line`/`--ink`/浅绿 hover/focus，无新token。添加按钮 hover 保留原浅灰绿。
+- 图像：原 Lucide 图标，无新增图像、手绘图标或占位资产。
+- 文案：原5/4项文件操作、能力描述、加载/失败/空结果、历史版本只读与写入锁定提示保持。
+- 23 组新增行为与原18组对话菜单检查通过；P0/P1/P2 无待修复项。无障碍仅检查键盘、焦点、禁用和部分语义，不声称完整合规；手机为触摸 Chromium 模拟。
+- 分步健康与证据：`docs/POPUP_MENU_AUDIT.md`。本地截图不代替线上或真实设备验收；部署结果另记。
+
+final result: passed
+
+---
+
 # Product Design QA — 正式菜单与 SSE 验收（2026-11-02）
 
 - 正式入口：`https://dsh.qianlan333.cloud/`；前端 `66c4a10`。源为本地已验收 `artifacts/session-menu/after-desktop.png`；实现为 `artifacts/session-menu-live/desktop-menu.png`、`live-harness-sse-menu-open.png`、`live-sse-pin-reopened.png`、`live-sse-title-wrapping.png`、`live-bottom-menu.png`、`live-mobile-390.png`、`live-mobile-320.png`。

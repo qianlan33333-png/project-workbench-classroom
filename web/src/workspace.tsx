@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { positionPopover } from "./popover-position";
 import {
   Sun, CalendarDays, ListChecks,
   Folder,
@@ -36,11 +37,40 @@ export function NavigationRail({
   logout: () => void;
 }) {
   const [projectTip, setProjectTip] = useState<{
-    name: string;
-    left: number;
-    top: number;
-    width: number;
+    id: string;
+    anchor: HTMLButtonElement;
   } | null>(null);
+  const tip = useRef<HTMLDivElement>(null);
+  const tipName = projects.find((p) => p.id === projectTip?.id)?.name;
+  useLayoutEffect(() => {
+    if (!projectTip || !tip.current) return;
+    if (!projectTip.anchor.isConnected || !tipName) {
+      setProjectTip(null);
+      return;
+    }
+    if (!tip.current.matches(":popover-open")) tip.current.showPopover();
+    positionPopover(tip.current, projectTip.anchor, {
+      side: "right", gap: 8, maxWidth: 320,
+    });
+  });
+  useEffect(() => {
+    if (!projectTip) return;
+    const close = () => setProjectTip(null);
+    const scroll = (event: Event) => {
+      if (event.target instanceof Node && event.target.contains(projectTip.anchor))
+        close();
+    };
+    document.addEventListener("scroll", scroll, true);
+    window.addEventListener("resize", close);
+    window.visualViewport?.addEventListener("resize", close);
+    window.visualViewport?.addEventListener("scroll", close);
+    return () => {
+      document.removeEventListener("scroll", scroll, true);
+      window.removeEventListener("resize", close);
+      window.visualViewport?.removeEventListener("resize", close);
+      window.visualViewport?.removeEventListener("scroll", close);
+    };
+  }, [projectTip]);
   return (
     <aside
       className={`rail ${collapsed ? "collapsed" : "expanded"} ${mobileOpen ? "open" : ""}`}
@@ -114,13 +144,13 @@ export function NavigationRail({
               title={p.name}
               aria-label={p.name}
               onFocus={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                setProjectTip({
-                  name: p.name,
-                  left: rect.right + 8,
-                  top: Math.min(rect.top, window.innerHeight - 70),
-                  width: Math.min(320, window.innerWidth - rect.right - 20),
-                });
+                setProjectTip({ id: p.id, anchor: e.currentTarget });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setProjectTip(null);
+                }
               }}
               onBlur={() => setProjectTip(null)}
               aria-current={
@@ -135,17 +165,14 @@ export function NavigationRail({
             </button>
           ))}
       </div>
-      {projectTip && (
+      {projectTip && tipName && (
         <div
+          ref={tip}
           className="project-name-tip"
           role="tooltip"
-          style={{
-            left: projectTip.left,
-            top: projectTip.top,
-            maxWidth: projectTip.width,
-          }}
+          popover="manual"
         >
-          {projectTip.name}
+          {tipName}
         </div>
       )}
       <div className="rail-bottom">

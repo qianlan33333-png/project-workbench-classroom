@@ -1,5 +1,9 @@
 # 实施记录
 
+## 2026-11-02 其他弹出菜单统一修复（本地通过，待线上复验）
+
+按 `POPUP_MENU_PRD.md` 完成新增入口盘点，在当前线上 `f1a6ed0` 基线上修复两个添加菜单的关闭和裁切、能力建议的手机位置与过期光标回调、导航名称提示的悬挂及 SSE 旧内容。提取复用 ActionMenu/positionPopover，保留业务回调、禁用项、上传手势和当前日历/计划/任务页面。23 组新增浏览器检查与原 18 组会话菜单回归、Go test/vet、4 项状态与 6 项渠道回放通过。详情及验证边界见 `POPUP_MENU_AUDIT.md` 和根 `design-qa.md`。
+
 ## 2026-11-02 侧栏菜单前端正式发布
 
 按用户明确授权，将前端 `66c4a1077a78254aae987d5a02d4a948f3530ad4` 增量发布到正式入口。线上后端已更新为 `cloud-20261102-17-schedule-review` / `ac1b77e00285ae6b791b2fe41c9ecf778de35191`，20 项前端基线文件一致，保留该后端及渠道进程，仅追加散列资源并原子替换 index。最终收据在 `/opt/project-workbench/frontend-releases/web-20261102-66c4a10-r2/`，旧入口与回滚脚本在 `/opt/project-workbench/frontend-rollbacks/web-20261102-66c4a10-r2/`。

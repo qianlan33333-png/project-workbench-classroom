@@ -1,3 +1,4 @@
+import { ActionMenu } from "./action-menu";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -366,42 +367,54 @@ export function ExpertDetail({
             ))}
           </nav>
           <div className="file-actions">
-            <details>
-              <summary className="button">
-                <Plus size={14} />
-                添加
-              </summary>
-              <div className="add-menu">
-                <button
-                  disabled={readOnly || busy}
-                  onClick={() =>
-                    setForm({ kind: "create", value: "新方法.md" })
-                  }
-                >
-                  新建文件
-                </button>
-                <button
-                  disabled={readOnly || busy}
-                  onClick={() =>
-                    setForm({ kind: "directory", value: "参考资料" })
-                  }
-                >
-                  新建文件夹
-                </button>
-                <button
-                  disabled={readOnly || busy}
-                  onClick={() => upload.current?.click()}
-                >
-                  上传文件
-                </button>
-                <button
-                  disabled={readOnly || busy}
-                  onClick={() => zip.current?.click()}
-                >
-                  用 ZIP 更新
-                </button>
-              </div>
-            </details>
+            <ActionMenu
+              label="添加专家文件"
+              context={`${id}:${directory}:${mode}:${version}:${busy}:${readOnly}`}
+              align="start"
+              triggerContent={
+                <>
+                  <Plus size={14} />
+                  添加
+                </>
+              }
+              triggerClassName="file-add-trigger"
+              panelClassName="add-menu"
+            >
+              <button
+                role="menuitem"
+                tabIndex={-1}
+                disabled={readOnly || busy}
+                onClick={() => setForm({ kind: "create", value: "新方法.md" })}
+              >
+                新建文件
+              </button>
+              <button
+                role="menuitem"
+                tabIndex={-1}
+                disabled={readOnly || busy}
+                onClick={() =>
+                  setForm({ kind: "directory", value: "参考资料" })
+                }
+              >
+                新建文件夹
+              </button>
+              <button
+                role="menuitem"
+                tabIndex={-1}
+                disabled={readOnly || busy}
+                onClick={() => upload.current?.click()}
+              >
+                上传文件
+              </button>
+              <button
+                role="menuitem"
+                tabIndex={-1}
+                disabled={readOnly || busy}
+                onClick={() => zip.current?.click()}
+              >
+                用 ZIP 更新
+              </button>
+            </ActionMenu>
           </div>
           <input
             hidden

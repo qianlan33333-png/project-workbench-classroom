@@ -1,3 +1,4 @@
+import { ActionMenu } from "./action-menu";
 import React, { useRef, useState } from "react";
 import { Plus, Search, History, Download } from "lucide-react";
 import { api, endpoint, type FileEntry } from "./api";
@@ -226,50 +227,66 @@ export function ProjectFiles({
         />
       </form>
       <div className="file-actions">
-        <details>
-          <summary className="button">
-            <Plus size={15} />
-            添加
-          </summary>
-          <div className="add-menu">
-            <button
-              disabled={locked || working}
-              onClick={() => fileInput.current?.click()}
-            >
-              上传文件
-            </button>
-            <button
-              disabled={locked || working}
-              onClick={() => folderInput.current?.click()}
-            >
-              上传文件夹
-            </button>
-            <button
-              disabled={locked || working}
-              onClick={() => zipInput.current?.click()}
-            >
-              导入 ZIP
-            </button>
-            <button
-              disabled={locked || working}
-              onClick={() => {
-                setCreation("file");
-                setName("新文档.md");
-              }}
-            >
-              新建文件
-            </button>
-            <button
-              disabled={locked || working}
-              onClick={() => {
-                setCreation("directory");
-                setName("新文件夹");
-              }}
-            >
-              新建文件夹
-            </button>
-          </div>
-        </details>
+        <ActionMenu
+          label="添加项目文件"
+          context={`${projectId}:${directory}:${locked}:${working}`}
+          align="start"
+          triggerContent={
+            <>
+              <Plus size={15} />
+              添加
+            </>
+          }
+          triggerClassName="file-add-trigger"
+          panelClassName="add-menu"
+        >
+          <button
+            role="menuitem"
+            tabIndex={-1}
+            disabled={locked || working}
+            onClick={() => fileInput.current?.click()}
+          >
+            上传文件
+          </button>
+          <button
+            role="menuitem"
+            tabIndex={-1}
+            disabled={locked || working}
+            onClick={() => folderInput.current?.click()}
+          >
+            上传文件夹
+          </button>
+          <button
+            role="menuitem"
+            tabIndex={-1}
+            disabled={locked || working}
+            onClick={() => zipInput.current?.click()}
+          >
+            导入 ZIP
+          </button>
+          <button
+            role="menuitem"
+            tabIndex={-1}
+            disabled={locked || working}
+            onClick={() => {
+              setCreation("file");
+              setName("新文档.md");
+            }}
+          >
+            新建文件
+          </button>
+          <button
+            role="menuitem"
+            tabIndex={-1}
+            disabled={locked || working}
+            onClick={() => {
+              setCreation("directory");
+              setName("新文件夹");
+            }}
+          >
+            新建文件夹
+          </button>
+        </ActionMenu>
         <button
           aria-label="项目文件历史"
           title="项目文件历史"

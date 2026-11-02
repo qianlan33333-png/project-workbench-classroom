@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Terminal, Library, Plug, X } from "lucide-react";
 import { api, type Capability } from "./api";
+import { positionPopover } from "./popover-position";
 const kinds = { cli: "CLI", skill: "Skill", mcp: "MCP" };
 const icons = { cli: Terminal, skill: Library, mcp: Plug };
 export function CapabilityBadges({
@@ -54,6 +62,17 @@ export function CapabilityComposer({
   personal?: boolean;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
+  const editor = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const popupId = useId();
+  const selectionFrame = useRef<number | undefined>(undefined);
+  const currentContext = useRef("");
+  currentContext.current = `${projectId}:${sessionId}`;
+  const cancelSelectionFrame = () => {
+    if (selectionFrame.current !== undefined)
+      cancelAnimationFrame(selectionFrame.current);
+    selectionFrame.current = undefined;
+  };
   const [catalog, setCatalog] = useState<Capability[]>([]),
     [caret, setCaret] = useState(value.length),
     [focused, setFocused] = useState(false),
@@ -83,9 +102,11 @@ export function CapabilityComposer({
     void load();
   }, [load]);
   useEffect(() => {
+    cancelSelectionFrame();
     setDismissed(false);
     setCaret(value.length);
   }, [sessionId]);
+  useEffect(() => cancelSelectionFrame, []);
   const match = value.slice(0, caret).match(/(?:^|\s)\/([^\s/]*)$/u);
   const trigger =
     focused && !dismissed && match
@@ -105,6 +126,49 @@ export function CapabilityComposer({
       )
     : [];
   const open = !!trigger;
+  const place = () => {
+    if (
+      input.current &&
+      editor.current &&
+      panel.current?.matches(":popover-open")
+    )
+      positionPopover(panel.current, input.current, {
+        side: "top",
+        align: "start",
+        gap: 10,
+        width: editor.current.getBoundingClientRect().width,
+        maxHeight: Math.min(
+          360,
+          (window.visualViewport?.height ?? window.innerHeight) * 0.42,
+        ),
+      });
+  };
+  useLayoutEffect(() => {
+    if (!open || !panel.current) return;
+    if (!panel.current.matches(":popover-open")) panel.current.showPopover();
+    place();
+  });
+  useEffect(() => {
+    if (!open) return;
+    const scroll = (event: Event) => {
+      if (
+        event.target instanceof Node &&
+        input.current &&
+        event.target.contains(input.current)
+      )
+        place();
+    };
+    document.addEventListener("scroll", scroll, true);
+    window.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("scroll", place);
+    return () => {
+      document.removeEventListener("scroll", scroll, true);
+      window.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("scroll", place);
+    };
+  }, [open]);
   useEffect(() => {
     setActive(0);
   }, [trigger?.query, trigger?.start, catalog]);
@@ -114,7 +178,7 @@ export function CapabilityComposer({
   useEffect(() => {
     if (open)
       document
-        .getElementById(`capability-option-${active}`)
+        .getElementById(`${popupId}-option-${active}`)
         ?.scrollIntoView({ block: "nearest" });
   }, [active, open]);
   const choose = (c: Capability) => {
@@ -127,14 +191,18 @@ export function CapabilityComposer({
     onChange(value.slice(0, trigger.start) + value.slice(trigger.end));
     setDismissed(true);
     const position = trigger.start;
-    requestAnimationFrame(() => {
+    const context = currentContext.current;
+    cancelSelectionFrame();
+    selectionFrame.current = requestAnimationFrame(() => {
+      selectionFrame.current = undefined;
+      if (currentContext.current !== context) return;
       input.current?.focus();
       input.current?.setSelectionRange(position, position);
       setCaret(position);
     });
   };
   return (
-    <div className="composer-editor">
+    <div ref={editor} className="composer-editor">
       <CapabilityBadges
         values={selected}
         remove={(c) =>
@@ -146,22 +214,32 @@ export function CapabilityComposer({
         aria-label={personal ? "和个人助手聊聊" : "发送消息"}
         aria-autocomplete="list"
         aria-expanded={open}
-        aria-controls={open ? "capability-menu" : undefined}
+        aria-controls={open ? popupId : undefined}
         aria-activedescendant={
-          open && choices.length ? `capability-option-${active}` : undefined
+          open && choices.length ? `${popupId}-option-${active}` : undefined
         }
-        placeholder={personal ? "说说你的想法，或输入 / 选择 CLI、MCP…" : "描述任务，输入 / 选择 CLI、Skill 或 MCP…"}
+        placeholder={
+          personal
+            ? "说说你的想法，或输入 / 选择 CLI、MCP…"
+            : "描述任务，输入 / 选择 CLI、Skill 或 MCP…"
+        }
         value={value}
         onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
+        onBlur={() => {
+          cancelSelectionFrame();
+          setFocused(false);
+        }}
         onClick={() => setDismissed(false)}
+        onPointerDown={cancelSelectionFrame}
         onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
         onChange={(e) => {
+          cancelSelectionFrame();
           onChange(e.target.value);
           setCaret(e.target.selectionStart);
           setDismissed(false);
         }}
         onKeyDown={(e) => {
+          cancelSelectionFrame();
           if (e.nativeEvent.isComposing) return;
           if (open) {
             if (e.key === "Escape") {
@@ -196,8 +274,13 @@ export function CapabilityComposer({
       />
       {open && (
         <div
+          ref={panel}
           className="capability-menu"
-          id="capability-menu"
+          id={popupId}
+          popover="auto"
+          onBeforeToggle={(e) => {
+            if (e.newState === "closed") setDismissed(true);
+          }}
           role="listbox"
           aria-label="选择本条消息的能力"
         >
@@ -219,6 +302,7 @@ export function CapabilityComposer({
                   active={active}
                   choose={choose}
                   Icon={Icon}
+                  optionId={`${popupId}-option-${i}`}
                 />
               );
             })
@@ -236,18 +320,20 @@ function ReactOption({
   active,
   choose,
   Icon,
+  optionId,
 }: {
   c: Capability;
   i: number;
   active: number;
   choose: (c: Capability) => void;
   Icon: typeof Terminal;
+  optionId: string;
 }) {
   return (
     <button
       type="button"
       role="option"
-      id={`capability-option-${i}`}
+      id={optionId}
       aria-selected={active === i}
       tabIndex={-1}
       onMouseDown={(e) => e.preventDefault()}
