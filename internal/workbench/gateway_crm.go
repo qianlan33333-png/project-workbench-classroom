@@ -226,6 +226,13 @@ func (a *API) crmHook(c *gin.Context) {
 			if e != nil {
 				return e
 			}
+			var gs GatewaySession
+			if q.Op != "configure" {
+				gs, e = resolveCRM(tx, g, b, q.ExternalUserID)
+				if e != nil {
+					return e
+				}
+			}
 			if q.RequestID != "" {
 				var h, res string
 				e = tx.QueryRow("SELECT hash,result FROM gateway_crm_receipts WHERE grant=? AND request=?", g.scope(), q.RequestID).Scan(&h, &res)
@@ -265,10 +272,6 @@ func (a *API) crmHook(c *gin.Context) {
 				}
 				result = map[string]any{"ok": true, "callbackUrl": q.CallbackURL}
 			} else {
-				gs, e := resolveCRM(tx, g, b, q.ExternalUserID)
-				if e != nil {
-					return e
-				}
 				sess = gs.ID
 				if q.Op == "resume" {
 					if q.SessionID != gs.ID || gs.Mode != "human" || q.Version != gs.Version || q.BindingVersion != gs.BindingVersion {
@@ -376,6 +379,9 @@ func resolveCRM(tx *sql.Tx, grant crmGrant, b GatewayBinding, external string) (
 		var g GatewaySession
 		if e = json.Unmarshal([]byte(raw), &g); e != nil {
 			return result, e
+		}
+		if !gatewayContactAllowed(b, g.ContactID) {
+			continue
 		}
 		if result.ID != "" || g.IdentityConflict || grant.ContactMappings[g.ContactID] != "" && g.ExternalUserID != "" && grant.ContactMappings[g.ContactID] != g.ExternalUserID {
 			return result, crmError("ambiguous")

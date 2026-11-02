@@ -136,8 +136,8 @@ def health():
 
 
 def prepare_gateway_worker(path):
-    marker = path / 'gateway-protocol-v1'
-    supported = marker.is_file() and marker.read_text().strip() == '1'
+    marker = path / 'gateway-protocol-v2'
+    supported = marker.is_file() and marker.read_text().strip() == '2'
     db_path = DATA / 'workbench.sqlite'
     if not db_path.exists():
         return
@@ -174,7 +174,11 @@ def prepare_gateway_worker(path):
         # Release the lease only after the worker and its identified executor
         # have stopped. An engine failure rolls the entire SQL transaction back.
         db.execute(f'DELETE FROM project_locks WHERE run_id IN (SELECT id FROM runs WHERE {active} AND {gateway})')
-        reason = '回滚至不支持企微自动应答的版本，请在恢复支持后人工核对'
+        reason = '回滚至旧版企微执行环境，恢复安全版本后请人工核对'
+        # v1 still accepts callbacks but exposes credentials to external runs.
+        # Keep binding identities/grants intact and fence legacy workers before boot.
+        db.execute("""UPDATE gateway_bindings SET data=json_set(data,'$.enabled',json('false'))
+                      WHERE json_extract(data,'$.enabled')=1""")
         db.execute(f"""UPDATE runs SET state='interrupted',
                        data=json_set(data,'$.state','interrupted','$.error',?,'$.finishedAt',?)
                        WHERE {active} AND {gateway}""", (reason, time.time_ns() // 1_000_000))

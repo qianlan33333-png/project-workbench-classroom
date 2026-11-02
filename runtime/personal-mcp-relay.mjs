@@ -3,7 +3,7 @@
 import http from "node:http";
 const request = http.get({
   socketPath: "/bridge.sock",
-  path: "/global-mcp/" + encodeURIComponent(process.argv[2]),
+  path: (process.argv[3] === "gateway" ? "/gateway-stdio/" : "/global-mcp/") + encodeURIComponent(process.argv[2]),
   headers: { Connection: "Upgrade", Upgrade: "pwb-stdio" },
 });
 request.on("upgrade", (_res, socket, head) => {

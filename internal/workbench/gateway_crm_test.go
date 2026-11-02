@@ -163,7 +163,7 @@ func TestCRMRelationshipAndResumeCAS(t *testing.T) {
 	crmInbound(t, s, c, "distinct", "external")
 	q = crmRequest{V: 1, Op: "status", StaffUserID: "staff", ExternalUserID: "external", Actor: "op"}
 	crmCall(t, s, c, g, q, 409)
-	b.TimeoutSeconds--
+	b.ProjectID = testProject(t, s, "new owner").ID
 	if _, e := s.SaveGatewayBinding(b); e != nil {
 		t.Fatal(e)
 	}

@@ -18,6 +18,18 @@ const gatewaySource = "wecom-gateway"
 const gatewaySchema = `
 CREATE TABLE IF NOT EXISTS gateway_bindings(id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES connections(id), account_id TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(connection_id,account_id));
 CREATE TABLE IF NOT EXISTS gateway_sessions(id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, binding_id TEXT NOT NULL REFERENCES gateway_bindings(id), external_key TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
+-- Keep active external_key values readable by the previous release. A retired
+-- ownership epoch must release its legacy lookup slot even on rollback.
+CREATE TRIGGER IF NOT EXISTS gateway_retire_session_keys AFTER UPDATE OF data ON gateway_bindings
+WHEN json_extract(OLD.data,'$.version')<>json_extract(NEW.data,'$.version')
+  OR json_extract(OLD.data,'$.projectId')<>json_extract(NEW.data,'$.projectId')
+BEGIN UPDATE gateway_sessions SET external_key='retired:'||id
+ WHERE binding_id=OLD.id AND external_key NOT LIKE 'retired:%'; END;
+UPDATE gateway_sessions AS g SET external_key='retired:'||id
+WHERE external_key NOT LIKE 'retired:%' AND NOT EXISTS (
+ SELECT 1 FROM gateway_bindings b JOIN sessions s ON s.id=g.id
+ WHERE b.id=g.binding_id AND json_extract(b.data,'$.projectId')=s.project_id
+ AND json_extract(b.data,'$.version')=json_extract(g.data,'$.bindingVersion'));
 CREATE TABLE IF NOT EXISTS gateway_events(connection_id TEXT NOT NULL REFERENCES connections(id), event_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(connection_id,event_id));
 `
 
@@ -40,6 +52,7 @@ type GatewaySecrets struct {
 	WebhookSecret string `json:"webhookSecret"`
 }
 type GatewayBinding struct {
+	Revision       int64    `json:"revision,omitempty"` // configuration CAS; Version is the ownership epoch bound by the CRM grant.
 	KnowledgePaths []string `json:"knowledgePaths,omitempty"`
 	ContactIDs     []string `json:"contactIds,omitempty"`
 	ID             string   `json:"id"`
@@ -251,8 +264,8 @@ func (s *Store) SaveGatewayBinding(b GatewayBinding) (GatewayBinding, error) {
 	e = s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var raw string
 		err := tx.QueryRow("SELECT data FROM gateway_bindings WHERE connection_id=? AND account_id=?", b.ConnectionID, b.AccountID).Scan(&raw)
-		requestedVersion := b.Version
-		b.Version = 1
+		requestedVersion, requestedRevision := b.Version, b.Revision
+		b.Version, b.Revision = 1, 1
 		if err == nil {
 			var old GatewayBinding
 			if err = json.Unmarshal([]byte(raw), &old); err != nil {
@@ -266,16 +279,21 @@ func (s *Store) SaveGatewayBinding(b GatewayBinding) (GatewayBinding, error) {
 				return ErrConflict
 			}
 			b.ID = old.ID
-			b.Version = old.Version
+			b.Version, b.Revision = old.Version, old.Revision
 			if encode(b) == encode(old) {
 				return nil
 			}
 			if providedID == "" {
 				return errors.New("account already bound; updating requires its explicit binding ID")
 			}
-			b.ID = old.ID
-			b.Version = old.Version + 1
-			if _, err = tx.Exec("UPDATE deliveries SET state='cancelled',data=json_set(data,'$.state','cancelled') WHERE connection_id=? AND state='pending' AND json_extract(data,'$.gateway.accountId')=?", b.ConnectionID, b.AccountID); err != nil {
+			if (requestedRevision > 0 || requestedVersion > 0) && requestedRevision != old.Revision {
+				return ErrConflict
+			}
+			b.Revision = old.Revision + 1
+			if b.ProjectID != old.ProjectID {
+				b.Version++
+			}
+			if err := updateGatewayBindingWork(tx, old, b); err != nil {
 				return err
 			}
 		} else if err != sql.ErrNoRows {
@@ -328,7 +346,7 @@ func (s *Store) SetGatewayMode(id, mode, reason string) error {
 func (s *Store) changeGatewayModeTx(tx *sql.Tx, g *GatewaySession, mode, reason string) error {
 	if mode == "auto" {
 		var active int
-		e := tx.QueryRow(`SELECT count(*) FROM gateway_bindings b JOIN connections c ON c.id=b.connection_id JOIN sessions ss ON ss.id=? JOIN projects p ON p.id=ss.project_id WHERE b.id=? AND json_extract(b.data,'$.projectId')=p.id AND json_extract(b.data,'$.enabled')=1 AND json_extract(c.data,'$.enabled')=1 AND json_extract(b.data,'$.version')=? AND coalesce(json_extract(ss.data,'$.recycledAt'),0)=0 AND p.archived=0`, g.ID, g.BindingID, g.BindingVersion).Scan(&active)
+		e := tx.QueryRow(`SELECT count(*) FROM gateway_bindings b JOIN connections c ON c.id=b.connection_id JOIN sessions ss ON ss.id=? JOIN projects p ON p.id=ss.project_id WHERE b.id=? AND json_extract(b.data,'$.projectId')=p.id AND json_extract(b.data,'$.enabled')=1 AND json_extract(c.data,'$.enabled')=1 AND json_extract(b.data,'$.version')=? AND coalesce(json_extract(ss.data,'$.recycledAt'),0)=0 AND p.archived=0 AND (coalesce(json_array_length(b.data,'$.contactIds'),0)=0 OR ? IN (SELECT value FROM json_each(b.data,'$.contactIds')))`, g.ID, g.BindingID, g.BindingVersion, g.ContactID).Scan(&active)
 		if e != nil {
 			return e
 		}
@@ -455,11 +473,12 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 		if e = json.Unmarshal([]byte(bindingRaw), &b); e != nil {
 			return e
 		}
-		if !b.Enabled {
-			return errors.New("account binding is disabled")
-		}
-		if len(b.ContactIDs) > 0 && !contains(b.ContactIDs, contact) {
-			return nil
+		if !b.Enabled || !gatewayContactAllowed(b, contact) {
+			// Retain the gateway message ID as well as the event fingerprint:
+			// a replay can use a new event ID after the binding is enabled.
+			marker := Message{ID: newID(), State: "handled", CreatedAt: now()}
+			_, e = tx.Exec("INSERT INTO inbox VALUES(?,?,?,?,?,'handled','',?,?)", marker.ID, gatewaySource, connection, m.MessageID, "", marker.CreatedAt, encode(marker))
+			return e
 		}
 		if event.Type == "message.received" && (m.Type == "system" || m.Type == "unsupported") {
 			return nil
@@ -467,7 +486,8 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 		key := digest([]byte(encode([]any{c.ID, c.TenantID, event.AccountID, contact, b.Version})))
 		var g GatewaySession
 		var gr string
-		e = tx.QueryRow("SELECT data FROM gateway_sessions WHERE external_key=?", key).Scan(&gr)
+		e = tx.QueryRow(`SELECT g.data FROM gateway_sessions g JOIN sessions s ON s.id=g.id
+			WHERE g.binding_id=? AND g.external_key=? AND s.project_id=?`, b.ID, key, b.ProjectID).Scan(&gr)
 		if e == nil {
 			if e = json.Unmarshal([]byte(gr), &g); e != nil {
 				return e

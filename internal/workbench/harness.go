@@ -86,7 +86,10 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 	}
 	home := filepath.Join(c.DataDir, "runtime", "projects", input.Project.ID)
 	if external {
-		home = filepath.Join(home, "sessions", input.Session.HarnessID, "gateway-home")
+		home, err = h.gatewayDir(input, "gateway-home")
+		if err != nil {
+			return nil, nil, "", err
+		}
 	}
 	if input.Routing {
 		home = filepath.Join(c.DataDir, "runtime", "router-home", input.Run.ID)
@@ -96,7 +99,7 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 	}
 	// The runtime home is stable per project, while credentials live outside the project files.
 	if external {
-		if e := os.Remove(filepath.Join(home, ".credentials.yaml")); e != nil && !errors.Is(e, os.ErrNotExist) {
+		if e := scrubGatewayHome(home); e != nil {
 			return nil, nil, "", e
 		}
 		root, err = h.gatewayWorkspace(input)
@@ -243,7 +246,14 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		for _, p := range globalPlugins {
 			id := p.ID
 			config := map[string]any{"serverName": "p_" + strings.ReplaceAll(p.ID, "-", "")[:20], "failOnStartupError": true}
-			if p.Transport == "stdio" {
+			if external && p.Transport == "http" {
+				config["transport"] = "streamable-http"
+				config["gatewayHTTPPlugin"] = p.ID
+			} else if external {
+				config["transport"] = "stdio"
+				config["command"] = "node"
+				config["args"] = []string{"/opt/workbench-runtime/personal-mcp-relay.mjs", p.ID, "gateway"}
+			} else if p.Transport == "stdio" {
 				config["transport"] = "stdio"
 				config["command"] = p.Command
 				config["args"] = p.Args
@@ -323,7 +333,11 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 				}
 				toolBase := filepath.Join(c.DataDir, "tools")
 				wrapper := filepath.Join(toolBase, "bin", t.Command)
-				mounts = append(mounts, "--volume", wrapper+":/tools/bin/"+t.Command+":ro", "--volume", filepath.Join(toolBase, "packages", t.ID)+":/tools/packages/"+t.ID+":ro", "--volume", filepath.Join(toolBase, "state", t.ID)+":/tools/state/"+t.ID+":rw")
+				state, e := h.gatewayDir(input, "gateway-cli-state", t.ID)
+				if e != nil {
+					return nil, nil, "", e
+				}
+				mounts = append(mounts, "--volume", wrapper+":/tools/bin/"+t.Command+":ro", "--volume", filepath.Join(toolBase, "packages", t.ID, t.Version)+":/tools/packages/"+t.ID+"/"+t.Version+":ro", "--volume", state+":/tools/state/"+t.ID+":rw")
 			}
 		}
 		for _, id := range []string{"tool-ask-user", "tool-subagent", "tool-subagent-fork", "tool-plugin-manager", "tool-workflow", "schedule", "tool-schedule", "goal-round-driver", "agent-instructions", "workspace-dependencies", "skill-office"} {
@@ -371,6 +385,14 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		if external {
 			args = append(args, "--env", "PW_GATEWAY_MODEL_PLACEHOLDER=local-placeholder")
 			for i, arg := range args {
+				if arg == home+":/runtime:rw" {
+					sessions, e := h.gatewayDir(input, "gateway-home", "sessions")
+					if e != nil {
+						return nil, nil, "", e
+					}
+					args[i-1], args[i] = "--tmpfs", "/runtime:rw,mode=1777"
+					mounts = append(mounts, "--volume", sessions+":/runtime/sessions:rw", "--volume", patchFile+":/runtime/"+filepath.Base(patchFile)+":ro")
+				}
 				if arg == root+":/workspace:rw" {
 					args[i] = root + ":/workspace:ro"
 				}
@@ -442,6 +464,9 @@ func (h *Harness) CleanupOrphans(ctx context.Context) error {
 				return fmt.Errorf("清理遗留执行容器: %s", strings.TrimSpace(string(out)))
 			}
 		}
+	}
+	if err := h.scrubLegacyGatewayHomes(); err != nil {
+		return err
 	}
 	return h.removeScratch("")
 }

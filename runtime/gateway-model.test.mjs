@@ -79,3 +79,27 @@ test("closing the customer stream cancels the private upstream hop", async t => 
     await Promise.race([upstreamClosed, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("upstream did not close")), 1500); })]);
   } finally { clearTimeout(timer); }
 });
+
+test('gateway MCP forwards only protocol fields to its fixed registered plugin', async t => {
+  const { gatewayMCPServer } = await import('./mcp-deadline.mjs');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pwg-mcp-'));
+  t.after(() => fs.rm(dir,{recursive:true,force:true}));
+  const socket = path.join(dir, 'bridge.sock');
+  const host = http.createServer((req, res) => {
+    assert.equal(req.url, '/gateway-mcp/granted');
+    assert.equal(req.headers.authorization, undefined);
+    assert.equal(req.headers.cookie, undefined);
+    assert.equal(req.headers['mcp-session-id'], 'local-session');
+    res.writeHead(200, {'content-type':'text/event-stream','mcp-session-id':'local-session','set-cookie':'must-not-forward=1'});
+    res.end('data: response\n\n');
+  });
+  await new Promise(resolve=>host.listen(socket,resolve));
+  t.after(()=>{host.closeAllConnections();host.close()});
+  const proxy=gatewayMCPServer('granted',socket);
+  await new Promise(resolve=>proxy.listen(0,'127.0.0.1',resolve));
+  t.after(()=>{proxy.closeAllConnections();proxy.close()});
+  const base='http://127.0.0.1:'+proxy.address().port;
+  const r=await fetch(base+'/',{headers:{Authorization:'Bearer wrong',Cookie:'bogus=1','mcp-session-id':'local-session'}});
+  assert.equal(r.status,200);assert.equal(r.headers.get('set-cookie'),null);assert.equal(r.headers.get('mcp-session-id'),'local-session');assert.equal(await r.text(),'data: response\n\n');
+  assert.equal((await fetch(base+'/?target=other')).status,403);
+});

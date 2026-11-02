@@ -21,9 +21,10 @@ func bridgeSocket(in RuntimeInput) string {
 	return filepath.Join(os.TempDir(), "pw-"+in.Run.ID+".sock")
 }
 func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
-	var model http.Handler
+	var model, gatewayMCP http.Handler
 	if h.gatewayInput(in) {
 		var e error
+		gatewayMCP = h.gatewayMCPHandler(in, nil)
 		model, e = h.gatewayModelHandler(in)
 		if e != nil {
 			return nil, e
@@ -47,6 +48,20 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 		server.WriteTimeout = 0
 	} // Streaming is bounded by the run deadline.
 	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if gatewayMCP != nil && strings.HasPrefix(r.URL.Path, "/gateway-mcp/") {
+			gatewayMCP.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/gateway-stdio/") {
+			id := strings.TrimPrefix(r.URL.Path, "/gateway-stdio/")
+			p, ok := h.gatewayPlugin(in, id, "stdio")
+			if gatewayMCP == nil || !ok || r.URL.RawQuery != "" || r.Method != "GET" || r.Header.Get("Upgrade") != "pwb-stdio" {
+				http.Error(w, "MCP unavailable", 403)
+				return
+			}
+			h.serveIsolatedStdio(lifetime, in, p, true, w)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/global-mcp/") {
 			if model != nil {
 				http.NotFound(w, r)
@@ -114,7 +129,7 @@ func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any
 		case "read_paused_history":
 			return s.pausedHistoryPage(in.Session.ID, a.RunID, a.Offset)
 		case "search_history":
-			return listJSON[Run](s.DB, "SELECT data FROM runs WHERE session_id=? AND (text LIKE ? OR data->>'$.result' LIKE ?) ORDER BY created_at DESC LIMIT 20", in.Session.ID, "%"+a.Query+"%", "%"+a.Query+"%")
+			return listJSON[Run](s.DB, "SELECT data FROM runs WHERE session_id=? AND (data->>'$.text' LIKE ? OR data->>'$.result' LIKE ?) ORDER BY created_at DESC LIMIT 20", in.Session.ID, "%"+a.Query+"%", "%"+a.Query+"%")
 		case "read_run":
 			r, e := s.Run(a.RunID)
 			if e != nil {

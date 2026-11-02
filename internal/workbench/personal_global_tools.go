@@ -19,10 +19,13 @@ import (
 // External processes never share the personal model home, app socket, or a
 // project's volume. Native development deliberately has no host exec fallback.
 func (h *Harness) personalExecArgs(in RuntimeInput, executable string, argv []string, envFile string, cli *CLITool) ([]string, string, error) {
+	return h.isolatedExecArgs(in, executable, argv, envFile, cli, false)
+}
+func (h *Harness) isolatedExecArgs(in RuntimeInput, executable string, argv []string, envFile string, cli *CLITool, external bool) ([]string, string, error) {
 	if h.Config.RuntimeMode != "podman" || h.Config.Podman == "" || h.Config.RuntimeImage == "" {
 		return nil, "", errors.New("个人助手的本机工具需要 Podman 隔离执行环境")
 	}
-	if in.Project.ID != personalProjectID || in.Routing {
+	if in.Routing || (!external && in.Project.ID != personalProjectID) || (external && !h.Store.gatewayRunLive(in.Run)) {
 		return nil, "", errors.New("本次执行没有个人外部工具权限")
 	}
 	name := "pw-ext-" + newID()
@@ -34,10 +37,17 @@ func (h *Harness) personalExecArgs(in RuntimeInput, executable string, argv []st
 		}
 		root := filepath.Join(h.Store.Root, "tools")
 		for _, mount := range []struct{ src, dst string }{{filepath.Join("bin", t.Command), ":ro"}, {filepath.Join("packages", t.ID, t.Version), ":ro"}, {filepath.Join("state", t.ID), ":rw"}} {
-			a = append(a, "--volume", filepath.Join(root, mount.src)+":/tools/"+mount.src+mount.dst)
+			if external && mount.dst == ":rw" {
+				a = append(a, "--tmpfs", "/tools/"+mount.src+":rw,mode=1777")
+			} else {
+				a = append(a, "--volume", filepath.Join(root, mount.src)+":/tools/"+mount.src+mount.dst)
+			}
 		}
 	} else if h.Config.RuntimeDir != "" {
 		a = append(a, "--volume", h.Config.RuntimeDir+":/opt/workbench-runtime:ro")
+	}
+	if external {
+		a = append(a, "--volume", filepath.Join(h.Config.DataDir, "runtime", "gateway-workspaces", in.Run.ID)+":/workspace:ro", "--workdir", "/workspace")
 	}
 	if envFile != "" {
 		a = append(a, "--env-file", envFile)
@@ -123,6 +133,10 @@ func (h *Harness) servePersonalMCP(lifetime context.Context, in RuntimeInput, w 
 		http.Error(w, "MCP unavailable", 404)
 		return
 	}
+	h.serveIsolatedStdio(lifetime, in, p, false, w)
+}
+
+func (h *Harness) serveIsolatedStdio(lifetime context.Context, in RuntimeInput, p Plugin, external bool, w http.ResponseWriter) {
 	var cli *CLITool
 	if ts, err := h.Store.CLITools(); err == nil {
 		for _, t := range ts {
@@ -144,7 +158,7 @@ func (h *Harness) servePersonalMCP(lifetime context.Context, in RuntimeInput, w 
 	if envFile != "" {
 		defer os.Remove(envFile)
 	}
-	a, name, e := h.personalExecArgs(in, executable, p.Args, envFile, cli)
+	a, name, e := h.isolatedExecArgs(in, executable, p.Args, envFile, cli, external)
 	if e != nil {
 		http.Error(w, e.Error(), 400)
 		return

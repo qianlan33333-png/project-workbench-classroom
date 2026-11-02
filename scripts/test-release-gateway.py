@@ -29,7 +29,8 @@ class Rollback(unittest.TestCase):
                 file = path / name
                 file.parent.mkdir(exist_ok=True, parents=True)
                 file.touch()
-        (self.capable / 'gateway-protocol-v1').write_text('1\n')
+        (self.legacy / 'gateway-protocol-v1').write_text('1\n')
+        (self.capable / 'gateway-protocol-v2').write_text('2\n')
         self.patch('BASE', self.root)
         self.patch('DATA', self.root)
         self.patch('runtime_image', lambda path: 'image')
@@ -53,6 +54,7 @@ class Rollback(unittest.TestCase):
         for file, schema in (('store.go', 'schema'), ('gateway.go', 'gatewaySchema'), ('gateway_crm.go', 'crmSchema')):
             source = (ROOT / 'internal/workbench' / file).read_text()
             self.db.executescript(re.search(r'const ' + schema + r' = `([^`]+)`', source).group(1))
+        self.db.execute("""INSERT INTO gateway_bindings VALUES('binding','connection','account','{"enabled":true,"version":2}')""")
         for session, mode in (('customer', 'auto'), ('already-paused', 'human')):
             self.db.execute('INSERT INTO gateway_sessions VALUES(?,?,?,?)',
                             (session, 'binding', session, json.dumps({'mode': mode, 'version': 5})))
@@ -94,6 +96,7 @@ class Rollback(unittest.TestCase):
         self.removed.append(args[-1])
 
     def assert_fenced(self):
+        self.assertEqual(self.db.execute("SELECT json_extract(data,'$.enabled'),json_extract(data,'$.version') FROM gateway_bindings WHERE id='binding'").fetchone(), (0, 2))
         self.assertEqual(self.started, [self.legacy])
         self.assertEqual(self.removed, ['one'])
         self.assertEqual(dict(self.db.execute('SELECT id,state FROM runs')),
