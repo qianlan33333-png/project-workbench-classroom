@@ -18,3 +18,9 @@ flowchart LR
 POST /api/v1/schedules/:id/occurrence 接收 original、version、at 或 skip；series 同样使用 original、version 和新 cron。新周期导致未来例外失效时返回冲突说明；核对后才传 replaceExceptions。网页和 Agent 均使用同一服务逻辑。
 
 通知生产者在业务事务内向 user_notices 写 kind、event_key、title、summary、link。唯一键按类型和事件去重；链接使用已注册的站内详情路由。首个生产者为 schedule_failures，执行前失败也有独立标识。清空标记、重跑回执与执行历史分别保存。无需部署新定时器或额外服务。
+
+## 验收记录
+
+全量 Go race、vet、前端类型检查与构建、渠道及聊天状态测试通过。单次改期、重启去重、未来周期例外冲突、绑定对话失效、失败消息去重、按当前配置重跑、个人任务草稿关联以及双写回执丢失均有行为回归。定时指令不会作为本人的新表达进入个人记忆。
+
+隔离服务器通过真实 Harness 验证微信入口创建个人日程、飞书入口查回、项目对话保存规则、绑定对话失效后修正规则再在原指定对话执行。渠道为入站及 outbox 回放。独立飞书日历使用已授权账号真实创建、改期、读取、删除双写事件，并清理验收日历。生产日历只做读取验证。浏览器验收截图见 artifacts/planner。
