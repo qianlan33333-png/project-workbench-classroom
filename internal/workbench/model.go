@@ -214,6 +214,7 @@ type Revision struct {
 }
 
 type Config struct {
+	GatewayCRMGrantsFile  string
 	GatewayModelBaseURL   string
 	GatewayModelAPIKeyEnv string
 	BackupScrubCommand    []string

@@ -84,6 +84,11 @@ func run() error {
 		return fmt.Errorf("igo SQLite 未初始化")
 	}
 	db := manager.WriteDB.DB().DB
+	if c.GatewayCRMGrantsFile != "" {
+		if e = os.Setenv("WORKBENCH_AR_GRANTS_FILE", c.GatewayCRMGrantsFile); e != nil {
+			return e
+		}
+	}
 	store, e := workbench.NewStore(db, c.DataDir)
 	if e != nil {
 		return e

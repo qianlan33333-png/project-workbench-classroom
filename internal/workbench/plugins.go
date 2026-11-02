@@ -24,7 +24,7 @@ type Plugin struct {
 }
 
 func (s *Store) Plugins() ([]Plugin, error) {
-	vs, e := listJSON[Plugin](s.DB, "SELECT data FROM plugins ORDER BY id")
+	vs, e := listJSON[Plugin](s.DB, "SELECT data FROM (SELECT id,data FROM plugins UNION ALL SELECT id,data FROM project_plugins) ORDER BY id")
 	for i := range vs {
 		vs[i].HasSecrets = len(vs[i].Env) > 0 || len(vs[i].Headers) > 0
 		vs[i].Env = nil
@@ -33,7 +33,7 @@ func (s *Store) Plugins() ([]Plugin, error) {
 	return vs, e
 }
 func (s *Store) Plugin(id string) (Plugin, error) {
-	return getJSON[Plugin](s.DB, "SELECT data FROM plugins WHERE id=?", id)
+	return getJSON[Plugin](s.DB, "SELECT data FROM plugins WHERE id=? UNION ALL SELECT data FROM project_plugins WHERE id=?", id, id)
 }
 func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
 	if p.ProjectID != "" {
@@ -62,7 +62,7 @@ func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
 	if p.ID == "" {
 		p.ID = newID()
 	} else if old, e := s.Plugin(p.ID); e == nil {
-		if old.ProjectID != "" && p.ProjectID != old.ProjectID {
+		if p.ProjectID != old.ProjectID {
 			return p, errors.New("项目专用插件不能改归属")
 		}
 		if p.Env == nil {
@@ -74,18 +74,34 @@ func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
 	} else {
 		return p, ErrNotFound
 	}
-	_, e := s.DB.Exec("INSERT INTO plugins VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", p.ID, encode(p))
+	var e error
+	if p.ProjectID == "" {
+		_, e = s.DB.Exec("INSERT INTO plugins VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", p.ID, encode(p))
+	} else {
+		_, e = s.DB.Exec("INSERT INTO project_plugins(id,project_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", p.ID, p.ProjectID, encode(p))
+	}
 	p.HasSecrets = len(p.Env) > 0 || len(p.Headers) > 0
 	p.Env = nil
 	p.Headers = nil
 	return p, e
 }
 func (s *Store) DeletePlugin(id string) error {
-	_, e := s.DB.Exec("DELETE FROM plugins WHERE id=?", id)
+	p, e := s.Plugin(id)
+	if errors.Is(e, ErrNotFound) {
+		return nil
+	}
+	if e != nil {
+		return e
+	}
+	if p.ProjectID != "" {
+		_, e = s.DB.Exec("DELETE FROM project_plugins WHERE id=?", id)
+	} else {
+		_, e = s.DB.Exec("DELETE FROM plugins WHERE id=?", id)
+	}
 	return e
 }
 func (s *Store) enabledProjectPlugins(project string) ([]Plugin, error) {
-	vs, e := listJSON[Plugin](s.DB, "SELECT data FROM plugins ORDER BY id")
+	vs, e := listJSON[Plugin](s.DB, "SELECT data FROM (SELECT id,data FROM plugins UNION ALL SELECT id,data FROM project_plugins WHERE project_id=?) ORDER BY id", project)
 	if e != nil {
 		return nil, e
 	}

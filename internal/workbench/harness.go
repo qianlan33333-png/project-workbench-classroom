@@ -420,13 +420,13 @@ func (h *Harness) removeScratch(run string) error {
 	if h.Config.DataDir == "" {
 		return errors.New("缺少运行目录")
 	}
-	for _, dir := range []string{"router", "router-home"} {
+	if run != "" && !toolIdentifier.MatchString(run) {
+		return errors.New("无效的运行标识")
+	}
+	for _, dir := range []string{"router", "router-home", "gateway-workspaces"} {
 		if e := os.RemoveAll(filepath.Join(h.Config.DataDir, "runtime", dir, run)); e != nil {
 			return e
 		}
-	}
-	if toolIdentifier.MatchString(run) {
-		return os.RemoveAll(filepath.Join(h.Config.DataDir, "runtime", "gateway-workspaces", run))
 	}
 	return nil
 }

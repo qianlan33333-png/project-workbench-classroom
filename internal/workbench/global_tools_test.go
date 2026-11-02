@@ -178,6 +178,10 @@ func TestCustomerRetrievalPluginStaysInItsProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var legacyVisible int
+	if err = s.DB.QueryRow("SELECT count(*) FROM plugins WHERE id=?", plugin.ID).Scan(&legacyVisible); err != nil || legacyVisible != 0 {
+		t.Fatalf("rollback leaks project plugin: %d %v", legacyVisible, err)
+	}
 	for _, project := range []string{a.ID, b.ID, personalProjectID} {
 		visible, err := s.enabledProjectPlugins(project)
 		if err != nil {
@@ -194,5 +198,39 @@ func TestCustomerRetrievalPluginStaysInItsProject(t *testing.T) {
 	b.PluginIDs = []string{plugin.ID}
 	if _, err = s.UpdateProject(b.ID, b); err == nil {
 		t.Fatal("accepted another project's tool")
+	}
+}
+
+func TestDeleteGatewayProjectReleasesIdentityAndCredentials(t *testing.T) {
+	s := testStore(t)
+	c, b := gatewaySetup(t, s, newGatewayProvider(t))
+	receiveGateway(t, s, c, b.AccountID, "fixture", "message.received", "event", "hello", time.Now())
+	sessions, err := s.GatewaySessions()
+	if err != nil || len(sessions) != 1 {
+		t.Fatal(sessions, err)
+	}
+	plugin, err := s.SavePlugin(Plugin{ProjectID: b.ProjectID, Name: "private", Transport: "http", URL: "https://example.com/mcp", Headers: map[string]string{"Authorization": "private"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec("INSERT INTO gateway_crm_receipts VALUES('test','request','hash','actor',?,'result',1)", sessions[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.DeleteProject(b.ProjectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Plugin(plugin.ID); err != ErrNotFound {
+		t.Fatal(err)
+	}
+	var n int
+	if err = s.DB.QueryRow("SELECT count(*) FROM gateway_crm_receipts").Scan(&n); err != nil || n != 0 {
+		t.Fatal(n, err)
+	}
+	b.ProjectID = testProject(t, s, "replacement").ID
+	old := b.ID
+	b.ID = ""
+	next, err := s.SaveGatewayBinding(b)
+	if err != nil || next.ID == old {
+		t.Fatal(next, err)
 	}
 }

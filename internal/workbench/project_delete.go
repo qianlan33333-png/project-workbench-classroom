@@ -59,7 +59,8 @@ func (s *Store) DeleteProject(id string) error {
 			return err
 		}
 		statements := []string{
-			"UPDATE gateway_bindings SET data=json_set(data,'$.enabled',json('false'),'$.version',json_extract(data,'$.version')+1) WHERE json_extract(data,'$.projectId')=?",
+			"DELETE FROM gateway_crm_routes WHERE json_extract(grant,'$[1]') IN (SELECT id FROM gateway_bindings WHERE json_extract(data,'$.projectId')=?)",
+			"DELETE FROM gateway_crm_receipts WHERE session_id IN (SELECT id FROM sessions WHERE project_id=?)",
 			"DELETE FROM deliveries WHERE json_extract(data,'$.sessionId') IN (SELECT id FROM sessions WHERE project_id=?)",
 			"DELETE FROM schedule_occurrences WHERE schedule_id IN (SELECT id FROM schedules WHERE project_id=?)",
 			"DELETE FROM schedules WHERE project_id=?",
@@ -75,6 +76,10 @@ func (s *Store) DeleteProject(id string) error {
 			"DELETE FROM harness_events WHERE session_id IN (SELECT id FROM sessions WHERE project_id=?)",
 			"DELETE FROM runtime_sessions WHERE session_id IN (SELECT id FROM sessions WHERE project_id=?)",
 			"DELETE FROM sessions WHERE project_id=?",
+			"DELETE FROM gateway_bindings WHERE json_extract(data,'$.projectId')=? AND NOT EXISTS(SELECT 1 FROM gateway_sessions WHERE binding_id=gateway_bindings.id)",
+			// A legacy session in another project can still refer to the binding. Retain
+			// its audit ID but release the live account slot for a fresh ownership epoch.
+			"UPDATE gateway_bindings SET account_id='retired:'||id,data=json_set(data,'$.enabled',json('false'),'$.projectId','','$.version',json_extract(data,'$.version')+1) WHERE json_extract(data,'$.projectId')=?",
 			"DELETE FROM projects WHERE id=?",
 		}
 		for _, q := range statements {

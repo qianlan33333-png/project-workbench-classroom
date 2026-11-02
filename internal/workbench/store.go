@@ -63,6 +63,10 @@ CREATE TABLE IF NOT EXISTS tickets(hash TEXT PRIMARY KEY, expires INTEGER NOT NU
 CREATE TABLE IF NOT EXISTS cli_tools(id TEXT PRIMARY KEY,data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tool_jobs(id TEXT PRIMARY KEY,tool_id TEXT NOT NULL,state TEXT NOT NULL,created_at INTEGER NOT NULL,data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS plugins(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+-- Older releases read only plugins, so rollback cannot expose a project credential globally.
+CREATE TABLE IF NOT EXISTS project_plugins(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, data TEXT NOT NULL);
+INSERT OR IGNORE INTO project_plugins SELECT id,json_extract(data,'$.projectId'),data FROM plugins WHERE coalesce(json_extract(data,'$.projectId'),'')!='';
+DELETE FROM plugins WHERE coalesce(json_extract(data,'$.projectId'),'')!='';
 CREATE TABLE IF NOT EXISTS documents(project_id TEXT NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(project_id,path));
 CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(project_id UNINDEXED,path,content,tokenize='trigram');
 `

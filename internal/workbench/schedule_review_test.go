@@ -238,7 +238,7 @@ func TestReviewScratchCleanup(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	for _, d := range []string{"router", "router-home", "projects"} {
+	for _, d := range []string{"router", "router-home", "gateway-workspaces", "projects"} {
 		mk(d, "run-a")
 		mk(d, "run-b")
 	}
@@ -255,6 +255,9 @@ func TestReviewScratchCleanup(t *testing.T) {
 		t.Fatal(e)
 	}
 	if _, e := os.Stat(filepath.Join(root, "runtime/router-home")); !os.IsNotExist(e) {
+		t.Fatal(e)
+	}
+	if _, e := os.Stat(filepath.Join(root, "runtime/gateway-workspaces")); !os.IsNotExist(e) {
 		t.Fatal(e)
 	}
 	if _, e := os.Stat(filepath.Join(root, "runtime/projects/run-a/transcript")); e != nil {

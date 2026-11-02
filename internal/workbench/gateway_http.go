@@ -45,7 +45,7 @@ func (a *API) mountGateway(public, owner *gin.RouterGroup) {
 		bind(c, func(v GatewayRegistration) (any, error) { return s.SaveGatewayConnection(v) })
 	})
 	owner.GET("/gateway/bindings", func(c *gin.Context) {
-		v, e := listJSON[GatewayBinding](s.DB, "SELECT data FROM gateway_bindings")
+		v, e := listJSON[GatewayBinding](s.DB, "SELECT data FROM gateway_bindings WHERE json_extract(data,'$.projectId')!=''")
 		reply(c, v, e)
 	})
 	owner.POST("/gateway/bindings", func(c *gin.Context) { bind(c, func(v GatewayBinding) (any, error) { return s.SaveGatewayBinding(v) }) })
