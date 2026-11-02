@@ -55,7 +55,8 @@ ln -sfn "$release" "$base/current.today-next"
 mv -Tf "$base/current.today-next" "$base/current"
 systemctl start project-workbench
 healthy=0
-for n in $(seq 1 30); do
+# Startup replays the purge ledger across managed snapshots before opening HTTP.
+for n in $(seq 1 150); do
  if curl -fsS http://127.0.0.1:3082/api/v1/health >/dev/null; then healthy=1; break; fi
  sleep 1
 done
