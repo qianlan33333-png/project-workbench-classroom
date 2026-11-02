@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,8 +33,13 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 		listener.Close()
 		return nil, err
 	}
-	server := &http.Server{ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second}
+	lifetime, cancel := context.WithCancel(context.Background())
+	server := &http.Server{BaseContext: func(net.Listener) context.Context { return lifetime }, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second}
 	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/global-mcp/") {
+			h.servePersonalMCP(lifetime, in, w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != "POST" {
 			http.Error(w, "POST required", 405)
@@ -47,7 +53,14 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 			http.Error(w, "invalid request", 400)
 			return
 		}
-		value, err := h.Store.appTool(in, req.Tool, req.Args)
+		var value any
+		var err error
+		if req.Tool == "run_global_cli" && in.Project.ID == personalProjectID && !in.Routing {
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(95 * time.Second))
+			value, err = h.runPersonalCLI(r.Context(), in, req.Args)
+		} else {
+			value, err = h.Store.appTool(in, req.Tool, req.Args)
+		}
 		if err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -56,7 +69,7 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 		json.NewEncoder(w).Encode(value)
 	})
 	go server.Serve(listener)
-	return func() { server.Close(); os.Remove(socket) }, nil
+	return func() { cancel(); server.Close(); os.Remove(socket) }, nil
 }
 
 func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {

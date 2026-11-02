@@ -3461,7 +3461,7 @@ label input[type="file"] {
   justify-content: space-between;
   color: var(--muted);
 }
-.today-composer button {
+.today-composer footer button {
   display: flex;
 }
 .today-arrangements {

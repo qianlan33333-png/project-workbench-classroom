@@ -37,6 +37,9 @@ func (s *Store) Capabilities(project string) ([]Capability, error) {
 			out = append(out, Capability{Kind: "cli", ID: t.ID, Name: t.Name, Command: t.Command, Description: t.Command + " · 全局 CLI"})
 		}
 	}
+	if project == personalProjectID {
+		p.ExpertIDs = nil
+	}
 	for _, id := range p.ExpertIDs {
 		ex, e := s.Expert(id)
 		if e != nil {
@@ -98,6 +101,10 @@ func (s *Store) capabilityPrompt(r Run) string {
 			t, e := s.CLITool(c.ID)
 			if e != nil || !t.Installed || !t.Enabled {
 				fmt.Fprintf(&b, "CLI %q 本轮不可用。\n", c.Name)
+				continue
+			}
+			if r.ProjectID == personalProjectID {
+				fmt.Fprintf(&b, "指定 CLI：%q，调用 run_global_cli，id=%q。\n", t.Name, t.ID)
 				continue
 			}
 			fmt.Fprintf(&b, "指定 CLI：%q，入口命令 %q；通过命令工具调用，先按需查看 --help 或 schema。\n", t.Name, t.Command)

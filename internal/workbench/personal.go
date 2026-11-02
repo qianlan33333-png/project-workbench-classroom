@@ -379,6 +379,17 @@ func (w *Worker) personalPrompt(r Run) string {
 		extra += "。该个人对话上一条输入来自：" + channelName(previous)
 	}
 
+	if caps, e := w.Store.Capabilities(personalProjectID); e == nil && len(caps) > 0 {
+		extra += "\n本轮可用全局工具（CLI 用 run_global_cli 按 id 和参数数组执行；MCP 调对应 server 的工具）："
+		for _, c := range caps {
+			if c.Kind == "cli" {
+				extra += "\nCLI " + encode([]string{c.ID, c.Name, c.Command})
+			} else if c.Kind == "mcp" {
+				extra += "\nMCP " + encode([]string{c.Name, "p_" + strings.ReplaceAll(c.ID, "-", "")[:20]})
+			}
+		}
+	}
+	extra += w.Store.capabilityPrompt(r)
 	if len(r.Attachments) > 0 {
 		extra += "\n本条消息的附件（可按从0开始的序号调用read_message_attachment读取文本）：" + encode(r.Attachments)
 	}

@@ -42,6 +42,7 @@ export function CapabilityComposer({
   selected,
   onSelected,
   send,
+  personal = false,
 }: {
   projectId: string;
   sessionId: string;
@@ -50,6 +51,7 @@ export function CapabilityComposer({
   selected: Capability[];
   onSelected: (c: Capability[]) => void;
   send: () => void;
+  personal?: boolean;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const [catalog, setCatalog] = useState<Capability[]>([]),
@@ -141,14 +143,14 @@ export function CapabilityComposer({
       />
       <textarea
         ref={input}
-        aria-label="发送消息"
+        aria-label={personal ? "和个人助手聊聊" : "发送消息"}
         aria-autocomplete="list"
         aria-expanded={open}
         aria-controls={open ? "capability-menu" : undefined}
         aria-activedescendant={
           open && choices.length ? `capability-option-${active}` : undefined
         }
-        placeholder="描述任务，输入 / 选择 CLI、Skill 或 MCP…"
+        placeholder={personal ? "说说你的想法，或输入 / 选择 CLI、MCP…" : "描述任务，输入 / 选择 CLI、Skill 或 MCP…"}
         value={value}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}

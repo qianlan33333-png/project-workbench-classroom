@@ -217,8 +217,8 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 	if isChatChannel(m.Incoming.Source) && p.ID != personalProjectID {
 		return m, errors.New("机器人消息属于今天个人助手")
 	}
-	if p.ID == personalProjectID && (len(m.Incoming.Capabilities) > 0 || len(m.Incoming.References) > 0 || len(m.Incoming.Attachments) > 0 && !isChatChannel(m.Incoming.Source)) {
-		return m, errors.New("个人助手不接收业务文件或执行能力，请进入对应项目")
+	if p.ID == personalProjectID && (len(m.Incoming.References) > 0 || len(m.Incoming.Attachments) > 0 && !isChatChannel(m.Incoming.Source)) {
+		return m, errors.New("个人助手按只读方式查阅业务资料，请勿附加项目文件")
 	}
 	expert := m.Incoming.ExpertID
 	if expert == "" {

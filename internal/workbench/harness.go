@@ -204,9 +204,7 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		if e != nil {
 			return nil, nil, "", e
 		}
-		if personal {
-			globalPlugins = nil
-		}
+
 		for _, p := range globalPlugins {
 			id := p.ID
 			config := map[string]any{"serverName": "p_" + strings.ReplaceAll(p.ID, "-", "")[:20], "failOnStartupError": true}
@@ -216,6 +214,14 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 				config["args"] = p.Args
 				config["env"] = p.Env
 				config["cwd"] = insideRoot
+				if personal {
+					if c.RuntimeMode != "podman" {
+						continue
+					}
+					config["command"] = "node"
+					config["args"] = []string{"/opt/workbench-runtime/personal-mcp-relay.mjs", p.ID}
+					delete(config, "env")
+				}
 			} else {
 				config["transport"] = "streamable-http"
 				config["url"] = p.URL

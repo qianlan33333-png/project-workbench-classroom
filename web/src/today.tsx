@@ -10,7 +10,8 @@ import {
   Plus,
   Square,
 } from "lucide-react";
-import { api, labels, stamp, type Project, type Run } from "./api";
+import { api, labels, stamp, type Project, type Run, type Capability } from "./api";
+import { CapabilityComposer, CapabilityBadges } from "./capability-composer";
 import { MemoryPanel } from "./personal-understanding";
 import { PersonalRulesPanel } from "./personal-rules";
 import { RichText } from "./file-ui";
@@ -457,6 +458,9 @@ export function Today({
     [text, setText] = useState(
       () => localStorage.getItem("pwb.personalDraft") || "",
     ),
+    [capabilities, setCapabilities] = useState<Capability[]>(() => {
+      try { const v=JSON.parse(localStorage.getItem("pwb.personalDraftTools") || "[]"); return Array.isArray(v)?v:[]; } catch { return []; }
+    }),
     [arrangements, setArrangements] = useState(
       () =>
         window.innerWidth >= 1280 &&
@@ -474,6 +478,7 @@ export function Today({
     return () => clearInterval(timer);
   }, [refresh]);
   useEffect(() => localStorage.setItem("pwb.personalDraft", text), [text]);
+  useEffect(() => localStorage.setItem("pwb.personalDraftTools", JSON.stringify(capabilities)), [capabilities]);
   const runs: Run[] = data?.runs || [];
   const applyRun = useCallback(
     (r: Run) =>
@@ -497,12 +502,14 @@ export function Today({
     if (!text.trim() || !data || busy) return;
     const body = text;
     setText("");
+    setCapabilities([]);
     setBusy(true);
     try {
       await submissions.submit({
         eventId: crypto.randomUUID(),
         sessionId: data.sessionId,
         text: body,
+        capabilities,
         attachments: [],
         references: [],
       });
@@ -653,6 +660,7 @@ export function Today({
                       {r.text.startsWith("[已提交的个人决策")
                         ? "已提交本次选择"
                         : r.text}
+                      <CapabilityBadges values={r.capabilities || []}/>
                     </div>
                     <div className="personal-answer">
                       <small>✦ 个人助手 · {labels[r.state] || r.state}</small>
@@ -697,7 +705,7 @@ export function Today({
                 ))}
               {pending.map((v) => (
                 <div key={v.input.eventId} className="personal-turn">
-                  <div className="personal-user">{v.input.text}</div>
+                  <div className="personal-user">{v.input.text}<CapabilityBadges values={v.input.capabilities || []}/></div>
                   <small>
                     {v.state === "sending"
                       ? "正在发送…"
@@ -719,22 +727,8 @@ export function Today({
           )}
         </div>
         <div className="today-composer">
-          <textarea
-            aria-label="和个人助手聊聊"
-            placeholder="说说你的想法，或今天想关注的事…"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (
-                e.key === "Enter" &&
-                !e.shiftKey &&
-                !e.nativeEvent.isComposing
-              ) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-          />
+          <CapabilityComposer personal projectId="personal-assistant" sessionId={data?.sessionId || ""} value={text}
+            onChange={setText} selected={capabilities} onSelected={setCapabilities} send={() => void send()}/>
           <footer>
             <small>Enter 发送 · Shift + Enter 换行</small>
             <button

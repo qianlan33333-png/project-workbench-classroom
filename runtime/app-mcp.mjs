@@ -30,7 +30,7 @@ async function call(tool, args) {
       },
     );
     req.on("error", reject);
-    req.setTimeout(30000, () => req.destroy(new Error("工作台工具超时")));
+    req.setTimeout(tool === "run_global_cli" ? 95000 : 30000, () => req.destroy(new Error("工作台工具超时")));
     req.end(body);
   });
 }
@@ -75,6 +75,7 @@ const businessTools = [
 ];
 const sourceKinds=z.enum(["file","conversation","task"]);
 const personalTools = [
+ ["run_global_cli","调用已安装和启用的全局 CLI，如飞书或 CRM。id 使用本轮目录中的工具 ID，args 是参数数组（不含命令名），可先查 --help。只在用户明确要求时执行外部写入。不绕过项目只读规则。exitCode 非零为失败。",{id:z.string().min(1),args:z.array(z.string()).max(256)}],
  ["project_contexts","仅读取各项目完整说明和72小时动态",{}],
  ["personal_memories","按关键词或依据ID限量查回准确个人事实与原话；不会返回完整记忆库。长原文用id和offset续读。",{query:z.string().optional(),id:z.string().optional(),paragraphId:z.string().optional(),offset:z.number().int().nonnegative().optional()}],
  ["find_project_sources","在一个指定项目按关键字查找文本文件、可见对话轮次或任务。空 query 列出资料。返回 key；更多结果按 offset 每页20条读取。",{projectId:z.string(),kind:sourceKinds,query:z.string().optional(),sessionId:z.string().optional(),offset:z.number().int().nonnegative().optional()}],
