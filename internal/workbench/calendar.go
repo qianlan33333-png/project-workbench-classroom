@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/robfig/cron/v3"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -59,7 +60,9 @@ type larkEvent struct {
 	Status      string
 }
 
-func calendarZone() *time.Location { z, _ := time.LoadLocation("Asia/Shanghai"); return z }
+var shanghaiCalendarZone, _ = time.LoadLocation("Asia/Shanghai")
+
+func calendarZone() *time.Location { return shanghaiCalendarZone }
 func (v larkTime) millis() int64 {
 	if v.Date != "" {
 		d, _ := time.ParseInLocation("2006-01-02", v.Date, calendarZone())
@@ -344,6 +347,27 @@ func (s *Store) calendarView(ctx context.Context, lo, hi int64, scope string, re
 					v.ProjectID = local.ProjectID
 					v.Operation = local.Operation
 					v.Destination = local.Destination
+					if v != local {
+						v.Version++
+						res, err := s.DB.ExecContext(ctx, "UPDATE calendar_events SET data=? WHERE id=? AND data=?", encode(v), local.ID, encode(local))
+						if err != nil {
+							return view, err
+						}
+						n, err := res.RowsAffected()
+						if err != nil {
+							return view, err
+						}
+						if n == 0 {
+							latest, err := s.calendarRecord(local.ID)
+							if err != nil {
+								return view, err
+							}
+							if latest.Deleted {
+								continue
+							}
+							v = latest
+						}
+					}
 				} else if scope != "" {
 					continue
 				} else {
@@ -382,12 +406,16 @@ func (s *Store) calendarView(ctx context.Context, lo, hi int64, scope string, re
 	if e != nil {
 		return view, e
 	}
+	compiled := map[string]cron.Schedule{}
 	for _, rule := range schedules {
 		if !rule.Enabled {
 			continue
 		}
 		for cursor := max(now(), lo-1); cursor < hi; {
-			v, e := scheduleTick(rule, cursor)
+			v, e := nextTick(rule, cursor, compiled)
+			if len(view.Items) > 80000 {
+				return view, errors.New("该周期内执行次数过多，请缩小查询时间范围")
+			}
 			if e != nil {
 				return view, e
 			}

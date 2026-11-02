@@ -435,3 +435,27 @@
     padding: 4px 7px;
   }
 }
+
+.rail.collapsed .rail-bottom {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.rail.collapsed .rail-bottom button {
+  width: 100%;
+  white-space: nowrap;
+  flex-direction: row;
+  justify-content: center;
+  padding: 4px;
+  gap: 5px;
+}
+@media (min-width: 768px) and (max-width: 1279px) {
+  .rail .rail-bottom {
+    flex-direction: column;
+  }
+  .rail .rail-bottom button {
+    white-space: nowrap;
+    flex-direction: row;
+    justify-content: center;
+  }
+}

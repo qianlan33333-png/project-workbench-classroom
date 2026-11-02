@@ -29,9 +29,8 @@ const fieldTime = (n: number) =>
 const time = (n: number) => fieldTime(n).slice(11);
 const instant = (s: string) =>
   Date.parse(s + (s.length === 10 ? "T00:00" : "") + ":00+08:00");
-const monday = (n: number) =>
-  n - ((new Date(n + offset).getUTCDay() + 6) % 7) * day;
-const weekDays = ["一", "二", "三", "四", "五", "六", "日"];
+const weekStart = (n: number) => n - new Date(n + offset).getUTCDay() * day;
+const weekDays = ["日", "一", "二", "三", "四", "五", "六"];
 type Item = {
   id: string;
   kind: string;
@@ -117,12 +116,14 @@ function EventEditor({
   projects,
   close,
   saved,
+  openProject,
   notify,
 }: {
   item: Item;
   projects: Project[];
   close: () => void;
   saved: () => void;
+  openProject: (id: string) => void;
   notify: (s: string) => void;
 }) {
   const [v, set] = useState({ ...item }),
@@ -224,6 +225,17 @@ function EventEditor({
           onChange={(e) => field({ description: e.target.value })}
         />
       </label>
+      {v.projectId && (
+        <button onClick={() => openProject(v.projectId!)}>
+          打开所属项目 →
+        </button>
+      )}
+      {v.description && (
+        <details>
+          <summary>查看关联资料</summary>
+          <RichText text={v.description} />
+        </details>
+      )}
       {v.link && /^https?:\/\//i.test(v.link) && (
         <a href={v.link} target="_blank" rel="noreferrer">
           打开飞书日程 ↗
@@ -259,10 +271,12 @@ export function CalendarPage({
   notify,
   openTask,
   openRule,
+  openProject,
 }: {
   projects: Project[];
   notify: (s: string) => void;
   openTask: (id: string) => void;
+  openProject: (id: string) => void;
   openRule: (id: string) => void;
 }) {
   const [mode, setMode] = useState(sessionStorage.getItem("cal.view") || "周"),
@@ -286,7 +300,7 @@ export function CalendarPage({
   const ts = instant(selected),
     month = selected.slice(0, 7),
     first = instant(month + "-01"),
-    lo = mode === "月" ? monday(first) : mode === "周" ? monday(ts) : ts;
+    lo = mode === "月" ? weekStart(first) : mode === "周" ? weekStart(ts) : ts;
   const endMonth = new Date(first + offset);
   endMonth.setUTCMonth(endMonth.getUTCMonth() + 1);
   const days =
@@ -346,14 +360,19 @@ export function CalendarPage({
           (mode === "月" ? 0 : 340),
       );
   }, [mode]);
+  const selection = useRef(0);
   const choose = (v: Item) => {
+    const request = ++selection.current;
     setDetail(v);
     setResult("");
     setEditAt(fieldTime(v.start));
     setCron("");
     if (v.runId)
       void api("/runs/" + v.runId)
-        .then((r) => setResult(r.result || r.error || "等待执行"))
+        .then((r) => {
+          if (request === selection.current)
+            setResult(r.result || r.error || "等待执行");
+        })
         .catch((e) => notify(e.message));
   };
   const fresh = () => {
@@ -446,6 +465,7 @@ export function CalendarPage({
     >
       <span>
         {v.kind === "ai" ? "AI · " : ""}
+        {mode === "月" && !v.allDay && time(v.start) + " "}
         {v.title}
       </span>
       <small>
@@ -558,7 +578,11 @@ export function CalendarPage({
                         setMode("日");
                       }}
                     >
-                      更多…
+                      另有{" "}
+                      {visible.filter(
+                        (v) => v.start < d + day && (v.end || v.start + 1) > d,
+                      ).length - 3}{" "}
+                      项
                     </button>
                   )}
                 </div>
@@ -580,7 +604,7 @@ export function CalendarPage({
                     (date(d) === date(Date.now()) ? "is-today" : "")
                   }
                 >
-                  周{weekDays[(new Date(d + offset).getUTCDay() + 6) % 7]}{" "}
+                  周{weekDays[new Date(d + offset).getUTCDay()]}{" "}
                   <b>{Number(date(d).slice(-2))}</b>
                 </div>
               ))}
@@ -607,12 +631,24 @@ export function CalendarPage({
                       (v.end || v.start + 1) > d,
                   )
                   .sort((a, b) => a.start - b.start);
-                const placed = vs.map((v) => {
+                const placed: { v: Item; lane: number; width: number }[] = [];
+                let groupStart = 0,
+                  groupEnd = 0;
+                const finishGroup = () => {
+                  for (let i = groupStart; i < placed.length; i++)
+                    placed[i].width = lanes.length;
+                  groupStart = placed.length;
+                  lanes.length = 0;
+                };
+                for (const v of vs) {
+                  if (v.start >= groupEnd) finishGroup();
                   let lane = lanes.findIndex((end) => end <= v.start);
                   if (lane < 0) lane = lanes.length;
                   lanes[lane] = Math.max(v.start + 1800000, v.end || 0);
-                  return { v, lane };
-                });
+                  groupEnd = Math.max(...lanes);
+                  placed.push({ v, lane, width: 1 });
+                }
+                finishGroup();
                 return (
                   <div
                     className="hour-col"
@@ -628,7 +664,7 @@ export function CalendarPage({
                         );
                     }}
                   >
-                    {placed.map(({ v, lane }) =>
+                    {placed.map(({ v, lane, width }) =>
                       item(v, {
                         top: (Math.max(0, v.start - d) / day) * 100 + "%",
                         height: Math.max(
@@ -638,8 +674,8 @@ export function CalendarPage({
                             day) *
                             1152,
                         ),
-                        left: (100 * lane) / lanes.length + "%",
-                        width: 100 / lanes.length + "%",
+                        left: (100 * lane) / width + "%",
+                        width: 100 / width + "%",
                       }),
                     )}
                     {date(d) === date(Date.now()) && (
@@ -659,6 +695,7 @@ export function CalendarPage({
         <EventEditor
           key={detail.id + detail.start}
           item={detail}
+          openProject={openProject}
           projects={projects}
           close={() => setDetail(null)}
           saved={fresh}

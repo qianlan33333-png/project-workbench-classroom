@@ -68,6 +68,24 @@ func (a *API) mountPlanner(g *gin.RouterGroup) {
 			bind(c, func(v TimeEdit) (any, error) { return s.editTime(c.Param("id"), kind, v) })
 		})
 	}
+	g.POST("/schedules/preview", func(c *gin.Context) {
+		bind(c, func(sc Schedule) (any, error) {
+			times := []int64{}
+			after := now()
+			for len(times) < 3 {
+				v, e := scheduleTick(sc, after)
+				if e != nil {
+					return nil, e
+				}
+				if v.At == 0 {
+					break
+				}
+				times = append(times, v.At)
+				after = v.At
+			}
+			return times, nil
+		})
+	})
 	g.GET("/notices", func(c *gin.Context) {
 		rs, e := s.DB.Query("SELECT id,kind,title,summary,link,created,seen FROM user_notices WHERE cleared=0 ORDER BY created DESC")
 		if e != nil {
@@ -145,13 +163,13 @@ func (a *API) mountPlanner(g *gin.RouterGroup) {
 		})
 	})
 }
-func (s *Store) plannerTool(in RuntimeInput, tool string, raw json.RawMessage) (any, error) {
+func (s *Store) plannerTool(ctx context.Context, in RuntimeInput, tool string, raw json.RawMessage) (any, error) {
 	var q struct {
 		Project      string `json:"projectId"`
 		ID           string
 		Action       string
 		Start, End   int64
-		Remote       bool
+		Remote       *bool
 		Event        CalendarEvent
 		Change       TimeEdit
 		Schedule     json.RawMessage
@@ -168,7 +186,7 @@ func (s *Store) plannerTool(in RuntimeInput, tool string, raw json.RawMessage) (
 	}
 	switch tool {
 	case "query_calendar":
-		return s.calendarView(context.Background(), q.Start, q.End, scope, q.Remote)
+		return s.calendarView(ctx, q.Start, q.End, scope, q.Remote == nil || *q.Remote)
 	case "change_calendar":
 		if q.Action == "create" {
 			q.Event.ProjectID = scope
@@ -176,7 +194,7 @@ func (s *Store) plannerTool(in RuntimeInput, tool string, raw json.RawMessage) (
 				q.Event.Operation = digest([]byte(in.Run.ID + encode(q.Event)))
 			}
 		}
-		return s.changeEvent(context.Background(), q.Action, q.Event, scope)
+		return s.changeEvent(ctx, q.Action, q.Event, scope)
 	case "list_schedules":
 		return s.Schedules(scope)
 	}

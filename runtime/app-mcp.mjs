@@ -30,7 +30,7 @@ async function call(tool, args) {
       },
     );
     req.on("error", reject);
-    req.setTimeout(tool === "run_global_cli" ? 95000 : 30000, () => req.destroy(new Error("工作台工具超时")));
+    req.setTimeout(["run_global_cli","query_calendar","change_calendar"].includes(tool) ? 95000 : 30000, () => req.destroy(new Error("工作台工具超时")));
     req.end(body);
   });
 }
@@ -70,7 +70,7 @@ const plannerTools=[
   ["list_schedules", "列出指定项目或个人的任务。省略 projectId 按当前入口。", {projectId:z.string().optional()}],
   [
     "save_schedule",
-    "仅当用户明确要求时创建或更新定时任务。所属项目固定；五段 cron，默认 Asia/Shanghai。notifySource=true 仅向本次本人私聊入口通知。修改只传 id 和需要改变的字段。暂停只传 id、enabled=false。",
+    "仅当用户明确要求时创建或更新定时任务。续接当前对话使用 sessionId=current，每次新开则留空；所属项目固定；重复传五段 cron，单次传 onceAt 毫秒，默认 Asia/Shanghai。notifySource=true 仅向本次本人私聊入口通知。修改只传 id 和需要改变的字段。暂停只传 id、enabled=false。",
     {
       projectId:z.string().optional(),
       schedule: z.object({

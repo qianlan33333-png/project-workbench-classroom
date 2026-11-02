@@ -58,6 +58,9 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 		if req.Tool == "run_global_cli" && in.Project.ID == personalProjectID && !in.Routing {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(95 * time.Second))
 			value, err = h.runPersonalCLI(r.Context(), in, req.Args)
+		} else if req.Tool == "query_calendar" || req.Tool == "change_calendar" {
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(95 * time.Second))
+			value, err = h.Store.plannerTool(r.Context(), in, req.Tool, req.Args)
 		} else {
 			value, err = h.Store.appTool(in, req.Tool, req.Args)
 		}
@@ -75,7 +78,7 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {
 	switch tool {
 	case "query_calendar", "change_calendar", "update_occurrence", "update_series", "delete_schedule", "save_schedule", "list_schedules":
-		return s.plannerTool(in, tool, args)
+		return s.plannerTool(context.Background(), in, tool, args)
 	}
 	if in.Project.ID == personalProjectID {
 		return s.personalTool(in, tool, args)
@@ -206,6 +209,12 @@ func (s *Store) saveChatSchedule(in RuntimeInput, raw json.RawMessage, notify bo
 		return v, nil, e
 	}
 	v.ProjectID = in.Project.ID
+	if v.SessionID == "current" {
+		v.SessionID = in.Session.ID
+		if v.SessionID == "" {
+			return v, nil, errors.New("没有可续接的当前对话")
+		}
+	}
 	if notify {
 		m, e := s.Message(in.Run.MessageID)
 		if e != nil {

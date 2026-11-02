@@ -993,7 +993,7 @@ function App() {
             )}
           </span>
         </header>
-        {page==="calendar"&&<CalendarPage projects={projects} notify={notify} openTask={id=>plannerNav("tasks",{task:id})} openRule={id=>plannerNav("tasks",{tab:"ai",rule:id})}/>}
+        {page==="calendar"&&<CalendarPage projects={projects} notify={notify} openProject={id=>{const p=projects.find(v=>v.id===id);if(p){history.pushState(null,"","#project="+encodeURIComponent(id));void openProject(p)}}} openTask={id=>plannerNav("tasks",{task:id})} openRule={id=>plannerNav("tasks",{tab:"ai",rule:id})}/>}
         {page==="tasks"&&<TaskCenter key={pageParams.toString()} projects={projects} experts={experts} begin={beginTask} notify={notify} parameters={pageParams}/>}
         {page==="notices"&&<NoticePage failure={pageParams.get("failure")||""} select={id=>plannerNav("notices",id?{failure:id}:{})} openRule={id=>plannerNav("tasks",{tab:"ai",rule:id})} notify={notify} refreshBadge={badge}/>}
         {page === "today" && (

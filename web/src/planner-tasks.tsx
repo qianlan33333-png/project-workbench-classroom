@@ -296,6 +296,110 @@ function Execution({ check }: { check: any }) {
     </details>
   );
 }
+function Cadence({
+  value,
+  change,
+}: {
+  value: string;
+  change: (s: string) => void;
+}) {
+  const [m, h, md, mo, wd] = value.split(" ");
+  const simple =
+    /^\d+ \d+ (\*|\d+) \* (\*|[0-6])$/.test(value) &&
+    (md === "*" || wd === "*");
+  const [advanced, setAdvanced] = useState(!simple);
+  const type = advanced
+    ? "custom"
+    : md !== "*"
+      ? "month"
+      : wd !== "*"
+        ? "week"
+        : "day";
+  const write = (
+    kind: string,
+    hour = h,
+    min = m,
+    monthDay = md,
+    weekday = wd,
+  ) => {
+    if (kind === "custom") {
+      setAdvanced(true);
+      return;
+    }
+    setAdvanced(false);
+    change(
+      [
+        Number(min) || 0,
+        Number(hour) || 0,
+        kind === "month" ? Number(monthDay) || 1 : "*",
+        "*",
+        kind === "week" ? (weekday === "*" ? 1 : Number(weekday) || 0) : "*",
+      ].join(" "),
+    );
+  };
+  return (
+    <>
+      <label>
+        重复频率
+        <select value={type} onChange={(e) => write(e.target.value)}>
+          <option value="day">每天</option>
+          <option value="week">每周</option>
+          <option value="month">每月</option>
+          <option value="custom">自定义 cron</option>
+        </select>
+      </label>
+      {type === "custom" ? (
+        <label>
+          五段 cron
+          <input value={value} onChange={(e) => change(e.target.value)} />
+        </label>
+      ) : (
+        <>
+          <label>
+            执行时间
+            <input
+              type="time"
+              value={
+                String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0")
+              }
+              onChange={(e) => {
+                const [hr, min] = e.target.value.split(":");
+                if (min) write(type, hr, min);
+              }}
+            />
+          </label>
+          {type === "week" && (
+            <label>
+              每周几
+              <select
+                value={wd}
+                onChange={(e) => write(type, h, m, md, e.target.value)}
+              >
+                {["日", "一", "二", "三", "四", "五", "六"].map((v, i) => (
+                  <option key={i} value={i}>
+                    星期{v}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {type === "month" && (
+            <label>
+              每月几号
+              <input
+                type="number"
+                min="1"
+                max="31"
+                value={md}
+                onChange={(e) => write(type, h, m, e.target.value)}
+              />
+            </label>
+          )}
+        </>
+      )}
+    </>
+  );
+}
 function RuleForm({
   initial,
   projects,
@@ -316,6 +420,27 @@ function RuleForm({
     [caps, setCaps] = useState<Capability[]>([]),
     [targets, setTargets] = useState<any[]>([]),
     [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState("");
+  useEffect(() => {
+    let live = true;
+    const timer = setTimeout(() => {
+      api<number[]>("/schedules/preview", v)
+        .then(
+          (times) =>
+            live &&
+            setPreview(
+              times.length
+                ? "接下来：" + times.map(stamp).join("、")
+                : "没有未来的执行时间",
+            ),
+        )
+        .catch((e) => live && setPreview(e.message));
+    }, 200);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [v.cron, v.onceAt, v.timezone]);
   const field = (part: Partial<Rule>) => set((old) => ({ ...old, ...part }));
   useEffect(() => {
     let live = true;
@@ -424,26 +549,18 @@ function RuleForm({
           />
         </label>
       ) : (
-        <label>
-          周期（cron）
-          <input
-            list="cron-presets"
-            value={v.cron}
-            onChange={(e) => field({ cron: e.target.value })}
-          />
-          <datalist id="cron-presets">
-            <option value="0 9 * * *">每天 09:00</option>
-            <option value="0 17 * * 5">每周五 17:00</option>
-            <option value="0 9 1 * *">每月 1 日 09:00</option>
-          </datalist>
-          <small>{v.timezone}</small>
+        <>
+          <Cadence value={v.cron} change={(cron) => field({ cron })} />
           {v.changes?.map((c) => (
             <small key={c.from}>
               {stamp(c.from)} 起 · {c.cron}
             </small>
           ))}
-        </label>
+        </>
       )}
+      <small>
+        {v.timezone} · {preview}
+      </small>
       <label>
         对话
         <select
@@ -713,7 +830,7 @@ export function NoticePage({
               onClick={async () => {
                 try {
                   const events = await api<any[]>(
-                    "/failures/"+f.id+"/tools",
+                    "/failures/" + f.id + "/tools",
                   );
                   setTrace(
                     events

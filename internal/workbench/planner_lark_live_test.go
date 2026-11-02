@@ -36,7 +36,7 @@ func TestPlannerLiveFeishuCalendar(t *testing.T) {
 	}
 	s.feishuCalendarID = envelope.Data.Calendar.ID
 	defer func() {
-		if e := exec.Command(binary, "calendar", "calendars", "delete", "--calendar-id", s.feishuCalendarID, "--as", "user").Run(); e != nil {
+		if e := exec.Command(binary, "calendar", "calendars", "delete", "--calendar-id", s.feishuCalendarID, "--as", "user", "--yes").Run(); e != nil {
 			t.Errorf("cleanup calendar: %v", e)
 		}
 	}()

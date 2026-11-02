@@ -28,6 +28,9 @@ type tick struct{ Original, At int64 }
 
 // Inspect each rule segment separately, then compare moved instances by their actual time.
 func scheduleTick(sc Schedule, after int64) (tick, error) {
+	return nextTick(sc, after, map[string]cron.Schedule{})
+}
+func nextTick(sc Schedule, after int64, compiled map[string]cron.Schedule) (tick, error) {
 	var best tick
 	consider := func(original, at int64) {
 		if at > after && (best.At == 0 || at < best.At) {
@@ -49,7 +52,11 @@ func scheduleTick(sc Schedule, after int64) (tick, error) {
 	if zone == "" {
 		zone = "Asia/Shanghai"
 	}
-	loc, err := time.LoadLocation(zone)
+	loc := calendarZone()
+	var err error
+	if zone != "Asia/Shanghai" {
+		loc, err = time.LoadLocation(zone)
+	}
 	if err != nil {
 		return best, err
 	}
@@ -58,9 +65,13 @@ func scheduleTick(sc Schedule, after int64) (tick, error) {
 		if i+1 < len(rules) && rules[i+1].From <= after {
 			continue
 		}
-		spec, e := cron.ParseStandard(seg.Cron)
-		if e != nil {
-			return best, e
+		spec, ok := compiled[seg.Cron]
+		if !ok {
+			spec, err = cron.ParseStandard(seg.Cron)
+			if err != nil {
+				return best, err
+			}
+			compiled[seg.Cron] = spec
 		}
 		cursor := after
 		if seg.From-1 > cursor {

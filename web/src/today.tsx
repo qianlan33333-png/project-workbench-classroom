@@ -151,7 +151,7 @@ export function TasksPanel({
         <article className="task-card" key={t.id}>
           <small>{projects.find(p=>p.id===t.projectId)?.name} · {states[t.state]}</small>
           <details><summary>{t.title}</summary><RichText text={t.description}/></details>
-          <p>{why(t)}</p><button onClick={()=>openTasks(t.projectId)}>进入项目任务 →</button>
+          <p>{why(t)}</p><button onClick={()=>openTasks(t.projectId)}>{t.projectId==="personal-assistant"?"打开个人待办":"进入项目任务"} →</button>
         </article>
       ) : (
         <article className="task-card" key={t.id}>
@@ -306,6 +306,7 @@ export function TasksPanel({
                   >
                     执行待办
                   </button>
+                  {editing.projectId!=="personal-assistant" && editing.sessionId && <button onClick={()=>{void start(editing as Task,true);setEditing(null)}}>另开对话</button>}
                   <button
                     className="danger"
                     onClick={() => {
@@ -661,7 +662,7 @@ export function Today({
                 .map((r) => (
                   <div className="personal-turn" key={r.id}>
                     <div className="personal-user">
-                      {["wechat","feishu"].includes(r.source) && <small style={{display:"block"}}>{r.source==="wechat"?"微信":"飞书"} · {stamp(r.createdAt)}</small>}
+                      {["wechat","feishu","automation"].includes(r.source) && <small style={{display:"block"}}>{labels[r.source]||r.source} · {stamp(r.createdAt)}</small>}
                       {r.text.startsWith("[已提交的个人决策")
                         ? "已提交本次选择"
                         : r.text}
