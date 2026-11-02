@@ -8,3 +8,5 @@
 - 浏览器验证使用模板保存、查看暂停状态、手动执行跳过、启用和暂停。图片和运行收据归档于 artifacts/scheduled-skill/。
 - 大文件结构及摘录会标记部分覆盖。一次 Run 内模型交互次数由 Harness 决定。任务层不二次派发，不在失败时自动重新启用。
 - 发布前保存 /var/lib/project-workbench 和配置快照，通过 PW_RELEASE 指定候选。恢复程序使用 scripts/rollback-today.sh 和本次快照路径；回退时关闭旧版本无法识别的条件任务，保留运行记录、成果与既有旧整理暂停措施。
+
+2026-11-02 生产发布为 cloud-20261102-16-scheduled-skills，源码 6c6c4f73910c8dab1952588bff54eb1a6f979093。实测包与生产二进制 SHA256 均为 4a9001bd8cfb741d808a102c285b53e7900e6a3baa1f9e950e0a1d8d809de8c3。切换前快照 /opt/project-workbench/rollback-today-20261102-092717。线上浏览器已读回模板入口，公网健康检查正常，微信、飞书均已恢复连接。对比切换前后，原有一条定时任务及三条暂停的旧整理检查点逐行相同；没有新增项目整理任务，可调度的旧整理为零。
