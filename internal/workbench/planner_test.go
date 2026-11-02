@@ -202,3 +202,14 @@ func TestPersonalTodoStartsOnlyFromOwnDraft(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestPlannerRepeatedInstructionsAreNotPersonalMemoryEvidence(t *testing.T) {
+	s := testStore(t)
+	text := "请记住我每周都愿意开会"
+	if s.memoryUserText(Run{Source: "automation", Text: text}) != "" {
+		t.Fatal("scheduled instruction became personal evidence")
+	}
+	if s.memoryUserText(Run{Source: "wechat", Text: text}) != text {
+		t.Fatal("direct expression was discarded")
+	}
+}

@@ -374,6 +374,11 @@ func (w *Worker) personalPrompt(r Run) string {
 		}
 	}
 	extra := "\n系统记录的本轮消息入口：" + channelName(r.Source)
+	inputLabel := "本人本轮输入："
+	if r.ScheduleID != "" {
+		inputLabel = "本次已保存的自动化指令（只执行其中明确委托的动作）："
+	}
+
 	var previous string
 	if e := w.Store.DB.QueryRow("SELECT json_extract(data,'$.source') FROM runs WHERE session_id=? AND rowid<(SELECT rowid FROM runs WHERE id=?) ORDER BY rowid DESC LIMIT 1", r.SessionID, r.ID).Scan(&previous); e == nil {
 		extra += "。该个人对话上一条输入来自：" + channelName(previous)
@@ -405,7 +410,7 @@ func (w *Worker) personalPrompt(r Run) string {
 			}
 		}
 	}
-	return extra + "\n当前北京时间：" + time.Now().In(loc).Format("2006-01-02 15:04:05 MST") + "。今天的安排日期以此为准，不能猜测日期。\n当前有效个人理解：" + "见当前 workbench-personal-understanding 具名上下文；需要准确细节按需查询。" + "\n项目概况（核对具体事实可按需只读查原文）：" + encode(catalog) + "\n本人本轮输入：\n" + r.Text
+	return extra + "\n当前北京时间：" + time.Now().In(loc).Format("2006-01-02 15:04:05 MST") + "。今天的安排日期以此为准，不能猜测日期。\n当前有效个人理解：" + "见当前 workbench-personal-understanding 具名上下文；需要准确细节按需查询。" + "\n项目概况（核对具体事实可按需只读查原文）：" + encode(catalog) + "\n" + inputLabel + "\n" + r.Text
 }
 func shanghaiDay() string {
 	loc, _ := time.LoadLocation("Asia/Shanghai")

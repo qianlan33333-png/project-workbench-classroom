@@ -114,6 +114,12 @@ func (s *Store) memoryExcluded(id string) bool {
 	return n > 0
 }
 func (s *Store) memoryUserText(r Run) string {
+	// A stored automation instruction is replayed by the scheduler. Its runs
+	// never constitute fresh expressions of the owner's preferences.
+	if r.Source == "automation" || r.ScheduleID != "" {
+		return ""
+	}
+
 	for _, phrase := range []string{"不要记住", "别记住", "不要长期记住", "不记入个人记忆", "不写入个人记忆", "只在当前对话", "只在当前原生对话", "只在本次对话"} {
 		if strings.Contains(r.Text, phrase) {
 			return ""
