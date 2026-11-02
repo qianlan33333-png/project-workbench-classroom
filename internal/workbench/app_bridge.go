@@ -21,6 +21,14 @@ func bridgeSocket(in RuntimeInput) string {
 	return filepath.Join(os.TempDir(), "pw-"+in.Run.ID+".sock")
 }
 func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
+	var model http.Handler
+	if h.gatewayInput(in) {
+		var e error
+		model, e = h.gatewayModelHandler(in)
+		if e != nil {
+			return nil, e
+		}
+	}
 	socket := bridgeSocket(in)
 	if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -35,9 +43,24 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
 	server := &http.Server{BaseContext: func(net.Listener) context.Context { return lifetime }, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second}
+	if model != nil {
+		server.WriteTimeout = 0
+	} // Streaming is bounded by the run deadline.
 	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/global-mcp/") {
+			if model != nil {
+				http.NotFound(w, r)
+				return
+			}
 			h.servePersonalMCP(lifetime, in, w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/gateway-model") {
+			if model == nil {
+				http.NotFound(w, r)
+				return
+			}
+			model.ServeHTTP(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -58,7 +81,7 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 		if req.Tool == "run_global_cli" && in.Project.ID == personalProjectID && !in.Routing {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(95 * time.Second))
 			value, err = h.runPersonalCLI(r.Context(), in, req.Args)
-		} else if req.Tool == "query_calendar" || req.Tool == "change_calendar" {
+		} else if model == nil && (req.Tool == "query_calendar" || req.Tool == "change_calendar") {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(95 * time.Second))
 			value, err = h.Store.plannerTool(r.Context(), in, req.Tool, req.Args)
 		} else {
@@ -76,6 +99,35 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 }
 
 func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {
+	if _, e := s.gatewaySession(in.Session.ID); e == nil || in.Run.Source == gatewaySource {
+		var a struct {
+			Offset int    `json:"offset"`
+			Query  string `json:"query"`
+			RunID  string `json:"runId"`
+		}
+		if len(args) > 0 {
+			if e = json.Unmarshal(args, &a); e != nil {
+				return nil, e
+			}
+		}
+		switch tool {
+		case "read_paused_history":
+			return s.pausedHistoryPage(in.Session.ID, a.RunID, a.Offset)
+		case "search_history":
+			return listJSON[Run](s.DB, "SELECT data FROM runs WHERE session_id=? AND (text LIKE ? OR data->>'$.result' LIKE ?) ORDER BY created_at DESC LIMIT 20", in.Session.ID, "%"+a.Query+"%", "%"+a.Query+"%")
+		case "read_run":
+			r, e := s.Run(a.RunID)
+			if e != nil {
+				return nil, e
+			}
+			if r.SessionID != in.Session.ID {
+				return nil, errors.New("只能读取当前客户会话")
+			}
+			return r, nil
+		default:
+			return nil, errors.New("外部会话没有工作台管理或跨会话权限")
+		}
+	}
 	switch tool {
 	case "query_calendar", "change_calendar", "update_occurrence", "update_series", "delete_schedule", "save_schedule", "list_schedules":
 		return s.plannerTool(context.Background(), in, tool, args)

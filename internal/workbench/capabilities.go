@@ -47,7 +47,7 @@ func (s *Store) Capabilities(project string) ([]Capability, error) {
 		}
 		out = append(out, Capability{Kind: "skill", ID: ex.ID, Name: ex.Name, Command: ex.SkillName, Description: ex.Description})
 	}
-	plugins, e := s.EnabledPlugins()
+	plugins, e := s.enabledProjectPlugins(project)
 	if e != nil {
 		return nil, e
 	}

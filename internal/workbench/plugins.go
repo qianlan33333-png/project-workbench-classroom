@@ -9,6 +9,7 @@ import (
 // MCP config remains the native Harness shape; credentials are stored outside
 // project files and never included in the owner-facing list.
 type Plugin struct {
+	ProjectID   string            `json:"projectId,omitempty"`
 	Enabled     *bool             `json:"enabled,omitempty"`
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
@@ -35,6 +36,11 @@ func (s *Store) Plugin(id string) (Plugin, error) {
 	return getJSON[Plugin](s.DB, "SELECT data FROM plugins WHERE id=?", id)
 }
 func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
+	if p.ProjectID != "" {
+		if _, e := s.ProjectRoot(p.ProjectID); e != nil {
+			return p, e
+		}
+	}
 	if strings.TrimSpace(p.Name) == "" {
 		return p, errors.New("请填写插件名称")
 	}
@@ -56,6 +62,9 @@ func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
 	if p.ID == "" {
 		p.ID = newID()
 	} else if old, e := s.Plugin(p.ID); e == nil {
+		if old.ProjectID != "" && p.ProjectID != old.ProjectID {
+			return p, errors.New("项目专用插件不能改归属")
+		}
 		if p.Env == nil {
 			p.Env = old.Env
 		}
@@ -75,16 +84,19 @@ func (s *Store) DeletePlugin(id string) error {
 	_, e := s.DB.Exec("DELETE FROM plugins WHERE id=?", id)
 	return e
 }
-func (s *Store) EnabledPlugins() ([]Plugin, error) {
+func (s *Store) enabledProjectPlugins(project string) ([]Plugin, error) {
 	vs, e := listJSON[Plugin](s.DB, "SELECT data FROM plugins ORDER BY id")
 	if e != nil {
 		return nil, e
 	}
 	out := []Plugin{}
 	for _, p := range vs {
-		if p.Enabled == nil || *p.Enabled {
+		if (p.ProjectID == "" || p.ProjectID == project) && (p.Enabled == nil || *p.Enabled) {
 			out = append(out, p)
 		}
 	}
 	return out, nil
 }
+
+// EnabledPlugins returns the globally available plugins without any project grants.
+func (s *Store) EnabledPlugins() ([]Plugin, error) { return s.enabledProjectPlugins("") }

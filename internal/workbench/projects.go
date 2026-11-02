@@ -83,7 +83,7 @@ func (s *Store) updateProject(id string, update Project) (Project, error) {
 		}
 	}
 	for _, id := range update.PluginIDs {
-		if _, err = s.Plugin(id); err != nil {
+		if plugin, e := s.Plugin(id); e != nil || (plugin.ProjectID != "" && plugin.ProjectID != p.ID) {
 			return p, errors.New("插件不存在")
 		}
 	}

@@ -119,7 +119,7 @@ func (h *Harness) servePersonalMCP(lifetime context.Context, in RuntimeInput, w 
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/global-mcp/")
 	p, e := h.Store.Plugin(id)
-	if e != nil || p.Transport != "stdio" || p.Enabled != nil && !*p.Enabled {
+	if e != nil || (p.ProjectID != "" && p.ProjectID != personalProjectID) || p.Transport != "stdio" || p.Enabled != nil && !*p.Enabled {
 		http.Error(w, "MCP unavailable", 404)
 		return
 	}

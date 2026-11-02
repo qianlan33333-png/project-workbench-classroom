@@ -169,3 +169,30 @@ func TestToolArchiveUsesVerifiedDigestCache(t *testing.T) {
 		t.Fatal("invalid cache digest accepted")
 	}
 }
+
+func TestCustomerRetrievalPluginStaysInItsProject(t *testing.T) {
+	s := testStore(t)
+	a := testProject(t, s, "A")
+	b := testProject(t, s, "B")
+	plugin, err := s.SavePlugin(Plugin{Name: "private evidence", Transport: "http", URL: "https://evidence.example/mcp", ProjectID: a.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, project := range []string{a.ID, b.ID, personalProjectID} {
+		visible, err := s.enabledProjectPlugins(project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, p := range visible {
+			found = found || p.ID == plugin.ID
+		}
+		if found != (project == a.ID) {
+			t.Fatalf("wrong visibility for %s", project)
+		}
+	}
+	b.PluginIDs = []string{plugin.ID}
+	if _, err = s.UpdateProject(b.ID, b); err == nil {
+		t.Fatal("accepted another project's tool")
+	}
+}

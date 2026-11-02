@@ -1,0 +1,8 @@
+{
+  "keyId": "fixture",
+  "timestamp": "1700000000",
+  "secret": "fixture-not-a-real-secret",
+  "direction": "crm-to-wb",
+  "body": "{\"v\":1,\"op\":\"status\",\"staffUserId\":\"staff-a\",\"externalUserId\":\"external-a\",\"actor\":\"operator-a\"}",
+  "signature": "7135897df941d759137e863ebb9b41b9b4dbe3e2dfb0b2bd65889c2a053606b2"
+}

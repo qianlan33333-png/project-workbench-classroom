@@ -248,12 +248,21 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		expertName = e.Name
 	}
 	run := Run{ExpertName: expertName, ID: newID(), ProjectID: p.ID, SessionID: sess.ID, MessageID: m.ID, EventID: m.Incoming.EventID, State: "queued", Source: m.Incoming.Source, Text: m.Incoming.Text, ExpertID: expert, ExpertDigest: version, ReplyAnchor: anchor, AnchorExplicit: explicit, CreatedAt: now()}
+	if run.Source == gatewaySource {
+		run.Gateway, err = s.gatewayRunMetadata(m)
+		if err != nil {
+			return m, err
+		}
+	}
 	run.Capabilities, err = s.selectCapabilities(p.ID, m.Incoming.Capabilities)
 	if err != nil {
 		return m, err
 	}
 	run.ExpertVersions = map[string]string{}
 	for _, id := range p.ExpertIDs {
+		if run.Source == gatewaySource && id != expert {
+			continue
+		}
 		ex, e := s.Expert(id)
 		if e != nil {
 			return m, e
@@ -313,6 +322,28 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		}
 		if currentSession.RecycledAt > 0 || currentSession.Lifecycle != "" {
 			return errors.New("对话正在归档或已在回收站")
+		}
+		if run.Gateway == nil {
+			var external int
+			if e := tx.QueryRow("SELECT count(*) FROM gateway_sessions WHERE id=?", sess.ID).Scan(&external); e != nil {
+				return e
+			}
+			if external != 0 {
+				return errors.New("此客户对话仅由已接入的客户新消息触发")
+			}
+		}
+		if run.Gateway != nil {
+			g, e := txGatewaySession(tx, sess.ID)
+			if e != nil {
+				return e
+			}
+			b, e := gatewayBindingTx(tx, g.BindingID)
+			if e != nil {
+				return e
+			}
+			if g.Mode != "auto" || g.Version != run.Gateway.Version || !b.Enabled || b.Version != run.Gateway.BindingVersion {
+				return errors.New("conversation changed before queueing")
+			}
 		}
 		if _, err := tx.Exec("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)", run.ID, p.ID, sess.ID, m.ID, run.State, priority, run.CreatedAt, encode(run)); err != nil {
 			return err

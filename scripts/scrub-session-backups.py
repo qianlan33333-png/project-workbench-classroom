@@ -38,6 +38,9 @@ def scrub(db_path, marker):
         for mid,event in messages:
             c.execute("DELETE FROM events WHERE json_extract(data,'$.id')=? OR json_extract(data,'$.messageId')=? OR json_extract(data,'$.eventId')=?",(mid,mid,event))
         for sql in [
+            "DELETE FROM gateway_crm_receipts WHERE session_id=?",
+            "DELETE FROM gateway_history_index WHERE session_id=?",
+            "DELETE FROM gateway_sessions WHERE id=?",
             "DELETE FROM deliveries WHERE json_extract(data,'$.sessionId')=?",
             "DELETE FROM interactions WHERE run_id IN (SELECT id FROM runs WHERE session_id=?)",
             "DELETE FROM baselines WHERE run_id IN (SELECT id FROM runs WHERE session_id=?)",

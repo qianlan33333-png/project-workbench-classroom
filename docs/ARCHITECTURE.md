@@ -1,5 +1,19 @@
 # 执行与数据边界
 
+## 标准企微网关连接器（可选）
+
+公开签名入口 `/api/v1/gateway/hooks/:id` 在原始字节验签、租户/账号范围检查和事务持久化后确认。
+管理入口 `/api/v1/gateway/{connections,bindings,sessions}` 使用现有 owner 鉴权，旧 channel token
+不能读取连接器凭证。连接器状态仍存 connections/connection_secrets，绑定、会话模式和事件哈希
+分别存 gateway_bindings/gateway_sessions/gateway_events；业务任务和外发继续用 inbox/runs/deliveries。
+Worker 仅增加外发泵，复用现有队列和项目锁。202 记 accepted，由异步结果或读取确认最终状态。
+外部客户无法通过普通 messages 入口伪造来源，无法进入本人渠道的控制命令和入口归属器。
+模式版本与绑定版本随输入固定；人工、换绑、停用连接后，旧结果无法获得新的发送权限。
+外部会话强制 Podman、项目只读、原生目录独立；只装载明确授予的业务工具和当前客户历史。
+项目资料通过绑定 `knowledgePaths` 的文件快照共享，不挂载项目正文目录或客户归档。
+客户容器仅持模型占位凭证，通过本轮私有桥请求固定的 DeepSeek Messages 接口；真实模型密钥留在宿主。
+技术实现和真实 Provider 验收分开，详见 [连接器说明](WECOM_CONNECTOR.md)。
+
 ## 不变式
 
 - Project 默认助手 → Session → Harness ID 稳定对应。数据库触发器禁止改写对话的项目和 Harness ID；恢复失败会报错。

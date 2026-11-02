@@ -95,7 +95,9 @@ const plannerTools=[
  ["update_series","从 original 起使用新 cron，保留历史；影响例外时先核对。",timeChange],
  ["delete_schedule","仅按本人明确要求删除指定范围内的规则。",{id:z.string(),projectId:z.string().optional()}],
 ];
-for(const [name,description,inputSchema] of [...(process.env.PW_PERSONAL==="true"?personalTools:businessTools),...plannerTools])
+const gatewayTools=businessTools.filter(([name])=>name==="search_history"||name==="read_run").map(([name,description,schema])=>[name,description.replaceAll("当前项目", "当前客户会话"),schema]);
+gatewayTools.push(["read_paused_history","按运行编号分页读取该客户已记录的暂停历史，nextOffset=-1 表示结束。",{runId:z.string(),offset:z.number().int().nonnegative()}]);
+for(const [name,description,inputSchema] of (process.env.PW_GATEWAY==="true"?gatewayTools:[...(process.env.PW_PERSONAL==="true"?personalTools:businessTools),...plannerTools]))
   server.registerTool(name, { description, inputSchema }, async (args) =>
     call(name, args),
   );

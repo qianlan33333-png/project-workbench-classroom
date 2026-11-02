@@ -77,6 +77,7 @@ type FileReference struct {
 	Path      string `json:"path"`
 }
 type Message struct {
+	Gateway      *GatewayRun     `json:"gateway,omitempty"`
 	ID           string          `json:"id"`
 	Incoming     Incoming        `json:"incoming"`
 	State        string          `json:"state"`
@@ -98,6 +99,7 @@ type Run struct {
 	ScheduledFor         int64             `json:"scheduledFor,omitempty"`
 	ScheduleConfig       *Schedule         `json:"scheduleConfig,omitempty"`
 	InputFingerprint     string            `json:"inputFingerprint,omitempty"`
+	Gateway              *GatewayRun       `json:"gateway,omitempty"`
 	PersonalRulesVersion int64             `json:"personalRulesVersion,omitempty"`
 	Capabilities         []Capability      `json:"capabilities,omitempty"`
 	Kind                 string            `json:"kind,omitempty"`
@@ -150,21 +152,22 @@ type Connection struct {
 	LastHeartbeat int64  `json:"lastHeartbeat"`
 }
 type Delivery struct {
-	ID             string   `json:"id"`
-	MessageID      string   `json:"messageId"`
-	RunID          string   `json:"runId"`
-	SessionID      string   `json:"sessionId"`
-	ConnectionID   string   `json:"connectionId"`
-	ConversationID string   `json:"conversationId"`
-	ActorID        string   `json:"actorId"`
-	ReplyTo        string   `json:"replyTo"`
-	Kind           string   `json:"kind"`
-	Text           string   `json:"text"`
-	State          string   `json:"state"`
-	Receipt        string   `json:"receipt"`
-	Receipts       []string `json:"receipts,omitempty"`
-	Error          string   `json:"error"`
-	CreatedAt      int64    `json:"createdAt"`
+	Gateway        *GatewayDelivery `json:"gateway,omitempty"`
+	ID             string           `json:"id"`
+	MessageID      string           `json:"messageId"`
+	RunID          string           `json:"runId"`
+	SessionID      string           `json:"sessionId"`
+	ConnectionID   string           `json:"connectionId"`
+	ConversationID string           `json:"conversationId"`
+	ActorID        string           `json:"actorId"`
+	ReplyTo        string           `json:"replyTo"`
+	Kind           string           `json:"kind"`
+	Text           string           `json:"text"`
+	State          string           `json:"state"`
+	Receipt        string           `json:"receipt"`
+	Receipts       []string         `json:"receipts,omitempty"`
+	Error          string           `json:"error"`
+	CreatedAt      int64            `json:"createdAt"`
 }
 type Schedule struct {
 	Version              int64           `json:"version,omitempty"`
@@ -211,21 +214,23 @@ type Revision struct {
 }
 
 type Config struct {
-	BackupScrubCommand []string
-	DataDir            string
-	BasePath           string
-	PublicURL          string
-	WebDir             string
-	ChannelToken       string
-	PasswordHash       string
-	HarnessCommand     []string
-	HarnessPatch       string
-	HarnessHome        string
-	Provider           string
-	Model              string
-	Podman             string
-	RuntimeImage       string
-	RuntimeMode        string
-	BrowserURL         string
-	RuntimeDir         string
+	GatewayModelBaseURL   string
+	GatewayModelAPIKeyEnv string
+	BackupScrubCommand    []string
+	DataDir               string
+	BasePath              string
+	PublicURL             string
+	WebDir                string
+	ChannelToken          string
+	PasswordHash          string
+	HarnessCommand        []string
+	HarnessPatch          string
+	HarnessHome           string
+	Provider              string
+	Model                 string
+	Podman                string
+	RuntimeImage          string
+	RuntimeMode           string
+	BrowserURL            string
+	RuntimeDir            string
 }
