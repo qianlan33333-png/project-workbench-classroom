@@ -10,7 +10,11 @@ with tempfile.TemporaryDirectory() as tmp:
  INSERT INTO sessions VALUES('session-a','secret-original');INSERT INTO sessions VALUES('session-b','other-project');INSERT INTO inbox VALUES('message-a','session-a','event-a','{"incoming":{"sessionId":"session-a"}}');INSERT INTO runs VALUES('run-a','session-a');INSERT INTO events VALUES('session-a','{"text":"secret-original"}');INSERT INTO revisions VALUES('run-a');''');c.commit();c.close()
  native=backup/'runtime/projects/project-a/sessions/--workspace--/pw-session-a';native.mkdir(parents=True);(native/'session.v4.jsonl').write_text('secret-original')
  files=backup/'projects/project-a/files';files.mkdir(parents=True);(files/'成果.md').write_text('keep-business-file')
+ for scratch in ('router','router-home'):
+  q=backup/'runtime'/scratch/'run-a';q.mkdir(parents=True);(q/'private').write_text('delete me')
+ other=backup/'runtime/router-home/run-b';other.mkdir()
  m.main();m.main()
+ assert other.exists() and not (backup/'runtime/router/run-a').exists() and not (backup/'runtime/router-home/run-a').exists()
  c=sqlite3.connect(db);assert c.execute('SELECT id FROM sessions').fetchall()==[('session-b',)];assert c.execute('SELECT count(*) FROM inbox').fetchone()[0]==0;assert c.execute('SELECT count(*) FROM legacy_consumed').fetchone()[0]==1;c.close()
  assert not native.exists();assert (files/'成果.md').read_text()=='keep-business-file';assert b'secret-original' not in db.read_bytes()
  (m.DATA/'purged-sessions/session-a.json').unlink();m.main();assert (m.DATA/'purged-sessions/session-a.json').exists()

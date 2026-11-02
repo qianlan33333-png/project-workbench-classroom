@@ -38,6 +38,9 @@ func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
 	defer s.expertMu.RUnlock()
 	s.scheduleMu.Lock()
 	defer s.scheduleMu.Unlock()
+	return s.saveScheduleLocked(v, creationID, false)
+}
+func (s *Store) saveScheduleLocked(v Schedule, creationID string, explicitEnabled bool) (Schedule, error) {
 	if v.Condition != "" && v.Condition != "changed" {
 		return v, errors.New("无法识别执行条件")
 	}
@@ -51,6 +54,7 @@ func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
 		}
 	}
 	v.PausedReason = ""
+	v.ExpertRequired = false
 	p, err := s.Project(v.ProjectID)
 	if err != nil {
 		return v, err
@@ -98,13 +102,17 @@ func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
 			return v, errors.New("定时任务不能更换所属项目")
 		}
 		v.CreatedAt = old.CreatedAt
-		if old.Condition == "changed" || old.Output != "" {
+		if !explicitEnabled && (old.Condition == "changed" || old.Output != "") {
 			v.Enabled = old.Enabled
 		}
 		if old.PausedReason != "" && !v.Enabled {
 			v.PausedReason = old.PausedReason
 		}
-		if old.Enabled != v.Enabled && v.Enabled && old.PausedReason != "" && old.Condition != "changed" && old.Output == "" && v.ExpertID == "" && strings.Contains(old.PausedReason, "专家") {
+		v.ExpertRequired = old.ExpertRequired && v.ExpertID == ""
+		if old.ExpertRequired && !v.ExpertRequired {
+			v.PausedReason = ""
+		}
+		if v.Enabled && v.ExpertRequired {
 			return v, errors.New("请先重新选择专家")
 		}
 	}
@@ -116,16 +124,23 @@ func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
 	return v, err
 }
 func (s *Store) FireSchedules(at time.Time) error {
+	return s.fireDueSchedules(context.Background(), at)
+}
+func (s *Store) fireDueSchedules(ctx context.Context, at time.Time) error {
 	due, err := listJSON[Schedule](s.DB, "SELECT data FROM schedules WHERE enabled=1 AND next_at<=? ORDER BY next_at", at.UnixMilli())
 	if err != nil {
 		return err
 	}
+	var failures error
 	for _, sc := range due {
-		if _, err = s.fireSchedule(sc.ID, at, ""); err != nil && !errors.Is(err, ErrNotFound) {
-			return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if _, err = s.fireSchedule(ctx, sc.ID, at, ""); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrConflict) {
+			failures = errors.Join(failures, err)
 		}
 	}
-	return nil
+	return failures
 }
 
 type ScheduleReceipt struct {
@@ -140,10 +155,25 @@ func (s *Store) RunSchedule(id, key string) (ScheduleReceipt, error) {
 	if len(key) < 8 || len(key) > 100 {
 		return ScheduleReceipt{}, errors.New("需要有效的操作编号")
 	}
-	return s.fireSchedule(id, time.Now(), "manual:"+key)
+	return s.fireSchedule(context.Background(), id, time.Now(), "manual:"+key)
 }
 
-func (s *Store) fireSchedule(id string, at time.Time, operation string) (receipt ScheduleReceipt, err error) {
+func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, operation string) (receipt ScheduleReceipt, err error) {
+	observed, err := s.Schedule(id)
+	if err != nil {
+		return receipt, err
+	}
+	var inputs []ContextSource
+	var scanErr error
+	if observed.Condition == "changed" || observed.Output != "" {
+		// No project/global mutex is held during filesystem I/O.
+		if operation != "" || observed.Enabled && observed.NextAt <= at.UnixMilli() {
+			inputs, scanErr = s.scheduleSourcesContext(ctx, Project{ID: observed.ProjectID}, observed)
+		}
+	}
+	if ctx.Err() != nil {
+		return receipt, ctx.Err()
+	}
 	s.expertMu.RLock()
 	defer s.expertMu.RUnlock()
 	s.scheduleMu.Lock()
@@ -151,6 +181,9 @@ func (s *Store) fireSchedule(id string, at time.Time, operation string) (receipt
 	schedule, err := s.Schedule(id)
 	if err != nil {
 		return receipt, err
+	}
+	if observed != schedule {
+		return receipt, ErrConflict
 	}
 	manual := operation != ""
 	if !manual {
@@ -180,7 +213,7 @@ func (s *Store) fireSchedule(id string, at time.Time, operation string) (receipt
 		}
 		return receipt, errors.New("项目已归档")
 	}
-	if schedule.ExpertID == "" && strings.HasPrefix(schedule.PausedReason, "原专家") {
+	if schedule.ExpertRequired {
 		return receipt, errors.New("请编辑任务以指定有效专家")
 	}
 	if !manual {
@@ -201,8 +234,7 @@ func (s *Store) fireSchedule(id string, at time.Time, operation string) (receipt
 		}
 	}
 	if guarded && receipt.Outcome == "" {
-		var inputs []ContextSource
-		inputs, err = s.scheduleSources(p, schedule)
+		err = scanErr
 		if err != nil {
 			receipt.Outcome = "failed"
 			receipt.Detail = "检查资料失败：" + err.Error()
@@ -232,6 +264,11 @@ func (s *Store) fireSchedule(id string, at time.Time, operation string) (receipt
 		}
 	}
 	err = s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if receipt.Outcome == "skipped" && schedule.Output == "project_context" {
+			if e := restoreUnchangedBrief(tx, p.ID, fingerprint); e != nil {
+				return e
+			}
+		}
 		if receipt.Outcome == "" {
 			receipt.Outcome = "queued"
 			ss := Session{ID: newID(), ProjectID: p.ID, Title: schedule.Name + " · " + at.In(time.FixedZone("CST", 8*3600)).Format("01-02 15:04"), Kind: "automation", ExpertID: schedule.ExpertID, CreatedAt: now(), UpdatedAt: now()}
@@ -288,6 +325,8 @@ func (s *Store) Schedule(id string) (Schedule, error) {
 }
 
 func (s *Store) toggleSchedule(id string, enabled bool) (Schedule, []string, error) {
+	s.expertMu.RLock()
+	defer s.expertMu.RUnlock()
 	s.scheduleMu.Lock()
 	defer s.scheduleMu.Unlock()
 	sc, e := s.Schedule(id)
@@ -302,7 +341,7 @@ func (s *Store) toggleSchedule(id string, enabled bool) (Schedule, []string, err
 		if p.Archived {
 			return sc, nil, errors.New("项目已归档")
 		}
-		if sc.ExpertID == "" && strings.HasPrefix(sc.PausedReason, "原专家") {
+		if sc.ExpertRequired {
 			return sc, nil, errors.New("请先选择专家")
 		}
 		sc.NextAt, e = nextSchedule(sc, time.Now())
@@ -311,27 +350,55 @@ func (s *Store) toggleSchedule(id string, enabled bool) (Schedule, []string, err
 		}
 	}
 	sc.Enabled = enabled
-	sc.PausedReason = ""
+	if !sc.ExpertRequired {
+		sc.PausedReason = ""
+	}
 	var active []string
 	if !enabled {
-		rows, e := s.DB.Query("SELECT id FROM runs WHERE json_extract(data,'$.scheduleId')=? AND state IN ('queued','running','waiting')", id)
-		if e != nil {
-			return sc, nil, e
-		}
-		for rows.Next() {
-			var id string
-			if e = rows.Scan(&id); e != nil {
-				rows.Close()
-				return sc, nil, e
-			}
-			active = append(active, id)
-		}
-		e = rows.Err()
-		rows.Close()
+		active, e = s.activeScheduleRuns(id)
 		if e != nil {
 			return sc, nil, e
 		}
 	}
 	_, e = s.DB.Exec("UPDATE schedules SET enabled=?,next_at=?,data=? WHERE id=?", enabled, sc.NextAt, encode(sc), id)
 	return sc, active, e
+}
+
+func (s *Store) activeScheduleRuns(id string) ([]string, error) {
+	var active []string
+	rows, e := s.DB.Query("SELECT id FROM runs WHERE json_extract(data,'$.scheduleId')=? AND state IN ('queued','running','waiting')", id)
+	if e != nil {
+		return nil, e
+	}
+	for rows.Next() {
+		var id string
+		if e = rows.Scan(&id); e != nil {
+			rows.Close()
+			return nil, e
+		}
+		active = append(active, id)
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return nil, e
+	}
+	return active, nil
+}
+func (s *Store) stopScheduleRuns(ids []string) error {
+	s.scheduleMu.Lock()
+	stop := s.stopScheduleRun
+	s.scheduleMu.Unlock()
+	for _, id := range ids {
+		if stop == nil {
+			return errors.New("执行器未连接，请检查运行状态")
+		}
+		if e := stop(id); e != nil {
+			r, err := s.Run(id)
+			if err != nil || !contains([]string{"completed", "failed", "cancelled", "interrupted"}, r.State) {
+				return e
+			}
+		}
+	}
+	return nil
 }

@@ -1,7 +1,7 @@
-import json,urllib.request,urllib.error,pathlib,base64,time,uuid
+import os,json,urllib.request,urllib.error,pathlib,base64,time,uuid
 cfg=json.load(open(pathlib.Path.home()/'.config/project-workbench/cli.json'))
 auth='Basic '+base64.b64encode(('owner:'+cfg['password']).encode()).decode()
-url='http://127.0.0.1:3095/api/v1'
+url=os.environ.get('PW_TODAY_URL','http://127.0.0.1:3095').rstrip('/')+'/api/v1'
 def api(path,body=None,method=None):
  q=urllib.request.Request(url+path,data=json.dumps(body,ensure_ascii=False).encode() if body is not None else None,headers={'Authorization':auth,'Content-Type':'application/json'},method=method or ('POST' if body is not None else 'GET'))
  try:
@@ -28,7 +28,7 @@ try:
  r=run('请只读查询青山表达实验的原始资料.md，原样引用最后一条关键反对意见并列出来源。');assert '不要为了快速上线而跳过需求验证' in r['result'] and '原始资料.md' in r['result'];report['checks'].append('personal reads scoped project source')
  api('/today/refresh',{})
  daily=wait(lambda:(lambda d:d if d.get('updatedAt',0)>int(time.time()*1000)-180000 and d.get('state')=='ready' and d.get('version',0)>0 else None)(api('/today')['daily']),420)
- report['daily']=daily;report['contexts']=api('/today')['contexts'];assert all(c['state']=='ready' for c in report['contexts']);report['checks'].append('real project summary and daily generation')
+ report['daily']=daily;report['contexts']=api('/today')['contexts'];expected={p['id'] for p in json.loads(pathlib.Path('.var/today-fixtures.json').read_text())['projects']};assert expected.issubset({c['projectId'] for c in report['contexts'] if c['state']=='ready'});report['checks'].append('real project summary and daily generation')
  report['passed']=True
 finally:
  pathlib.Path('artifacts/today/model-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))

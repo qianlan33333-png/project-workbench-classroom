@@ -42,19 +42,21 @@ type ContextSource struct {
 	Text   string `json:"text,omitempty"`
 }
 type ProjectContext struct {
-	ManualAt    int64           `json:"manualAt,omitempty"`
-	Coverage    map[string]int  `json:"coverage"`
-	ProjectID   string          `json:"projectId"`
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Version     int64           `json:"version"`
-	UpdatedAt   int64           `json:"updatedAt"`
-	State       string          `json:"state"`
-	Error       string          `json:"error,omitempty"`
-	Recent      []ContextChange `json:"recent"`
-	Sources     []ContextSource `json:"sources,omitempty"`
-	Fingerprint string          `json:"fingerprint"`
-	Manual      string          `json:"manual,omitempty"`
+	PublishedBy      string          `json:"publishedBy,omitempty"`
+	PublishedVersion int64           `json:"publishedVersion,omitempty"`
+	ManualAt         int64           `json:"manualAt,omitempty"`
+	Coverage         map[string]int  `json:"coverage"`
+	ProjectID        string          `json:"projectId"`
+	Name             string          `json:"name"`
+	Description      string          `json:"description"`
+	Version          int64           `json:"version"`
+	UpdatedAt        int64           `json:"updatedAt"`
+	State            string          `json:"state"`
+	Error            string          `json:"error,omitempty"`
+	Recent           []ContextChange `json:"recent"`
+	Sources          []ContextSource `json:"sources,omitempty"`
+	Fingerprint      string          `json:"fingerprint"`
+	Manual           string          `json:"manual,omitempty"`
 }
 type ContextChange struct {
 	Text   string `json:"text"`

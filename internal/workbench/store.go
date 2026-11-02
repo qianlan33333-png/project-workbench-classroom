@@ -18,6 +18,7 @@ type Store struct {
 	Root               string
 	mu                 sync.Mutex
 	scheduleMu         sync.Mutex
+	stopScheduleRun    func(string) error
 	expertMu           sync.RWMutex
 	browsers           sync.Map // run ID -> browserEndpoint, only while its container is alive
 	notify             chan struct{}
@@ -126,6 +127,11 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 		return nil, err
 	}
 	if _, err = db.Exec("DELETE FROM settings WHERE key='tool_install_running'"); err != nil {
+		return nil, err
+	}
+	// Normalize rows created before the explicit expert gate was introduced.
+	if _, err = db.Exec(`UPDATE schedules SET enabled=0,data=json_set(data,'$.enabled',json('false'),'$.expertRequired',json('true'))
+ WHERE coalesce(json_extract(data,'$.expertRequired'),0)=0 AND coalesce(json_extract(data,'$.expertId'),'')='' AND (json_extract(data,'$.pausedReason') LIKE '原专家%已删除%' OR json_extract(data,'$.pausedReason') LIKE '专家已从项目移除%')`); err != nil {
 		return nil, err
 	}
 	return s, nil

@@ -413,6 +413,7 @@ func (s *Store) DeleteExpert(id, base string) error {
 		for _, sc := range usage.Schedules {
 			sc.Enabled = false
 			sc.ExpertID = ""
+			sc.ExpertRequired = true
 			sc.PausedReason = "原专家「" + old.Name + "」已删除，请重新选择专家后启用"
 			if _, e := tx.Exec("UPDATE schedules SET enabled=0,data=? WHERE id=?", encode(sc), sc.ID); e != nil {
 				return e

@@ -65,7 +65,7 @@ func (s *Store) ContextCatalog() ([]ProjectContext, error) {
 		}
 		c.Sources = nil
 		c.Manual = ""
-		if c.State == "invalid" || c.Fingerprint == "" && c.Version > 0 {
+		if c.State == "invalid" || c.Fingerprint == "" && c.Version > 0 && c.Description != c.Manual {
 			c.Description = "资料已被删除或纠正，等待重新整理"
 			c.Recent = nil
 		}
@@ -113,6 +113,7 @@ func (s *Store) contextEvent(session, kind string, data any) {
 		ID        string `json:"id"`
 		ProjectID string `json:"projectId"`
 		State     string `json:"state"`
+		Path      string `json:"path"`
 		After     string `json:"after"`
 		Before    string `json:"before"`
 	}
@@ -135,7 +136,38 @@ func (s *Store) contextEvent(session, kind string, data any) {
 			return
 		}
 	}
-	s.markContext(id, (kind == "file.changed" && a.Before != "" && a.Before != a.After) || strings.Contains(kind, "deleted") || kind == "session.recycled" || kind == "session.purged")
+	invalid := (kind == "file.changed" && a.Before != "" && a.Before != a.After) || strings.Contains(kind, "deleted") || kind == "session.recycled" || kind == "session.purged"
+	if invalid {
+		// A raw source may also have been read by the personal session.
+		_ = s.SetSetting("personal_context_reset", "true")
+		if c, e := s.ProjectContext(id); e == nil && (c.PublishedBy != "" || len(c.Sources) > 0 || c.Description == c.Manual) && c.State != "invalid" {
+			relevant := false
+			for _, source := range c.Sources {
+				switch kind {
+				case "file.changed", "file.deleted":
+					relevant = source.ID == "file:"+a.Path
+				case "task.deleted":
+					relevant = source.ID == "task:"+a.ID
+				case "session.recycled", "session.purged":
+					if strings.HasPrefix(source.ID, "run:") {
+						var sid string
+						e := s.DB.QueryRow("SELECT session_id FROM runs WHERE id=?", strings.TrimPrefix(source.ID, "run:")).Scan(&sid)
+						relevant = sid == a.ID || (kind == "session.purged" && errors.Is(e, sql.ErrNoRows))
+					}
+				}
+				if relevant {
+					break
+				}
+			}
+			if !relevant {
+				if kind != "task.deleted" {
+					return
+				}
+				invalid = false
+			}
+		}
+	}
+	s.markContext(id, invalid)
 	if kind == "task.updated" || kind == "task.deleted" {
 		var task ProjectTask
 		_ = json.Unmarshal([]byte(encode(data)), &task)
@@ -304,7 +336,7 @@ func (s *Store) loadContextEvidence(p Project, c ProjectContext, src ContextSour
 		if t.ProjectID != p.ID {
 			return "", ErrNotFound
 		}
-		t.DraftText = ""
+		t = taskEvidence(t)
 		return encode(t), nil
 	}
 	return "", ErrNotFound

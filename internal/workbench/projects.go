@@ -137,7 +137,7 @@ func (s *Store) updateProject(id string, update Project) (Project, error) {
 			if _, e := tx.Exec("UPDATE sessions SET data=json_set(data,'$.expertId','general') WHERE project_id=? AND json_extract(data,'$.expertId')=?", p.ID, expert); e != nil {
 				return e
 			}
-			if _, e := tx.Exec("UPDATE schedules SET enabled=0,data=json_set(data,'$.enabled',json('false'),'$.expertId','','$.pausedReason','专家已从项目移除，请重新选择专家后启用') WHERE project_id=? AND json_extract(data,'$.expertId')=?", p.ID, expert); e != nil {
+			if _, e := tx.Exec("UPDATE schedules SET enabled=0,data=json_set(data,'$.enabled',json('false'),'$.expertId','','$.expertRequired',json('true'),'$.pausedReason','专家已从项目移除，请重新选择专家后启用') WHERE project_id=? AND json_extract(data,'$.expertId')=?", p.ID, expert); e != nil {
 				return e
 			}
 		}

@@ -16,6 +16,21 @@ def scrub(db_path, marker):
     if 'sessions' not in tables: c.close(); return
     messages=list(c.execute("SELECT id,event_id FROM inbox WHERE session_id=? OR json_extract(data,'$.incoming.sessionId')=?",(sid,sid)))
     run_ids=[r[0] for r in c.execute('SELECT id FROM runs WHERE session_id=?',(sid,))]
+    root=db_path.parent
+    # A previous scrubber may already have deleted the DB rows while leaving
+    # the routed native session behind. Recover its run ID from the session tree.
+    home=root/'runtime'/'router-home'
+    if (root/'runtime').is_symlink() or home.is_symlink(): raise ValueError('invalid scratch root')
+    for session in home.glob('*/sessions/*/*'):
+        if session.name==hid: run_ids.append(session.relative_to(home).parts[0])
+    for rid in set(run_ids):
+        if not isinstance(rid,str) or pathlib.Path(rid).name!=rid or rid in ('','.','..'): raise ValueError('invalid run ID')
+        for name in ('router','router-home'):
+            scratch=root/'runtime'/name
+            if scratch.is_symlink() or (root/'runtime').is_symlink(): raise ValueError('invalid scratch root')
+            dest=scratch/rid
+            if dest.is_symlink(): dest.unlink()
+            elif dest.is_dir(): shutil.rmtree(dest)
     c.execute('PRAGMA foreign_keys=OFF')
     with c:
         if 'legacy_consumed' in tables:

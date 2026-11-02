@@ -283,15 +283,7 @@ func (a *API) Mount(r *gin.Engine) {
 			if e != nil {
 				return nil, e
 			}
-			for _, id := range ids {
-				if e = a.Worker.Stop(id); e != nil {
-					r, er := s.Run(id)
-					if er != nil || !contains([]string{"completed", "failed", "cancelled", "interrupted"}, r.State) {
-						return nil, e
-					}
-				}
-			}
-			return sc, nil
+			return sc, s.stopScheduleRuns(ids)
 		})
 	})
 	owner.POST("/schedules/:id/run", func(c *gin.Context) {

@@ -327,35 +327,44 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 }
 
 func (h *Harness) Cleanup(ctx context.Context, run string) error {
-	if h.Config.RuntimeMode != "podman" {
-		return nil
+	if !toolIdentifier.MatchString(run) {
+		return errors.New("执行编号无效")
 	}
-	cmd := exec.CommandContext(ctx, h.Config.Podman, "rm", "--force", "--ignore", "pw-"+run)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("执行容器未能清理: %s", strings.TrimSpace(string(out)))
+	if h.Config.RuntimeMode == "podman" {
+		cmd := exec.CommandContext(ctx, h.Config.Podman, "rm", "--force", "--ignore", "pw-"+run)
+		if out, e := cmd.CombinedOutput(); e != nil {
+			return fmt.Errorf("执行容器未能清理: %s", strings.TrimSpace(string(out)))
+		}
+	}
+	return h.removeScratch(run)
+}
+
+// These locations are per-invocation scratch, never a resumable project session.
+func (h *Harness) removeScratch(run string) error {
+	if h.Config.DataDir == "" {
+		return errors.New("缺少运行目录")
+	}
+	for _, dir := range []string{"router", "router-home"} {
+		if e := os.RemoveAll(filepath.Join(h.Config.DataDir, "runtime", dir, run)); e != nil {
+			return e
+		}
 	}
 	return nil
 }
-
 func (h *Harness) CleanupOrphans(ctx context.Context) error {
-	if h.Config.RuntimeMode != "podman" {
-		return nil
+	if h.Config.RuntimeMode == "podman" {
+		cmd := exec.CommandContext(ctx, h.Config.Podman, "ps", "--all", "--filter", "label=project-workbench-root="+digest([]byte(h.Config.DataDir))[:16], "--format", "{{.ID}}")
+		out, e := cmd.Output()
+		if e != nil {
+			return fmt.Errorf("检查遗留执行容器: %w", e)
+		}
+		if ids := strings.Fields(string(out)); len(ids) > 0 {
+			if out, e = exec.CommandContext(ctx, h.Config.Podman, append([]string{"rm", "--force", "--ignore"}, ids...)...).CombinedOutput(); e != nil {
+				return fmt.Errorf("清理遗留执行容器: %s", strings.TrimSpace(string(out)))
+			}
+		}
 	}
-	cmd := exec.CommandContext(ctx, h.Config.Podman, "ps", "--all", "--filter", "label=project-workbench-root="+digest([]byte(h.Config.DataDir))[:16], "--format", "{{.ID}}")
-	out, e := cmd.Output()
-	if e != nil {
-		return fmt.Errorf("检查遗留执行容器: %w", e)
-	}
-	ids := strings.Fields(string(out))
-	if len(ids) == 0 {
-		return nil
-	}
-	args := append([]string{"rm", "--force", "--ignore"}, ids...)
-	if out, e = exec.CommandContext(ctx, h.Config.Podman, args...).CombinedOutput(); e != nil {
-		return fmt.Errorf("清理遗留执行容器: %s", strings.TrimSpace(string(out)))
-	}
-	return nil
+	return h.removeScratch("")
 }
 
 func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks RuntimeHooks) (resultOut RuntimeResult, executeErr error) {

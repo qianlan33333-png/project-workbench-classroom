@@ -164,6 +164,7 @@ type Delivery struct {
 	CreatedAt      int64    `json:"createdAt"`
 }
 type Schedule struct {
+	ExpertRequired       bool   `json:"expertRequired,omitempty"`
 	Condition            string `json:"condition,omitempty"`
 	SourceScope          string `json:"sourceScope,omitempty"`
 	Output               string `json:"output,omitempty"`

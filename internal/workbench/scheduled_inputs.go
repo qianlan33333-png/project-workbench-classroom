@@ -42,6 +42,27 @@ func includesInput(scope, id string) bool {
 }
 
 func (s *Store) scheduleSources(p Project, sc Schedule) ([]ContextSource, error) {
+	return s.scheduleSourcesContext(context.Background(), p, sc)
+}
+func (s *Store) scheduleSourcesContext(ctx context.Context, p Project, sc Schedule) ([]ContextSource, error) {
+	out, e := s.scheduleNonFiles(p, sc)
+	if e != nil {
+		return nil, e
+	}
+	root, e := s.openRoot(p.ID)
+	if e != nil {
+		return nil, e
+	}
+	defer root.Close()
+	files, e := scheduleFiles(ctx, root, sc.SourceScope)
+	if e != nil {
+		return nil, e
+	}
+	out = append(out, files...)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+func (s *Store) scheduleNonFiles(p Project, sc Schedule) ([]ContextSource, error) {
 	var out []ContextSource
 	if includesInput(sc.SourceScope, "manual") {
 		c, e := s.ProjectContext(p.ID)
@@ -67,38 +88,18 @@ func (s *Store) scheduleSources(p Project, sc Schedule) ([]ContextSource, error)
 			return nil, e
 		}
 		for _, t := range tasks {
-			t.DraftText = ""
+			t = taskEvidence(t)
 			out = append(out, ContextSource{ID: "task:" + t.ID, Hash: digest([]byte(encode(t))), At: t.UpdatedAt, Status: "read"})
 		}
 	}
-	files, e := s.Files(p.ID)
-	if e != nil {
-		return nil, e
-	}
-	root, e := s.openRoot(p.ID)
-	if e != nil {
-		return nil, e
-	}
-	defer root.Close()
-	for _, f := range files {
-		id := "file:" + f.Path
-		if f.Directory || strings.HasPrefix(f.Path, "定时任务结果/") || !includesInput(sc.SourceScope, id) {
-			continue
-		}
-		file, e := root.Open(f.Path)
-		if e != nil {
-			return nil, e
-		}
-		h := sha256.New()
-		_, e = io.Copy(h, file)
-		file.Close()
-		if e != nil {
-			return nil, e
-		}
-		out = append(out, ContextSource{ID: id, Hash: hex.EncodeToString(h.Sum(nil)), At: f.ModifiedAt, Status: "read"})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+func taskEvidence(t ProjectTask) ProjectTask {
+	t.DraftText = ""
+	t.DraftVersion = 0
+	t.SessionID = ""
+	t.Operation = ""
+	return t
 }
 func scheduleFingerprint(src []ContextSource) string {
 	h := sha256.New()
@@ -109,6 +110,15 @@ func scheduleFingerprint(src []ContextSource) string {
 }
 
 func briefExcerpt(id string, b []byte, complete bool) (string, string) {
+	if !complete && len(b) > 0 {
+		i := len(b) - 1
+		for i > 0 && !utf8.RuneStart(b[i]) {
+			i--
+		}
+		if !utf8.FullRune(b[i:]) {
+			b = b[:i]
+		}
+	}
 	if !utf8.Valid(b) || strings.IndexByte(string(b), 0) >= 0 {
 		return "仅核对文件版本，未解析内容", "unparsed"
 	}
@@ -231,10 +241,26 @@ func (s *Store) prepareBrief(p Project, r Run, src []ContextSource) (scheduleBri
 	for _, v := range src {
 		current[v.ID] = true
 	}
-	b.replace = b.base.State == "invalid" || len(prior) == 0
+	samePublication := b.base.PublishedBy == r.ScheduleID && b.base.PublishedVersion == b.base.Version
+	// A different writer or a manual edit replaces the baseline for incremental synthesis.
+	readAll := !samePublication || len(prior) == 0
+	b.replace = b.base.State == "invalid"
 	for k := range previous {
 		if !current[k] {
 			b.replace = true
+		}
+	}
+	// Rebuilding after withdrawal cannot silently discard a second task's
+	// contribution, and withdrawn evidence must not be fed back to the model.
+	if b.replace && b.base.Version > 0 {
+		published, e := getJSON[ProjectContext](s.DB, "SELECT data FROM context_versions WHERE project_id=? AND version=?", p.ID, b.base.Version)
+		if e != nil && !errors.Is(e, ErrNotFound) {
+			return b, e
+		}
+		for _, v := range published.Sources {
+			if !includesInput(r.ScheduleConfig.SourceScope, v.ID) {
+				return b, errors.New("现有说明还引用其他资料，当前范围无法安全重建。请扩充资料范围或先人工修订说明；现有正文已保留")
+			}
 		}
 	}
 	oldStatus := map[string]string{}
@@ -248,7 +274,7 @@ func (s *Store) prepareBrief(p Project, r Run, src []ContextSource) (scheduleBri
 	defer root.Close()
 	var evidence []ContextSource
 	for i, v := range b.inputs {
-		if !b.replace && previous[v.ID] == v.Hash {
+		if !b.replace && !readAll && previous[v.ID] == v.Hash {
 			b.inputs[i].Status = oldStatus[v.ID]
 			continue
 		}
@@ -317,7 +343,11 @@ func (s *Store) prepareBrief(p Project, r Run, src []ContextSource) (scheduleBri
 		if e != nil {
 			return b, e
 		}
-		skill += "\n附加专家方法：\n" + string(f)
+		resources, e := expertReferences(filepath.Join(s.Root, "experts", r.ExpertID, r.ExpertDigest), string(f))
+		if e != nil {
+			return b, e
+		}
+		skill += "\n附加专家方法：\n" + string(f) + resources
 	}
 	priorText := b.base.Description
 	if b.replace {
@@ -330,8 +360,6 @@ func (s *Store) prepareBrief(p Project, r Run, src []ContextSource) (scheduleBri
 // Commit the run, its input checkpoint and optional project description together.
 // This also closes the automatic gate before a failed run releases its lease.
 func (s *Store) finishConditional(r *Run, src []ContextSource, b *scheduleBrief) error {
-	s.scheduleMu.Lock()
-	defer s.scheduleMu.Unlock()
 	cfg := r.ScheduleConfig
 	var next *ProjectContext
 	if r.State == "completed" && cfg.Output == "project_context" {
@@ -341,6 +369,36 @@ func (s *Store) finishConditional(r *Run, src []ContextSource, b *scheduleBrief)
 			r.Error = e.Error()
 		} else {
 			next = &c
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
+	if next != nil {
+		// Task edits do not take the project's agent lease; recheck their versions after locking.
+		nonFiles, e := s.scheduleNonFiles(Project{ID: r.ProjectID}, *cfg)
+		if e != nil {
+			return e
+		}
+		current := map[string]string{}
+		for _, v := range nonFiles {
+			current[v.ID] = v.Hash
+		}
+		for _, v := range src {
+			if strings.HasPrefix(v.ID, "file:") {
+				continue
+			}
+			if current[v.ID] != v.Hash {
+				r.State = "failed"
+				break
+			}
+			delete(current, v.ID)
+		}
+		if len(current) > 0 || r.State != "completed" {
+			r.State = "failed"
+			r.Error = "执行期间资料发生变化，原说明未更新"
+			next = nil
 		}
 	}
 	commit := func(tx *sql.Tx) error {
@@ -371,6 +429,20 @@ func (s *Store) finishConditional(r *Run, src []ContextSource, b *scheduleBrief)
 			if p.Description != b.base.Description || current.Version != b.base.Version {
 				return ErrConflict
 			}
+			// Task events are synchronous, but do not increment the description version.
+			seen := map[ContextChange]bool{}
+			for _, item := range b.base.Recent {
+				seen[item] = true
+			}
+			for _, item := range next.Recent {
+				seen[item] = true
+			}
+			for _, item := range rollingChanges(current.Recent, now()) {
+				if !seen[item] {
+					next.Recent = append(next.Recent, item)
+					seen[item] = true
+				}
+			}
 			p.Description = next.Description
 			if _, e = tx.Exec("UPDATE projects SET data=? WHERE id=?", encode(p), p.ID); e != nil {
 				return e
@@ -390,7 +462,13 @@ func (s *Store) finishConditional(r *Run, src []ContextSource, b *scheduleBrief)
 					return e
 				}
 			}
-			if _, e = tx.Exec("INSERT INTO schedule_inputs VALUES(?,?,?) ON CONFLICT(schedule_id) DO UPDATE SET fingerprint=excluded.fingerprint,sources=excluded.sources", sc.ID, r.InputFingerprint, encode(src)); e != nil {
+			if cfg.Output == "" {
+				src, e = includeOwnRevisions(tx, *r, src)
+				if e != nil {
+					return e
+				}
+			}
+			if _, e = tx.Exec("INSERT INTO schedule_inputs VALUES(?,?,?) ON CONFLICT(schedule_id) DO UPDATE SET fingerprint=excluded.fingerprint,sources=excluded.sources", sc.ID, scheduleFingerprint(src), encode(src)); e != nil {
 				return e
 			}
 		} else {
@@ -467,7 +545,20 @@ func (s *Store) validateBrief(r Run, b *scheduleBrief) (ProjectContext, error) {
 		c.Recent = append(c.Recent, item)
 	}
 	c.Recent = rollingChanges(c.Recent, now())
-	c.Sources = b.inputs
+	c.Sources = append([]ContextSource(nil), b.inputs...)
+	if !b.replace {
+		known := map[string]bool{}
+		for _, v := range c.Sources {
+			known[v.ID] = true
+		}
+		for _, v := range b.base.Sources {
+			if !known[v.ID] {
+				c.Sources = append(c.Sources, v)
+			}
+		}
+	}
+	c.PublishedBy = r.ScheduleID
+	c.PublishedVersion = c.Version + 1
 	c.Fingerprint = r.InputFingerprint
 	c.Version++
 	c.State = "ready"
@@ -475,4 +566,38 @@ func (s *Store) validateBrief(r Run, b *scheduleBrief) (ProjectContext, error) {
 	c.UpdatedAt = now()
 	c.Description = v.Description
 	return c, nil
+}
+
+// Older releases could invalidate a published description for an unrelated file.
+// Restore only the same publication, with all its original hashes revalidated.
+func restoreUnchangedBrief(tx *sql.Tx, project, fingerprint string) error {
+	var liveRaw, savedRaw, description string
+	e := tx.QueryRow(`SELECT c.data,v.data,p.data FROM project_contexts c JOIN projects p ON p.id=c.project_id JOIN context_versions v ON v.project_id=c.project_id AND v.version=json_extract(c.data,'$.version') WHERE c.project_id=? AND json_extract(c.data,'$.state')='invalid'`, project).Scan(&liveRaw, &savedRaw, &description)
+	if e == sql.ErrNoRows {
+		return nil
+	}
+	if e != nil {
+		return e
+	}
+	c, e := decodeJSON[ProjectContext](liveRaw)
+	if e != nil {
+		return e
+	}
+	old, e := decodeJSON[ProjectContext](savedRaw)
+	if e != nil {
+		return e
+	}
+	p, e := decodeJSON[Project](description)
+	if e != nil {
+		return e
+	}
+	if old.Fingerprint != fingerprint || scheduleFingerprint(old.Sources) != fingerprint || p.Description != old.Description {
+		return nil
+	}
+	c.State = "ready"
+	c.Error = ""
+	c.Sources = old.Sources
+	c.Fingerprint = fingerprint
+	_, e = tx.Exec("UPDATE project_contexts SET data=? WHERE project_id=?", encode(c), project)
+	return e
 }

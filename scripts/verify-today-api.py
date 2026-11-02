@@ -16,7 +16,15 @@ for name,desc in [('青山表达实验','这是一个练习表达的项目。目
  api('PUT',f'/tasks/{t["id"]}/draft',{'text':'保留我的手动草稿','version':d['task']['draftVersion']})
  assert api('POST',f'/tasks/{t["id"]}/prepare',{})['text']=='保留我的手动草稿'
  report['checks'].append('task prepare preserves edited draft without running')
- api('POST',f'/projects/{p["id"]}/context/refresh',{})
+ sc=api('POST','/schedules',{'projectId':p['id'],'name':'验收整理','instruction':'整理说明与实质动态','cron':'0 7 * * *','enabled':False,'condition':'changed','output':'project_context'})
+ check=api('POST',f'/schedules/{sc["id"]}/run',{'operation':str(uuid.uuid4())})
+ assert check['outcome']=='queued' and check['runId']
+ deadline=time.monotonic()+360
+ while time.monotonic()<deadline:
+  run=next(r for r in api('GET',f'/schedules/{sc["id"]}/runs') if r['id']==check['runId'])
+  if run['state'] in ('completed','failed','cancelled','interrupted'):break
+  time.sleep(.5)
+ assert run['state']=='completed',run.get('error')
 report['today']=api('GET','/today')
 pathlib.Path('.var/today-fixtures.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
 print(json.dumps({'projects':[p['name'] for p in report['projects']],'sessionId':report['today']['sessionId'],'checks':report['checks']},ensure_ascii=False))

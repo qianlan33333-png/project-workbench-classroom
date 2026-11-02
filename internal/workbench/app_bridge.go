@@ -64,11 +64,11 @@ func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any
 		return s.personalTool(in, tool, args)
 	}
 	var a struct {
-		Query        string   `json:"query"`
-		RunID        string   `json:"runId"`
-		Index        int      `json:"index"`
-		Schedule     Schedule `json:"schedule"`
-		NotifySource bool     `json:"notifySource"`
+		Query        string          `json:"query"`
+		RunID        string          `json:"runId"`
+		Index        int             `json:"index"`
+		Schedule     json.RawMessage `json:"schedule"`
+		NotifySource bool            `json:"notifySource"`
 	}
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &a); err != nil {
@@ -118,32 +118,13 @@ func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any
 	case "list_schedules":
 		return s.Schedules(in.Project.ID)
 	case "save_schedule":
-		v := a.Schedule
 		if in.Run.Source == "automation" {
 			return nil, errors.New("自动任务不能自行创建或修改定时任务")
 		}
-		v.ProjectID = in.Project.ID
-		v.NotifyConnectionID = ""
-		v.NotifyConversationID = ""
-		if a.NotifySource {
-			m, e := s.Message(in.Run.MessageID)
-			if e != nil {
-				return nil, e
-			}
-			if m.Incoming.Source != "wechat" && m.Incoming.Source != "feishu" {
-				return nil, errors.New("本次入口没有可用的私聊通知目标，请在网页选择")
-			}
-			v.NotifyConnectionID = m.Incoming.ConnectionID
-			v.NotifyConversationID = m.Incoming.ConversationID
+		result, ids, e := s.saveChatSchedule(in, a.Schedule, a.NotifySource)
+		if e == nil {
+			e = s.stopScheduleRuns(ids)
 		}
-		creationID := ""
-		if v.ID == "" {
-			creationID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.Run.ID+":"+encode(v))).String()
-			if old, e := s.Schedule(creationID); e == nil {
-				return old, nil
-			}
-		}
-		result, e := s.saveSchedule(v, creationID)
 		if e == nil {
 			e = s.Emit(in.Session.ID, in.Run.ID, "schedule.updated", result)
 		}
@@ -179,4 +160,72 @@ func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any
 	default:
 		return nil, fmt.Errorf("未知工作台工具：%s", tool)
 	}
+}
+
+func (s *Store) saveChatSchedule(in RuntimeInput, raw json.RawMessage, notify bool) (Schedule, []string, error) {
+	var patch map[string]json.RawMessage
+	var requested struct {
+		ID      string `json:"id"`
+		Enabled *bool  `json:"enabled"`
+	}
+	var v Schedule
+	if err := json.Unmarshal(raw, &patch); err != nil {
+		return v, nil, err
+	}
+	if err := json.Unmarshal(raw, &requested); err != nil {
+		return v, nil, err
+	}
+	for key := range patch {
+		switch key {
+		case "id", "name", "instruction", "cron", "timezone", "expertId", "enabled", "condition", "sourceScope", "output":
+		default:
+			return v, nil, fmt.Errorf("不支持修改 %s", key)
+		}
+	}
+	s.expertMu.RLock()
+	defer s.expertMu.RUnlock()
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
+	if requested.ID != "" {
+		old, e := s.Schedule(requested.ID)
+		if e != nil {
+			return v, nil, e
+		}
+		if old.ProjectID != in.Project.ID {
+			return v, nil, ErrNotFound
+		}
+		v = old
+	}
+	if e := json.Unmarshal(raw, &v); e != nil {
+		return v, nil, e
+	}
+	v.ProjectID = in.Project.ID
+	if notify {
+		m, e := s.Message(in.Run.MessageID)
+		if e != nil {
+			return v, nil, e
+		}
+		if !isChatChannel(m.Incoming.Source) {
+			return v, nil, errors.New("本次入口没有可用的私聊通知目标，请在网页选择")
+		}
+		v.NotifyConnectionID = m.Incoming.ConnectionID
+		v.NotifyConversationID = m.Incoming.ConversationID
+	}
+	creationID := ""
+	if v.ID == "" {
+		creationID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.Run.ID+":"+encode(v))).String()
+		if old, e := s.Schedule(creationID); e == nil {
+			return old, nil, nil
+		}
+	}
+	var ids []string
+	if requested.ID != "" && requested.Enabled != nil && !*requested.Enabled {
+		var err error
+		ids, err = s.activeScheduleRuns(v.ID)
+		if err != nil {
+			return v, nil, err
+		}
+	}
+	v, e := s.saveScheduleLocked(v, creationID, requested.Enabled != nil)
+	return v, ids, e
 }

@@ -29,7 +29,11 @@ type Worker struct {
 }
 
 func NewWorker(s *Store, e Executor, router SemanticRouter) *Worker {
-	return &Worker{Store: s, Executor: e, Router: router, answers: map[string]chan json.RawMessage{}, cancels: map[string]context.CancelFunc{}}
+	w := &Worker{Store: s, Executor: e, Router: router, answers: map[string]chan json.RawMessage{}, cancels: map[string]context.CancelFunc{}}
+	s.scheduleMu.Lock()
+	s.stopScheduleRun = w.Stop
+	s.scheduleMu.Unlock()
+	return w
 }
 func (w *Worker) Recover(ctx context.Context) error {
 	rows, e := w.Store.DB.Query("SELECT run_id FROM project_locks WHERE run_id LIKE 'maintenance:%'")
@@ -112,7 +116,20 @@ func (w *Worker) Recover(ctx context.Context) error {
 	return w.Store.RecoverDeliveries()
 }
 func (w *Worker) Start(ctx context.Context) {
-	w.wg.Add(2)
+	w.wg.Add(3)
+	go func() {
+		defer w.wg.Done()
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for ctx.Err() == nil {
+			_ = w.Store.fireDueSchedules(ctx, time.Now())
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 	go func() {
 		defer w.wg.Done()
 		t := time.NewTicker(400 * time.Millisecond)
@@ -161,7 +178,7 @@ func (w *Worker) Start(ctx context.Context) {
 			case <-t.C:
 			}
 			if time.Since(scheduleAt) > time.Second*10 {
-				_ = w.Store.FireSchedules(time.Now())
+
 				_ = w.Store.PurgeExpiredSessions()
 				scheduleAt = time.Now()
 			}
@@ -318,7 +335,7 @@ func (w *Worker) execute(parent context.Context, r Run) {
 			}
 			in := RuntimeInput{Run: r, Session: ss, Project: p, Prompt: prompt, NativeCommand: nativeCommand, PersonalRules: rules}
 			if cfg := r.ScheduleConfig; cfg != nil {
-				inputs, err = s.scheduleSources(p, *cfg)
+				inputs, err = s.scheduleSourcesContext(ctx, p, *cfg)
 				if err == nil && scheduleFingerprint(inputs) != r.InputFingerprint {
 					err = errors.New("排队期间资料已变化，请核对后手动执行")
 				}
@@ -383,17 +400,17 @@ func (w *Worker) execute(parent context.Context, r Run) {
 			r.State = "interrupted"
 		}
 	}
-	s.mu.Lock()
 	var saveErr error
 	if r.ScheduleConfig != nil {
 		saveErr = s.finishConditional(&r, inputs, brief)
 	} else {
+		s.mu.Lock()
 		saveErr = s.saveRun(r)
+		if saveErr == nil {
+			_, saveErr = s.DB.Exec("DELETE FROM project_locks WHERE run_id=?", r.ID)
+		}
+		s.mu.Unlock()
 	}
-	if saveErr == nil && r.ScheduleConfig == nil {
-		_, saveErr = s.DB.Exec("DELETE FROM project_locks WHERE run_id=?", r.ID)
-	}
-	s.mu.Unlock()
 	if saveErr != nil {
 		return
 	}
