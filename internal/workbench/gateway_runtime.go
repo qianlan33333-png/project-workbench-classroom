@@ -171,10 +171,22 @@ func (h *Harness) gatewayModelHandler(in RuntimeInput) (http.Handler, error) {
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<20))
-		var request struct {
-			Model string `json:"model"`
+		var request map[string]json.RawMessage
+		var model string
+		if err != nil || json.Unmarshal(body, &request) != nil || json.Unmarshal(request["model"], &model) != nil || model == "" || model != h.Config.Model {
+			deny(400)
+			return
 		}
-		if err != nil || json.Unmarshal(body, &request) != nil || request.Model == "" || request.Model != h.Config.Model {
+		for name := range request {
+			if strings.EqualFold(name, "model") && name != "model" {
+				deny(400)
+				return
+			}
+		}
+		// Forward exactly the model value we checked. Re-encoding the parsed
+		// top-level map removes duplicate keys and parser precedence ambiguity.
+		body, err = json.Marshal(request)
+		if err != nil {
 			deny(400)
 			return
 		}

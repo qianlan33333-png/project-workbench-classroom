@@ -4,8 +4,8 @@
 
 ## 七项修复后的本地回归
 
-本轮 `go test -race -json -timeout=90s ./...`：125 项通过（含子用例），8 项真实环境跳过，0 失败。
-相对首次交付新增 18 项 Go 回归（含子用例）；`pnpm --dir runtime run check` 共 9 项通过，
+本轮 `go test -race -json -timeout=90s ./...`：126 项通过（含子用例），8 项真实环境跳过，0 失败。
+相对首次交付新增 19 项 Go 回归（含子用例）；`pnpm --dir runtime run check` 共 9 项通过，
 其中 3 项新增代理故障回归。`go vet ./...`、Web check/build、Linux amd64 后端构建通过。
 首次交付的下方记录保留为历史，最新收据为 `.var/connector-acceptance/go-test-hardening.jsonl`。
 七项对应测试及对抗复核见 [审查记录](WECOM_CONNECTOR_REVIEW.md)。

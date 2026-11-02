@@ -234,6 +234,8 @@ func TestGatewayModelProxyKeepsCredentialOnHostAndScopesRequests(t *testing.T) {
 		{"POST", "/gateway-model/v1/messages?target=https://evil.example", `{"model":"offline-model"}`},
 		{"POST", "/gateway-model/v1/files", `{"model":"offline-model"}`},
 		{"POST", "/gateway-model/v1/messages", `{"model":"another-model"}`},
+		{"POST", "/gateway-model/v1/messages", `{"model":"another-model","MODEL":"offline-model"}`},
+		{"POST", "/gateway-model/v1/messages", `{"Model":"offline-model"}`},
 	} {
 		if res = request(tc.method, tc.path, tc.body); res.Code == 200 {
 			t.Fatal("invalid proxy request accepted", tc)
@@ -247,6 +249,34 @@ func TestGatewayModelProxyKeepsCredentialOnHostAndScopesRequests(t *testing.T) {
 	res = request("POST", "/gateway-model/v1/messages", `{"model":"offline-model"}`)
 	if res.Code != 409 || calls.Load() != 1 {
 		t.Fatal("old run regained model access")
+	}
+}
+
+func TestGatewayModelProxyCanonicalizesDuplicateModelKeys(t *testing.T) {
+	s, h, in := gatewayRuntimeFixture(t)
+	w := NewWorker(s, nil, nil)
+	var e error
+	in.Run, e = w.claim()
+	if e != nil {
+		t.Fatal(e)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, e := io.ReadAll(r.Body)
+		if e != nil || bytes.Count(body, []byte(`"model"`)) != 1 || bytes.Contains(body, []byte("another-model")) {
+			t.Error("unchecked model value reached upstream")
+		}
+		fmt.Fprint(w, `{}`)
+	}))
+	defer upstream.Close()
+	h.Config.GatewayModelBaseURL = upstream.URL
+	handler, e := h.gatewayModelHandler(in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest("POST", "/gateway-model/v1/messages", strings.NewReader(`{"model":"another-model","model":"offline-model","messages":[]}`)))
+	if res.Code != 200 {
+		t.Fatal(res.Code, res.Body.String())
 	}
 }
 

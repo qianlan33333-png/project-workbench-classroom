@@ -18,9 +18,10 @@
 
 代理另验证任意目标/方法/模型拒绝、重定向不跟随且错误正文不泄漏凭证、请求取消向上游传播、
 私有桥缺失时有界失败、SSE 字节流保留。对应 Go 的 `TestGatewayModelProxyRefusesRedirectAndCancelsUpstream`
-及 Node 的 `gateway-model.test.mjs`。这些替身测试不证明真实 Harness 容器安装已经通过。
+及 Node 的 `gateway-model.test.mjs`。最终代理审查还修复了 JSON 字段大小写与重复键解析差异，
+`TestGatewayModelProxyCanonicalizesDuplicateModelKeys` 及混淆字段输入验证转发对象与校验对象一致。这些替身测试不证明真实 Harness 容器安装已经通过。
 
-本地最终验证：Go race 125 项通过、8 项真实环境跳过；Node 9 项通过；vet、Web check/build、
+本地最终验证：Go race 126 项通过、8 项真实环境跳过；Node 9 项通过；vet、Web check/build、
 Linux amd64 后端构建通过。机器可读收据位于 `.var/connector-acceptance/`，私有生成物不进入 Git。
 
 剩余验收边界：真实 Podman/固定 SDK 加载、真实模型服务兼容性、企微回调/收发和飞书通知仍需后续
