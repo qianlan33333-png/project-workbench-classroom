@@ -234,3 +234,28 @@ func TestDeleteGatewayProjectReleasesIdentityAndCredentials(t *testing.T) {
 		t.Fatal(next, err)
 	}
 }
+
+func TestOldProjectPluginMigrationDropsDeletedOwners(t *testing.T) {
+	s := testStore(t)
+	p := testProject(t, s, "existing")
+	for _, project := range []string{p.ID, "deleted-project"} {
+		plugin := Plugin{ID: "legacy-" + project, ProjectID: project, Name: "project secret", Headers: map[string]string{"Authorization": "retired-key"}}
+		if _, err := s.DB.Exec("INSERT INTO plugins VALUES(?,?)", plugin.ID, encode(plugin)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next, err := NewStore(s.DB, s.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = next.Plugin("legacy-deleted-project"); err != ErrNotFound {
+		t.Fatal(err)
+	}
+	if kept, err := next.Plugin("legacy-" + p.ID); err != nil || kept.ProjectID != p.ID {
+		t.Fatal(err)
+	}
+	var n int
+	if err = s.DB.QueryRow("SELECT count(*) FROM plugins WHERE id LIKE 'legacy-%'").Scan(&n); err != nil || n != 0 {
+		t.Fatal(n, err)
+	}
+}
