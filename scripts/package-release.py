@@ -42,6 +42,7 @@ with tarfile.open(out, 'w:gz', compresslevel=3) as tar:
                (root/'runtime/entrypoint.sh','entrypoint.sh'),
                (root/'vendor-src/deepseek-harness/native/system/packages/linux-x64','native-linux'),
                (root/'vendor-src/deepseek-harness/native/system/packages/entry/src','native-src'),
+               (root/'gateway-protocol-v1','gateway-protocol-v1'),
                (root/'planner-protocol','planner-protocol'), (root/'docs','docs'), (root/'scripts','scripts'), (root/'cli','cli'),
                (node,'node'), (root/'README.md','README.md')]
     for source, destination in entries:

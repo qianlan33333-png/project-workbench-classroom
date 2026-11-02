@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Shared implementation for the existing release/rollback/cleanup entrypoints."""
 import argparse
+from contextlib import closing
 import fcntl
 import hashlib
 import json
@@ -134,7 +135,74 @@ def health():
     raise RuntimeError('Workbench did not become healthy')
 
 
+def prepare_gateway_worker(path):
+    marker = path / 'gateway-protocol-v1'
+    supported = marker.is_file() and marker.read_text().strip() == '1'
+    db_path = DATA / 'workbench.sqlite'
+    if not db_path.exists():
+        return
+    with closing(sqlite3.connect(f'{db_path.as_uri()}?mode=rw', uri=True, timeout=30)) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gateway_sessions'").fetchone():
+            return
+        if supported:
+            db.execute('DROP TRIGGER IF EXISTS rollback_guard_gateway_insert')
+            db.execute('DROP TRIGGER IF EXISTS rollback_guard_gateway_update')
+            return
+
+        # start() is shared by deploy, manual rollback and interrupted-deploy
+        # recovery. Their earlier quiet check cannot exclude arrivals during stop.
+        for execute, unit, name in ((run, ('systemctl',), 'project-workbench'),
+                                    (as_user, ('systemctl', '--user'), 'project-workbench-runtime')):
+            status = execute(*unit, 'show', name, '-p', 'ActiveState', '--value', capture=True, check=False)
+            if status.returncode not in (0, 4) or status.stdout.strip() != 'inactive':
+                raise RuntimeError(f'Cannot fence gateway work while {name} is not confirmed stopped')
+
+        active = "state IN ('queued','running','waiting','stopping')"
+        gateway = "(session_id IN (SELECT id FROM gateway_sessions) OR json_extract(data,'$.source')='wecom-gateway')"
+        ids = db.execute(f'SELECT id FROM runs WHERE {active} AND {gateway}').fetchall()
+        names = {'pw-' + row[0] for row in ids}
+        if names:
+            label = hashlib.sha256(str(DATA).encode()).hexdigest()[:16]
+            containers = as_user('podman', 'ps', '--all', '--no-trunc', '--filter',
+                                 'label=project-workbench-root=' + label,
+                                 '--format', '{{.ID}} {{.Names}}', capture=True)
+            for line in containers.stdout.splitlines():
+                container, name = line.split()
+                if name in names:
+                    as_user('podman', 'rm', '--force', '--ignore', container)
+        # Release the lease only after the worker and its identified executor
+        # have stopped. An engine failure rolls the entire SQL transaction back.
+        db.execute(f'DELETE FROM project_locks WHERE run_id IN (SELECT id FROM runs WHERE {active} AND {gateway})')
+        reason = '回滚至不支持企微自动应答的版本，请在恢复支持后人工核对'
+        db.execute(f"""UPDATE runs SET state='interrupted',
+                       data=json_set(data,'$.state','interrupted','$.error',?,'$.finishedAt',?)
+                       WHERE {active} AND {gateway}""", (reason, time.time_ns() // 1_000_000))
+        db.execute("""UPDATE inbox SET state='handled',data=json_set(data,'$.state','handled',
+                      '$.gateway.historyRole',coalesce(json_extract(data,'$.gateway.historyRole'),'客户'))
+                      WHERE source='wecom-gateway' AND state IN ('gateway_pending','queued','running','waiting','stopping')""")
+        db.execute("""UPDATE gateway_sessions SET data=json_set(data,'$.mode','human','$.reason',?,
+                      '$.version',coalesce(json_extract(data,'$.version'),0)+1)
+                      WHERE json_extract(data,'$.mode')='auto'""", (reason,))
+        # Older RecoverDeliveries decodes and re-encodes a narrower struct for
+        # "sending", losing gateway metadata. Preserve bodies, keys and receipts.
+        db.execute("""UPDATE deliveries SET state='unknown',data=json_set(data,'$.state','unknown','$.error',?)
+                      WHERE (state='sending' AND json_extract(data,'$.kind') IN ('gateway.answer','gateway.handoff','gateway.crm'))
+                      OR (state='pending' AND json_extract(data,'$.kind')='gateway.answer'
+                          AND coalesce(json_extract(data,'$.gateway.attempts'),0)>0)""", (reason,))
+        db.execute("""UPDATE deliveries SET state='cancelled',data=json_set(data,'$.state','cancelled','$.error',?)
+                      WHERE state='pending' AND json_extract(data,'$.kind')='gateway.answer'""", (reason,))
+        # A bookmarked conversation or generic retry in an older UI must not
+        # create ordinary unrestricted work in one of these external sessions.
+        for suffix, operation in (('insert', 'INSERT'), ('update', 'UPDATE')):
+            db.execute(f"""CREATE TRIGGER IF NOT EXISTS rollback_guard_gateway_{suffix} BEFORE {operation} ON runs
+                           WHEN NEW.state IN ('queued','running','waiting','stopping') AND
+                           (NEW.session_id IN (SELECT id FROM gateway_sessions) OR json_extract(NEW.data,'$.source')='wecom-gateway')
+                           BEGIN SELECT RAISE(ABORT,'gateway worker version required'); END""")
+
+
 def start(path, channels=True):
+    prepare_gateway_worker(path)
     point('current', path)
     set_runtime(path)
     run('systemctl', 'start', 'project-workbench')
