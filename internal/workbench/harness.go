@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+	gw "projectworkbench/pkg/wecomgateway"
 )
 
 type RuntimeInput struct {
@@ -71,10 +72,7 @@ type rpcResult struct {
 func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error) {
 	c := h.Config
 	personal := input.Project.ID == personalProjectID
-	external := input.Run.Source == gatewaySource
-	if _, e := h.Store.gatewaySession(input.Session.ID); e == nil {
-		external = true
-	}
+	external := h.gatewayInput(input)
 	if external && c.RuntimeMode != "podman" {
 		return nil, nil, "", errors.New("外部客户会话必须使用隔离容器")
 	}
@@ -97,7 +95,15 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		return nil, nil, "", err
 	}
 	// The runtime home is stable per project, while credentials live outside the project files.
-	if c.HarnessHome != "" {
+	if external {
+		if e := os.Remove(filepath.Join(home, ".credentials.yaml")); e != nil && !errors.Is(e, os.ErrNotExist) {
+			return nil, nil, "", e
+		}
+		root, err = h.gatewayWorkspace(input)
+		if err != nil {
+			return nil, nil, "", err
+		}
+	} else if c.HarnessHome != "" {
 		b, e := os.ReadFile(filepath.Join(c.HarnessHome, ".credentials.yaml"))
 		if e == nil {
 			if e = os.WriteFile(filepath.Join(home, ".credentials.yaml"), b, 0600); e != nil {
@@ -150,18 +156,20 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		}
 		source := filepath.Join(c.DataDir, "experts", id, version)
 		parent := filepath.Join(home, "skills", id)
-		if err = os.MkdirAll(parent, 0700); err != nil {
-			return nil, nil, "", err
-		}
-		target := filepath.Join(parent, "package")
-		if old, e := os.Readlink(target); e == nil && old != source {
-			if e = os.Remove(target); e != nil {
-				return nil, nil, "", e
+		if !external {
+			if err = os.MkdirAll(parent, 0700); err != nil {
+				return nil, nil, "", err
 			}
-		}
-		if _, e := os.Lstat(target); errors.Is(e, os.ErrNotExist) {
-			if e = os.Symlink(source, target); e != nil {
-				return nil, nil, "", e
+			target := filepath.Join(parent, "package")
+			if old, e := os.Readlink(target); e == nil && old != source {
+				if e = os.Remove(target); e != nil {
+					return nil, nil, "", e
+				}
+			}
+			if _, e := os.Lstat(target); errors.Is(e, os.ErrNotExist) {
+				if e = os.Symlink(source, target); e != nil {
+					return nil, nil, "", e
+				}
 			}
 		}
 		if c.RuntimeMode == "podman" {
@@ -292,6 +300,10 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		}
 	}
 	if external {
+		if c.Provider != "" && c.Provider != "deepseek-official" {
+			return nil, nil, "", errors.New("外部会话需要 DeepSeek API key provider")
+		}
+		patch = append(patch, map[string]any{"id": "llm-deepseek", "config": map[string]any{"baseURL": "http://127.0.0.1:18433", "apiKeyEnv": "PW_GATEWAY_MODEL_PLACEHOLDER"}}, map[string]any{"insert": []map[string]any{{"id": "gateway-model-bridge", "name": "/opt/workbench-runtime/gateway-model.mjs"}}})
 		// The caller can use only explicitly granted business tools. Sending and
 		// notification credentials stay on the host, outside every task mount.
 		mounts = append(mounts, "--volume", c.RuntimeDir+":/opt/workbench-runtime:ro")
@@ -342,7 +354,7 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 	if err != nil {
 		return nil, nil, "", err
 	}
-	if err = os.WriteFile(patchFile, b, 0600); err != nil {
+	if err = gw.WritePrivate(patchFile, b); err != nil {
 		return nil, nil, "", err
 	}
 	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "LANG=C.UTF-8", "DSH_HOME=" + home, "NODE_NO_WARNINGS=1", "DSH_MAX_TOKENS_AS_SUCCESS=false", "DSH_PRIMARY_RUNTIME="}
@@ -352,6 +364,7 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		}
 		args := []string{c.Podman, "run", "--rm", "--interactive", "--name", "pw-" + input.Run.ID, "--label", "project-workbench=true", "--label", "project-workbench-root=" + digest([]byte(c.DataDir))[:16], "--userns=keep-id", "--security-opt=no-new-privileges", "--cap-drop=ALL", "--memory=1024m", "--pids-limit=256", "--workdir", "/workspace", "--volume", root + ":/workspace:rw", "--volume", home + ":/runtime:rw", "--env", "DSH_HOME=/runtime", "--env", "HOME=/runtime", "--env", "NODE_NO_WARNINGS=1", "--env", "DSH_MAX_TOKENS_AS_SUCCESS=false", "--env", "DSH_PRIMARY_RUNTIME=", "--env", "PATH=/tools/bin:/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 		if external {
+			args = append(args, "--env", "PW_GATEWAY_MODEL_PLACEHOLDER=local-placeholder")
 			for i, arg := range args {
 				if arg == root+":/workspace:rw" {
 					args[i] = root + ":/workspace:ro"
@@ -392,6 +405,9 @@ func (h *Harness) Cleanup(ctx context.Context, run string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("执行容器未能清理: %s", strings.TrimSpace(string(out)))
+	}
+	if toolIdentifier.MatchString(run) {
+		return os.RemoveAll(filepath.Join(h.Config.DataDir, "runtime", "gateway-workspaces", run))
 	}
 	return nil
 }
@@ -675,7 +691,7 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 	if err = json.Unmarshal(info, &handshake); err != nil || handshake.ServerInfo.Name != "deepseek-harness-sdk-runtime" {
 		return RuntimeResult{}, errors.New("Harness 协议不兼容")
 	}
-	if h.Config.RuntimeMode == "podman" && !input.Routing && input.Project.ID != personalProjectID {
+	if h.Config.RuntimeMode == "podman" && !input.Routing && input.Project.ID != personalProjectID && !h.gatewayInput(input) {
 		lookup, stop := context.WithTimeout(ctx, 5*time.Second)
 		raw, err := exec.CommandContext(lookup, h.Config.Podman, "port", "pw-"+input.Run.ID, "6080/tcp").Output()
 		stop()

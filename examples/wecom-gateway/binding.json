@@ -8,5 +8,6 @@
   "notifyChatId": "oc_REPLACE",
   "toolIds": [],
   "pluginIds": [],
+  "knowledgePaths": [],
   "contactIds": ["ct_REPLACE_TEST_CUSTOMER"]
 }

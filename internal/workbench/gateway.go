@@ -39,6 +39,7 @@ type GatewaySecrets struct {
 	WebhookSecret string `json:"webhookSecret"`
 }
 type GatewayBinding struct {
+	KnowledgePaths []string `json:"knowledgePaths,omitempty"`
 	ContactIDs     []string `json:"contactIds,omitempty"`
 	ID             string   `json:"id"`
 	ConnectionID   string   `json:"connectionId"`
@@ -69,6 +70,7 @@ type GatewaySession struct {
 	LastMessageAt  int64  `json:"lastMessageAt"`
 }
 type GatewayRun struct {
+	KnowledgePaths []string `json:"knowledgePaths,omitempty"`
 	ManualReply    string   `json:"manualReply,omitempty"`
 	Version        int64    `json:"version"`
 	BindingVersion int64    `json:"bindingVersion"`
@@ -77,6 +79,7 @@ type GatewayRun struct {
 	PluginIDs      []string `json:"pluginIds,omitempty"`
 }
 type GatewayDelivery struct {
+	FirstAttemptAt int64  `json:"firstAttemptAt,omitempty"`
 	Version        int64  `json:"version"`
 	BindingVersion int64  `json:"bindingVersion"`
 	Deadline       int64  `json:"deadline"`
@@ -140,7 +143,7 @@ func (s *Store) SaveGatewayConnection(v GatewayRegistration) (GatewayConnection,
 			if other.ID == c.ID {
 				copy := other
 				old = &copy
-			} else if other.BaseURL == c.BaseURL && (other.TenantID == c.TenantID || other.TenantID == "" || c.TenantID == "") {
+			} else if c.Enabled && other.Enabled && other.BaseURL == c.BaseURL && (other.TenantID == c.TenantID || other.TenantID == "" || c.TenantID == "") {
 				rows.Close()
 				return errors.New("gateway tenant already has an ingress connection")
 			}
@@ -154,7 +157,7 @@ func (s *Store) SaveGatewayConnection(v GatewayRegistration) (GatewayConnection,
 			c.TenantID = old.TenantID
 		}
 		if old != nil && (old.BaseURL != c.BaseURL || old.TenantID != c.TenantID || encode(old.Accounts) != encode(c.Accounts)) {
-			return errors.New("connection identity/accounts immutable; disable bindings and create a new connection")
+			return errors.New("connection identity/accounts immutable; disable this connection and create a replacement connection")
 		}
 		var kind string
 		e = tx.QueryRow("SELECT kind FROM connections WHERE id=?", c.ID).Scan(&kind)
@@ -206,6 +209,9 @@ func (s *Store) SaveGatewayBinding(b GatewayBinding) (GatewayBinding, error) {
 	}
 	if b.TimeoutSeconds < 1 || b.TimeoutSeconds > 120 || b.NotifyChatID == "" {
 		return b, errors.New("timeout must be 1..120 seconds and notification chat required")
+	}
+	if e := validateGatewayKnowledge(b.KnowledgePaths); e != nil {
+		return b, e
 	}
 	for _, id := range b.ToolIDs {
 		t, e := s.CLITool(id)
@@ -397,7 +403,11 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 			return errors.New("private conversation identity missing")
 		}
 		var existing string
-		e = tx.QueryRow("SELECT id FROM inbox WHERE source=? AND connection_id=? AND event_id=?", gatewaySource, connection, m.MessageID).Scan(&existing)
+		// A replacement ingress must not replay a message already accepted by
+		// its retired predecessor. Gateway message IDs are tenant scoped.
+		e = tx.QueryRow(`SELECT i.id FROM inbox i JOIN connections c ON c.id=i.connection_id
+			WHERE i.source=? AND i.event_id=? AND c.kind=?
+			AND json_extract(c.data,'$.baseUrl')=? AND json_extract(c.data,'$.tenantId')=? LIMIT 1`, gatewaySource, m.MessageID, gatewaySource, c.BaseURL, c.TenantID).Scan(&existing)
 		if e == nil {
 			return nil
 		}
@@ -489,7 +499,7 @@ func (s *Store) ReceiveGateway(connection string, event gw.Event, raw []byte) er
 		if e = saveGatewaySession(tx, g); e != nil {
 			return e
 		}
-		msg := Message{ID: newID(), SessionID: g.ID, State: state, CreatedAt: at, Gateway: &GatewayRun{Version: g.Version, BindingVersion: b.Version, Deadline: at + int64(b.TimeoutSeconds)*1000, ToolIDs: b.ToolIDs, PluginIDs: b.PluginIDs}, Incoming: Incoming{Source: gatewaySource, ConnectionID: connection, ActorID: contact, ConversationID: contact, EventID: m.MessageID, SessionID: g.ID, ExpertID: b.ExpertID, Text: m.Content.Text}}
+		msg := Message{ID: newID(), SessionID: g.ID, State: state, CreatedAt: at, Gateway: &GatewayRun{Version: g.Version, BindingVersion: b.Version, Deadline: at + int64(b.TimeoutSeconds)*1000, ToolIDs: b.ToolIDs, PluginIDs: b.PluginIDs, KnowledgePaths: b.KnowledgePaths}, Incoming: Incoming{Source: gatewaySource, ConnectionID: connection, ActorID: contact, ConversationID: contact, EventID: m.MessageID, SessionID: g.ID, ExpertID: b.ExpertID, Text: m.Content.Text}}
 		_, e = tx.Exec("INSERT INTO inbox VALUES(?,?,?,?,?,?,?,?,?)", msg.ID, gatewaySource, connection, m.MessageID, entryKey(msg.Incoming), state, g.ID, msg.CreatedAt, encode(msg))
 		return e
 	})
@@ -549,15 +559,15 @@ func (s *Store) queueGateway(m Message) error {
 		return e
 	}
 	if meta.Deadline <= now() {
-		return s.handoffGateway(m.SessionID, "等待应答超时", m.Incoming.Text)
+		return s.handoffGatewayVersion(m.SessionID, m.Gateway, "等待应答超时", m.Incoming.Text)
 	}
 	_, e = s.queue(m, m.SessionID, "", false)
 	if e != nil {
-		return s.handoffGateway(m.SessionID, "无法启动专家应答", m.Incoming.Text)
+		return s.handoffGatewayVersion(m.SessionID, m.Gateway, "无法启动专家应答", m.Incoming.Text)
 	}
 	return nil
 }
-func (s *Store) handoffGateway(session, reason, summary string) error {
+func (s *Store) handoffGatewayVersion(session string, expected *GatewayRun, reason, summary string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.Transaction(context.Background(), func(tx *sql.Tx) error {
@@ -568,6 +578,9 @@ func (s *Store) handoffGateway(session, reason, summary string) error {
 		b, e := gatewayBindingTx(tx, g.BindingID)
 		if e != nil {
 			return e
+		}
+		if expected != nil && (g.Version != expected.Version || g.BindingVersion != expected.BindingVersion || b.Version != expected.BindingVersion) {
+			return nil
 		}
 		if e = s.gatewayHandoffTx(tx, &g, b, reason, summary); e != nil {
 			return e

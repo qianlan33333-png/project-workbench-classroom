@@ -117,8 +117,9 @@ func (w *Worker) Recover(ctx context.Context) error {
 	return w.Store.recoverGatewayDeliveries()
 }
 func (w *Worker) Start(ctx context.Context) {
-	w.wg.Add(3)
+	w.wg.Add(4)
 	go func() { defer w.wg.Done(); w.gatewayDeliverLoop(ctx) }()
+	go func() { defer w.wg.Done(); w.gatewayExpireLoop(ctx) }()
 	go func() {
 		defer w.wg.Done()
 		t := time.NewTicker(400 * time.Millisecond)
@@ -175,7 +176,6 @@ func (w *Worker) Start(ctx context.Context) {
 				_ = w.Store.PurgeExpiredSessions()
 				scheduleAt = time.Now()
 			}
-			w.expireGateway(ctx)
 			r, err := w.claim()
 			if errors.Is(err, ErrNotFound) {
 				var locks int
@@ -335,7 +335,7 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		r.State = "stopping"
 		r.Error = cleanupErr.Error()
 		if r.Source == gatewaySource {
-			_ = s.handoffGateway(r.SessionID, "执行进程清理失败，需人工核对", r.Text)
+			_ = s.handoffGatewayVersion(r.SessionID, r.Gateway, "执行进程清理失败，需人工核对", r.Text)
 		}
 		_ = s.saveRun(r)
 		return
@@ -358,7 +358,7 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		r.State = "stopping"
 		r.Error = "变化记录未完成，写入锁保留: " + e.Error()
 		if r.Source == gatewaySource {
-			_ = s.handoffGateway(r.SessionID, "执行记录收拢失败，需人工核对", r.Text)
+			_ = s.handoffGatewayVersion(r.SessionID, r.Gateway, "执行记录收拢失败，需人工核对", r.Text)
 		}
 		_ = s.saveRun(r)
 		return

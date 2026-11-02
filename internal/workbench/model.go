@@ -197,21 +197,23 @@ type Revision struct {
 }
 
 type Config struct {
-	BackupScrubCommand []string
-	DataDir            string
-	BasePath           string
-	PublicURL          string
-	WebDir             string
-	ChannelToken       string
-	PasswordHash       string
-	HarnessCommand     []string
-	HarnessPatch       string
-	HarnessHome        string
-	Provider           string
-	Model              string
-	Podman             string
-	RuntimeImage       string
-	RuntimeMode        string
-	BrowserURL         string
-	RuntimeDir         string
+	GatewayModelBaseURL   string
+	GatewayModelAPIKeyEnv string
+	BackupScrubCommand    []string
+	DataDir               string
+	BasePath              string
+	PublicURL             string
+	WebDir                string
+	ChannelToken          string
+	PasswordHash          string
+	HarnessCommand        []string
+	HarnessPatch          string
+	HarnessHome           string
+	Provider              string
+	Model                 string
+	Podman                string
+	RuntimeImage          string
+	RuntimeMode           string
+	BrowserURL            string
+	RuntimeDir            string
 }

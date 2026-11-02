@@ -20,6 +20,14 @@ func bridgeSocket(in RuntimeInput) string {
 	return filepath.Join(os.TempDir(), "pw-"+in.Run.ID+".sock")
 }
 func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
+	var model http.Handler
+	if h.gatewayInput(in) {
+		var e error
+		model, e = h.gatewayModelHandler(in)
+		if e != nil {
+			return nil, e
+		}
+	}
 	socket := bridgeSocket(in)
 	if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -33,7 +41,18 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 		return nil, err
 	}
 	server := &http.Server{ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second}
+	if model != nil {
+		server.WriteTimeout = 0
+	} // Streaming is bounded by the run deadline.
 	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/gateway-model") {
+			if model == nil {
+				http.NotFound(w, r)
+				return
+			}
+			model.ServeHTTP(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != "POST" {
 			http.Error(w, "POST required", 405)
