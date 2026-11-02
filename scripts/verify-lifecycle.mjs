@@ -63,8 +63,8 @@ try {
   await page.getByLabel("发送消息", { exact: true }).waitFor();
   let row = page.locator(".session-row").filter({ hasText: "预算与培训计划" });
   await row.waitFor();
-  await row.locator("summary").click();
-  await row.getByRole("button", { name: "置顶", exact: true }).click();
+  await row.getByRole("button", { name: /^对话操作：/ }).click();
+  await row.getByRole("menuitem", { name: "置顶", exact: true }).click();
   await wait(
     async () =>
       assert.equal(
@@ -101,8 +101,8 @@ try {
   }, "first task");
   report.checks.push("Pin and refresh preserve session identity and order");
   row = page.locator(".session-row").filter({ hasText: "预算与培训计划" });
-  await row.locator("summary").click();
-  await row.getByRole("button", { name: "归档", exact: true }).click();
+  await row.getByRole("button", { name: /^对话操作：/ }).click();
+  await row.getByRole("menuitem", { name: "归档", exact: true }).click();
   await page.getByRole("button", { name: "开始归档", exact: true }).click();
   const recycled = await wait(
     async () => {
@@ -182,8 +182,8 @@ try {
     "restored history shown",
   );
   row = page.locator(".session-row").filter({ hasText: "预算与培训计划" });
-  await row.locator("summary").click();
-  await row.getByRole("button", { name: "删除", exact: true }).click();
+  await row.getByRole("button", { name: /^对话操作：/ }).click();
+  await row.getByRole("menuitem", { name: "删除", exact: true }).click();
   await page.getByRole("button", { name: "移入回收站", exact: true }).click();
   await wait(
     async () =>

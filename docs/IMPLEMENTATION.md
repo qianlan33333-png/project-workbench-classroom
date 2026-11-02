@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-11-02 对话侧栏操作菜单修复（本地已验证）
+
+按 `SESSION_MENU_PRD.md` 的业务流程及 MDN/Radix 参考，将对话操作菜单从 details 改为独立 `SessionMenu` 原生 auto Popover。浏览器顶层显示绕过列表 overflow 裁切；一次只展开一个，外部点击、重复点击、Esc、Tab、操作选择、上下文切换、列表滚动和窗口缩放关闭。菜单按实际可用空间上下避让；复用原有图标、字号、颜色、按钮回调及归档/删除确认框，保留归档中禁用状态与停止入口。没有新增运行依赖。
+
+通过隔离 Chromium 复现旧版三项缺陷，并完成 13 组修复后交互检查、1280×720 / 1280×480 / 1154×828 / 390×844 / 320×568 视口、方向键/Enter/Space/快速 Tab、触摸、草稿保留与操作 API 调用检查；无 console/page error。修正了首轮实现中立即按 Tab 可能留下弹层的竞态，并重跑全部菜单检查通过。`npm run check`、最终 `npm run build`、4 项既有网页状态测试、`go test ./...`、`go vet ./...` 均通过；构建保留既有大 chunk 提醒。`verify-lifecycle.mjs` 已更新为新按钮及 menuitem 入口，本轮未运行其中需要真实模型的全链路归档。
+
+证据：`artifacts/session-menu/baseline.json`、`report.json` 与前后截图；视觉对照及边界见根目录 `design-qa.md` 最新章节。复跑：`PW_MENU_BASELINE=1 node scripts/verify-session-menu.mjs`（需本轮 before-dist）、`node scripts/verify-session-menu.mjs`（修复版）；后者内置本地静态服务和内存夹具，不访问生产或真实账户。生产尚未发布；此处不将本地验收视为线上完成。
+
 2026-10-30：新系统已部署到正式入口 `https://dsh.qianlan333.cloud/`。独立源码、服务及数据目录；旧业务代码没有被引入新应用。当前发布目录 `cloud-20261030-09-composer`。
 
 ## 已交付

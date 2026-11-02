@@ -25,7 +25,6 @@ import {
   Archive,
   Pencil,
   Pin,
-  MoreHorizontal,
 } from "lucide-react";
 import { zipSync } from "fflate";
 import {
@@ -54,6 +53,7 @@ import { ExpertDetail } from "./expert-detail";
 import { useMessageSubmissions } from "./message-submissions";
 import { mergeRuns, mergeSessions, initialSessionTitle } from "./chat-state";
 import { RecycleBin, GlobalTools } from "./lifecycle-ui";
+import { SessionMenu } from "./session-menu";
 import { CapabilityComposer, CapabilityBadges } from "./capability-composer";
 import { Today, TasksPanel, ContextSettings, type PreparedTask } from "./today";
 import "./style.css";
@@ -1249,89 +1249,97 @@ function App() {
                             )}
                           </span>
                         </button>
-                        <details className="session-menu">
-                          <summary aria-label={`对话操作：${ss.title}`}>
-                            <MoreHorizontal size={15} />
-                          </summary>
-                          <div>
-                            {ss.lifecycle === "archiving" && (
-                              <button
-                                onClick={() =>
-                                  void act(async () => {
-                                    await api(
-                                      `/sessions/${ss.id}/archive/stop`,
-                                      {},
-                                    );
-                                    await refresh();
-                                  })
-                                }
-                              >
-                                停止归档
-                              </button>
-                            )}
+                        <SessionMenu
+                          label={`对话操作：${ss.title}`}
+                          context={`${projectId}:${sessionId}:${projectPanelOpen}:${ss.lifecycle || ""}`}
+                        >
+                          {ss.lifecycle === "archiving" && (
                             <button
-                              disabled={!!ss.lifecycle}
+                              role="menuitem"
+                              tabIndex={-1}
                               onClick={() =>
                                 void act(async () => {
-                                  const updated = await api<Session>(
-                                    `/sessions/${ss.id}/pin`,
-                                    { pinned: !ss.pinnedAt },
-                                    "PUT",
+                                  await api(
+                                    `/sessions/${ss.id}/archive/stop`,
+                                    {},
                                   );
-                                  setSessions((old) =>
-                                    mergeSessions(old, [updated]),
+                                  await refresh();
+                                })
+                              }
+                            >
+                              停止归档
+                            </button>
+                          )}
+                          <button
+                            role="menuitem"
+                            tabIndex={-1}
+                            disabled={!!ss.lifecycle}
+                            onClick={() =>
+                              void act(async () => {
+                                const updated = await api<Session>(
+                                  `/sessions/${ss.id}/pin`,
+                                  { pinned: !ss.pinnedAt },
+                                  "PUT",
+                                );
+                                setSessions((old) =>
+                                  mergeSessions(old, [updated]),
+                                );
+                              })
+                            }
+                          >
+                            {ss.pinnedAt ? "取消置顶" : "置顶"}
+                          </button>
+                          <button
+                            role="menuitem"
+                            tabIndex={-1}
+                            disabled={!!ss.lifecycle}
+                            onClick={() => renameSession(ss)}
+                          >
+                            重命名
+                          </button>
+                          <button
+                            role="menuitem"
+                            tabIndex={-1}
+                            disabled={!!ss.lifecycle}
+                            onClick={() =>
+                              setDialog({
+                                title: "归档对话",
+                                description:
+                                  "自动提炼核心信息到项目 MD，原始对话进入回收站保留 15 天。",
+                                confirm: "开始归档",
+                                action: async () => {
+                                  await api(`/sessions/${ss.id}/archive`, {});
+                                  await refresh();
+                                },
+                              })
+                            }
+                          >
+                            归档
+                          </button>
+                          <button
+                            role="menuitem"
+                            tabIndex={-1}
+                            disabled={!!ss.lifecycle}
+                            onClick={() =>
+                              setDialog({
+                                title: "删除对话",
+                                description:
+                                  "原始对话进入回收站，15 天内可找回。项目文件继续保留。",
+                                confirm: "移入回收站",
+                                action: async () => {
+                                  await api(
+                                    `/sessions/${ss.id}`,
+                                    undefined,
+                                    "DELETE",
                                   );
-                                })
-                              }
-                            >
-                              {ss.pinnedAt ? "取消置顶" : "置顶"}
-                            </button>
-                            <button
-                              disabled={!!ss.lifecycle}
-                              onClick={() => renameSession(ss)}
-                            >
-                              重命名
-                            </button>
-                            <button
-                              disabled={!!ss.lifecycle}
-                              onClick={() =>
-                                setDialog({
-                                  title: "归档对话",
-                                  description:
-                                    "自动提炼核心信息到项目 MD，原始对话进入回收站保留 15 天。",
-                                  confirm: "开始归档",
-                                  action: async () => {
-                                    await api(`/sessions/${ss.id}/archive`, {});
-                                    await refresh();
-                                  },
-                                })
-                              }
-                            >
-                              归档
-                            </button>
-                            <button
-                              disabled={!!ss.lifecycle}
-                              onClick={() =>
-                                setDialog({
-                                  title: "删除对话",
-                                  description:
-                                    "原始对话进入回收站，15 天内可找回。项目文件继续保留。",
-                                  confirm: "移入回收站",
-                                  action: async () => {
-                                    await api(
-                                      `/sessions/${ss.id}`,
-                                      undefined,
-                                      "DELETE",
-                                    );
-                                    await refresh();
-                                  },
-                                })
-                              }
-                            >
-                              删除
-                            </button>
-                          </div>
-                        </details>
+                                  await refresh();
+                                },
+                              })
+                            }
+                          >
+                            删除
+                          </button>
+                        </SessionMenu>
                       </div>
                     ))}
                   </div>
