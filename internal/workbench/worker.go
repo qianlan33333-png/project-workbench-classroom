@@ -13,11 +13,8 @@ import (
 	"time"
 )
 
-// A separate slot for the personal assistant keeps conversations available
-// when both project slots are occupied. Project leases serialize writes.
-const maxProjectRuns = 2
-
 type Worker struct {
+	readMCPGrants []GatewayReadMCPGrant
 	GatewayNotify func(context.Context, string, string, string) (string, error)
 	Store         *Store
 	Executor      Executor
@@ -31,6 +28,9 @@ type Worker struct {
 
 func NewWorker(s *Store, e Executor, router SemanticRouter) *Worker {
 	w := &Worker{Store: s, Executor: e, Router: router, answers: map[string]chan json.RawMessage{}, cancels: map[string]context.CancelFunc{}}
+	if h, ok := e.(*Harness); ok {
+		w.readMCPGrants = h.Config.GatewayConcurrentReadMCP
+	}
 	s.scheduleMu.Lock()
 	s.stopScheduleRun = w.Stop
 	s.scheduleMu.Unlock()
@@ -69,7 +69,7 @@ func (w *Worker) Recover(ctx context.Context) error {
 		if err = w.Executor.Cleanup(ctx, r.ID); err != nil {
 			return err
 		}
-		if err = w.Store.FinishSnapshot(r); err != nil {
+		if err = w.Store.finishRunSnapshot(r); err != nil {
 			return err
 		}
 		r.State = "interrupted"
@@ -202,9 +202,12 @@ func (w *Worker) Start(ctx context.Context) {
 				scheduleAt = time.Now()
 			}
 			r, err := w.claim()
+			if errors.Is(err, ErrLocked) {
+				continue
+			}
 			if errors.Is(err, ErrNotFound) {
 				var locks int
-				if w.Store.DB.QueryRow("SELECT count(*) FROM project_locks").Scan(&locks) == nil && locks == 0 {
+				if w.Store.DB.QueryRow("SELECT count(*) FROM workbench_run_leases").Scan(&locks) == nil && locks == 0 {
 					w.maintainToday(ctx)
 				}
 				continue
@@ -219,18 +222,17 @@ func (w *Worker) Start(ctx context.Context) {
 }
 func (w *Worker) Wait() { w.wg.Wait() }
 func (w *Worker) claim() (Run, error) {
+	if h, ok := w.Executor.(*Harness); ok && h.Config.RuntimeMode == "podman" && !hostMemoryReady() {
+		return Run{}, ErrLocked
+	}
 	s := w.Store
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var r Run
 	err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var raw string
-		err := tx.QueryRow(`SELECT r.data FROM runs r WHERE r.state='queued'
-            AND NOT EXISTS(SELECT 1 FROM project_locks WHERE project_id=r.project_id)
-            AND NOT EXISTS(SELECT 1 FROM project_locks WHERE run_id LIKE 'maintenance:%')
-            AND NOT EXISTS(SELECT 1 FROM settings WHERE key='tool_install_running')
-            AND (r.project_id=? OR (SELECT count(*) FROM project_locks WHERE project_id<>?) < ?)
-            ORDER BY r.priority,r.created_at,r.rowid LIMIT 1`, personalProjectID, personalProjectID, maxProjectRuns).Scan(&raw)
+		var shared bool
+		err := tx.QueryRow(claimRunSQL, encode(w.readMCPGrants), maxConcurrentRuns, personalProjectID, personalProjectID, maxProjectRuns, personalProjectID).Scan(&raw, &shared)
 		if err == sql.ErrNoRows {
 			return ErrNotFound
 		}
@@ -241,6 +243,7 @@ func (w *Worker) claim() (Run, error) {
 			return err
 		}
 		if r.Gateway != nil {
+			r.Gateway.SharedRead = shared
 			if err = w.Store.claimGatewayTx(tx, &r); err != nil {
 				return err
 			}
@@ -250,8 +253,10 @@ func (w *Worker) claim() (Run, error) {
 		}
 		r.State = "running"
 		r.StartedAt = now()
-		if _, err = tx.Exec("INSERT INTO project_locks VALUES(?,?,?)", r.ProjectID, r.ID, now()); err != nil {
-			return err
+		if !shared {
+			if _, err = tx.Exec("INSERT INTO project_locks VALUES(?,?,?)", r.ProjectID, r.ID, now()); err != nil {
+				return err
+			}
 		}
 		_, err = tx.Exec("UPDATE runs SET state=?,data=? WHERE id=?", r.State, encode(r), r.ID)
 		return err
@@ -291,7 +296,7 @@ func (w *Worker) execute(parent context.Context, r Run) {
 	_ = s.Emit(r.SessionID, r.ID, "run.updated", r)
 	var err error
 	// A project-context run has only the extracted inputs and an empty scratch workspace.
-	if r.ScheduleConfig == nil || r.ScheduleConfig.Output != "project_context" {
+	if (r.Gateway == nil || !r.Gateway.SharedRead) && (r.ScheduleConfig == nil || r.ScheduleConfig.Output != "project_context") {
 		var baseline map[string]string
 		baseline, err = s.Snapshot(r.ProjectID)
 		if err == nil {
@@ -415,7 +420,7 @@ func (w *Worker) execute(parent context.Context, r Run) {
 			}
 		}
 	}
-	if e := s.FinishSnapshot(r); e != nil {
+	if e := s.finishRunSnapshot(r); e != nil {
 		r.State = "stopping"
 		r.Error = "变化记录未完成，写入锁保留: " + e.Error()
 		if r.Source == gatewaySource {

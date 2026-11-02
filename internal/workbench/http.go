@@ -348,7 +348,7 @@ func (a *API) Mount(r *gin.Engine) {
 	})
 	owner.GET("/deliveries", func(c *gin.Context) { v, e := s.Deliveries(); reply(c, v, e) })
 	owner.GET("/settings", func(c *gin.Context) {
-		c.JSON(200, gin.H{"provider": a.Config.Provider, "model": a.Config.Model, "runtimeMode": a.Config.RuntimeMode, "browserUrl": a.Config.BrowserURL, "timezone": "Asia/Shanghai", "publicUrl": a.Config.PublicURL, "maxConcurrentRuns": maxProjectRuns + 1, "maxProjectRuns": maxProjectRuns})
+		c.JSON(200, gin.H{"provider": a.Config.Provider, "model": a.Config.Model, "runtimeMode": a.Config.RuntimeMode, "browserUrl": a.Config.BrowserURL, "timezone": "Asia/Shanghai", "publicUrl": a.Config.PublicURL, "maxConcurrentRuns": maxConcurrentRuns, "maxProjectRuns": maxProjectRuns})
 	})
 	owner.POST("/settings/password", func(c *gin.Context) {
 		bind(c, func(v struct {

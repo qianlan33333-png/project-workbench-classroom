@@ -206,7 +206,7 @@ func (s *Store) CheckNoRunningTools() error {
 }
 func (s *Store) checkNoRunningToolsExcept(requestingRun string) error {
 	var n int
-	e := s.DB.QueryRow("SELECT count(*) FROM project_locks WHERE run_id<>?", requestingRun).Scan(&n)
+	e := s.DB.QueryRow("SELECT count(*) FROM workbench_run_leases WHERE run_id<>?", requestingRun).Scan(&n)
 	if e != nil {
 		return e
 	}

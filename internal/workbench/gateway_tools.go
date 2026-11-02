@@ -109,7 +109,18 @@ func (h *Harness) gatewayPlugin(in RuntimeInput, id, transport string) (Plugin, 
 		return empty, false
 	}
 	p, err := h.Store.Plugin(id)
-	return p, err == nil && p.Transport == transport && (p.ProjectID == "" || p.ProjectID == in.Project.ID) && (p.Enabled == nil || *p.Enabled)
+	if err != nil || p.Transport != transport || (p.ProjectID != "" && p.ProjectID != in.Project.ID) || (p.Enabled != nil && !*p.Enabled) {
+		return empty, false
+	}
+	if in.Run.Gateway.SharedRead {
+		for _, grant := range h.Config.GatewayConcurrentReadMCP {
+			if grant.allows(p, in.Project.ID) {
+				return p, true
+			}
+		}
+		return empty, false
+	}
+	return p, true
 }
 
 // One native MCP client is installed for each granted plugin in a run, with

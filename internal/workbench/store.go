@@ -92,7 +92,7 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(schema + todaySchema + plannerSchema + gatewaySchema + crmSchema); err != nil {
+	if _, err := db.Exec(schema + runLeaseSchema + todaySchema + plannerSchema + gatewaySchema + crmSchema); err != nil {
 		return nil, fmt.Errorf("数据库初始化: %w", err)
 	}
 	var version int
@@ -234,7 +234,7 @@ func (s *Store) SetSetting(key, value string) error {
 }
 func (s *Store) CheckUnlocked(project string) error {
 	var n int
-	if err := s.DB.QueryRow("SELECT COUNT(*) FROM project_locks WHERE project_id=?", project).Scan(&n); err != nil {
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM workbench_run_leases WHERE project_id=?", project).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {

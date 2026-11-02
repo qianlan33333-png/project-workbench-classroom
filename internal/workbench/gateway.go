@@ -88,6 +88,7 @@ type GatewaySession struct {
 	LastMessageAt    int64  `json:"lastMessageAt"`
 }
 type GatewayRun struct {
+	SharedRead     bool     `json:"sharedRead,omitempty"`
 	LegacyDeadline int64    `json:"deadline,omitempty"` // Only read by the previous release on rollback.
 	HistoryFrom    int64    `json:"historyFrom,omitempty"`
 	HistoryThrough int64    `json:"historyThrough,omitempty"`

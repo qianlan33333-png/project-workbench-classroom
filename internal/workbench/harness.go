@@ -472,6 +472,17 @@ func (h *Harness) CleanupOrphans(ctx context.Context) error {
 }
 
 func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks RuntimeHooks) (resultOut RuntimeResult, executeErr error) {
+	if h.Config.RuntimeMode == "podman" {
+		cost := int64(192 * 1024)
+		if !input.Routing && input.Run.Gateway == nil && input.Project.ID != personalProjectID {
+			cost = 384 * 1024
+		}
+		release, err := acquireHarnessSlot(parent, hostHarnessSlots, func() bool { return containerStarts.admit(time.Now(), hostStartHeadroom(), cost) })
+		if err != nil {
+			return RuntimeResult{}, err
+		}
+		defer release()
+	}
 	args, env, cwd, err := h.prepare(input)
 	if err == nil && !input.Routing && (h.Config.RuntimeMode == "podman" || h.Config.RuntimeDir != "") {
 		var closeBridge func()

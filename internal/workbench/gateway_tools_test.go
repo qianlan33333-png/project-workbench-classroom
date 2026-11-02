@@ -128,11 +128,6 @@ func TestGatewayScrubsLegacyActiveAndRecycledInvocations(t *testing.T) {
 
 func TestGatewayMCPHostUsesBoundCredentialsAndSession(t *testing.T) {
 	s, h, in := gatewayRuntimeFixture(t)
-	run, e := NewWorker(s, nil, nil).claim()
-	if e != nil {
-		t.Fatal(e)
-	}
-	in.Run = run
 	count := 0
 	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count++
@@ -154,7 +149,7 @@ func TestGatewayMCPHostUsesBoundCredentialsAndSession(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	in.Run.Gateway.PluginIDs = []string{p.ID}
+	in.Run = claimGatewayWithTestPlugin(t, s, in.Run, p.ID)
 	proxy := h.gatewayMCPHandler(in, up.Client().Transport)
 	request := func(method, path, sid string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
@@ -215,16 +210,11 @@ func TestGatewayStdioHasNoHostOrCustomerWritableState(t *testing.T) {
 
 func TestGatewayStdioConcurrentHandshakesLaunchOnceAndRevoke(t *testing.T) {
 	s, h, in := gatewayRuntimeFixture(t)
-	run, err := NewWorker(s, nil, nil).claim()
-	if err != nil {
-		t.Fatal(err)
-	}
-	in.Run = run
 	p, err := s.SavePlugin(Plugin{Name: "one MCP", Transport: "stdio", Command: "fixture"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	in.Run.Gateway.PluginIDs = []string{p.ID}
+	in.Run = claimGatewayWithTestPlugin(t, s, in.Run, p.ID)
 	log := filepath.Join(t.TempDir(), "podman-actions")
 	h.Config.Podman = filepath.Join(t.TempDir(), "podman")
 	// One line per actual host process operation; stay attached like a real MCP.
@@ -322,11 +312,6 @@ func TestGatewayStdioConcurrentHandshakesLaunchOnceAndRevoke(t *testing.T) {
 
 func TestGatewayHTTPBoundsRequestsAndCancelsOpenMCP(t *testing.T) {
 	s, h, in := gatewayRuntimeFixture(t)
-	run, e := NewWorker(s, nil, nil).claim()
-	if e != nil {
-		t.Fatal(e)
-	}
-	in.Run = run
 	started := make(chan struct{}, 2)
 	closed := make(chan struct{}, 2)
 	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -340,7 +325,7 @@ func TestGatewayHTTPBoundsRequestsAndCancelsOpenMCP(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	in.Run.Gateway.PluginIDs = []string{p.ID}
+	in.Run = claimGatewayWithTestPlugin(t, s, in.Run, p.ID)
 	proxy := boundGatewayHTTP(h.gatewayMCPHandler(in, up.Client().Transport), 1, 1)
 	path := "/gateway-mcp/" + p.ID
 	do := func() int {
@@ -373,4 +358,19 @@ func TestGatewayHTTPBoundsRequestsAndCancelsOpenMCP(t *testing.T) {
 	if got := do(); got != 429 {
 		t.Fatal("exhausted budget was reused", got)
 	}
+}
+
+// These protocol fixtures create their plugin after preparing the queued
+// message. Capture the grant before the scheduler classifies that queued run.
+func claimGatewayWithTestPlugin(t *testing.T, s *Store, r Run, plugin string) Run {
+	t.Helper()
+	r.Gateway.PluginIDs = []string{plugin}
+	if _, err := s.DB.Exec("UPDATE runs SET data=? WHERE id=? AND state='queued'", encode(r), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewWorker(s, nil, nil).claim()
+	if err != nil || run.Gateway.SharedRead {
+		t.Fatal("unapproved plugin should require the writer lease", err)
+	}
+	return run
 }

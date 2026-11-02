@@ -2655,8 +2655,8 @@ function SettingsPage({
         </div>
         <div className="setting-row">
           <div>
-            <strong>任务并发</strong>
-            <p>最多 {settings.maxProjectRuns} 个不同项目同时执行，每个项目按顺序处理。「今天」有独立执行位。</p>
+            <strong>全工作台并发上限</strong>
+            <p>个人助手、项目任务和客服应答共享名额。同一客户的消息按顺序处理，同一项目一次只运行一个写入任务。</p>
           </div>
           <span>{settings.maxConcurrentRuns}</span>
         </div>

@@ -246,7 +246,7 @@ func (w *Worker) compactCall(parent context.Context, purpose, prompt string, rul
 	}
 	e = w.Store.Transaction(parent, func(tx *sql.Tx) error {
 		var n int
-		if e := tx.QueryRow("SELECT (SELECT count(*) FROM project_locks)+(SELECT count(*) FROM settings WHERE key='tool_install_running')+(SELECT count(*) FROM runs WHERE state='queued')").Scan(&n); e != nil {
+		if e := tx.QueryRow("SELECT (SELECT count(*) FROM workbench_run_leases)+(SELECT count(*) FROM settings WHERE key='tool_install_running')+(SELECT count(*) FROM runs WHERE state='queued')").Scan(&n); e != nil {
 			return e
 		}
 		if n > 0 {
