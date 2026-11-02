@@ -686,6 +686,14 @@ func (s *Store) Route(ctx context.Context, id string, semantic SemanticRouter) (
 			catalog.Sessions = append(catalog.Sessions, ss...)
 		}
 		decision, e := semantic(ctx, in, catalog)
+		// Insufficient execution capacity gives no evidence about the target.
+		// Keep the original unrouted message intact until it can be evaluated.
+		if errors.Is(e, errHarnessAdmission) {
+			return m, e
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return m, ctx.Err()
+		}
 		if e == nil && decision.Question == "" {
 			target := decision.SessionID
 			if target == "" {

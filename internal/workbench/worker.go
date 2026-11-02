@@ -10,20 +10,22 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Worker struct {
-	readMCPGrants []GatewayReadMCPGrant
-	GatewayNotify func(context.Context, string, string, string) (string, error)
-	Store         *Store
-	Executor      Executor
-	Router        SemanticRouter
-	mu            sync.Mutex
-	cancels       map[string]context.CancelFunc
-	answers       map[string]chan json.RawMessage
-	pendingStops  map[string]bool
-	wg            sync.WaitGroup
+	routeTurnUntil atomic.Int64
+	readMCPGrants  []GatewayReadMCPGrant
+	GatewayNotify  func(context.Context, string, string, string) (string, error)
+	Store          *Store
+	Executor       Executor
+	Router         SemanticRouter
+	mu             sync.Mutex
+	cancels        map[string]context.CancelFunc
+	answers        map[string]chan json.RawMessage
+	pendingStops   map[string]bool
+	wg             sync.WaitGroup
 }
 
 func NewWorker(s *Store, e Executor, router SemanticRouter) *Worker {
@@ -126,7 +128,7 @@ func (w *Worker) Recover(ctx context.Context) error {
 	return w.Store.recoverGatewayDeliveries()
 }
 func (w *Worker) Start(ctx context.Context) {
-	w.wg.Add(5)
+	w.wg.Add(6)
 	go func() {
 		defer w.wg.Done()
 		ticker := time.NewTicker(10 * time.Second)
@@ -145,6 +147,9 @@ func (w *Worker) Start(ctx context.Context) {
 	}
 	go func() { defer w.wg.Done(); w.gatewayDeliverLoop(ctx) }()
 	go func() { defer w.wg.Done(); w.gatewayRevocationLoop(ctx) }()
+	// Persisted, already-bound customer messages do not need a semantic router.
+	// Their queue must keep moving even while a separate entry spends time
+	// calling the model to resolve its destination.
 	go func() {
 		defer w.wg.Done()
 		t := time.NewTicker(400 * time.Millisecond)
@@ -155,15 +160,35 @@ func (w *Worker) Start(ctx context.Context) {
 				return
 			case <-t.C:
 			}
-			messages, err := listJSON[Message](w.Store.DB, "SELECT data FROM inbox WHERE state IN ('unrouted','gateway_pending') ORDER BY created_at LIMIT 20")
+			messages, err := listJSON[Message](w.Store.DB, "SELECT data FROM inbox WHERE state='gateway_pending' ORDER BY created_at,rowid LIMIT 20")
 			if err != nil {
 				continue
 			}
 			for _, m := range messages {
-				if m.Incoming.Source == gatewaySource {
-					_ = w.Store.queueGateway(m)
-					continue
+				if ctx.Err() != nil {
+					return
 				}
+				_ = w.Store.queueGateway(m)
+			}
+		}
+	}()
+	go func() {
+		defer w.wg.Done()
+		t := time.NewTicker(400 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			messages, err := listJSON[Message](w.Store.DB, `SELECT data FROM inbox WHERE state='unrouted'
+			  AND coalesce(json_extract(data,'$.routeAfter'),0)<=?
+			  ORDER BY coalesce(json_extract(data,'$.routeAfter'),created_at),rowid LIMIT 20`, now())
+			if err != nil {
+				continue
+			}
+			for _, m := range messages {
 				if ctx.Err() != nil {
 					return
 				}
@@ -172,6 +197,17 @@ func (w *Worker) Start(ctx context.Context) {
 					routeCtx, stop := context.WithTimeout(ctx, 90*time.Second)
 					_, e = w.Store.Route(routeCtx, m.ID, w.Router)
 					stop()
+				}
+				if ctx.Err() != nil {
+					return
+				}
+				if errors.Is(e, errHarnessAdmission) {
+					// Rotate the busy entry behind its peers. Only update still-unrouted
+					// rows: an owner may have resolved it during the admission attempt.
+					retry := now() + 600
+					_, _ = w.Store.DB.Exec("UPDATE inbox SET data=json_set(data,'$.routeAfter',?) WHERE id=? AND state='unrouted'", retry, m.ID)
+					w.routeTurnUntil.Store(retry + 800)
+					continue
 				}
 				if e != nil {
 					if current, readErr := w.Store.Message(m.ID); readErr == nil && (current.RunID != "" || current.State == "deleted") {
@@ -251,6 +287,22 @@ func (w *Worker) claim() (Run, error) {
 				return nil
 			}
 		}
+		if h, ok := w.Executor.(*Harness); ok && h.Config.RuntimeMode == "podman" && r.Kind != "archive" {
+			// An older semantic entry that could not obtain capacity gets a
+			// chance at the last free slot. Expiry prevents a stranded reservation.
+			if r.ProjectID != personalProjectID && w.routeTurnUntil.Load() > now() {
+				hostPool.Lock()
+				last := len(hostPool.slots) >= maxConcurrentRuns-1
+				hostPool.Unlock()
+				if last {
+					return ErrLocked
+				}
+			}
+			r.hostSlot = tryHostSlot(hostSlotCost(RuntimeInput{Run: r, Project: Project{ID: r.ProjectID}, Routing: r.ScheduleConfig != nil && r.ScheduleConfig.Output == "project_context"}))
+			if r.hostSlot == nil {
+				return ErrLocked
+			}
+		}
 		r.State = "running"
 		r.StartedAt = now()
 		if !shared {
@@ -261,12 +313,16 @@ func (w *Worker) claim() (Run, error) {
 		_, err = tx.Exec("UPDATE runs SET state=?,data=? WHERE id=?", r.State, encode(r), r.ID)
 		return err
 	})
+	if err != nil {
+		r.hostSlot.finish()
+	}
 	if err == nil && r.State == "cancelled" {
 		return Run{}, ErrNotFound
 	}
 	return r, err
 }
 func (w *Worker) execute(parent context.Context, r Run) {
+	defer r.hostSlot.finish()
 	ctx, cancel := context.WithCancel(parent)
 	w.mu.Lock()
 	w.cancels[r.ID] = cancel
