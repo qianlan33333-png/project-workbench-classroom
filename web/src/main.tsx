@@ -56,6 +56,7 @@ import { mergeRuns, mergeSessions, initialSessionTitle } from "./chat-state";
 import { RecycleBin, GlobalTools } from "./lifecycle-ui";
 import { CapabilityComposer, CapabilityBadges } from "./capability-composer";
 import { Today, TasksPanel, ContextSettings, type PreparedTask } from "./today";
+import { GatewayProjectSettings, GatewayResume } from "./gateway-project";
 import "./style.css";
 
 type Field = {
@@ -808,6 +809,7 @@ function App() {
       content: (
         <>
           <ProjectMetadata project={project} onSave={refresh} notify={notify} />
+          <GatewayProjectSettings project={project} experts={experts} />
           <ContextSettings
             project={project}
             notify={notify}
@@ -1441,6 +1443,7 @@ function App() {
                   </div>
                 </div>
                 <div>
+                  {session && !session.draft && <GatewayResume key={session.id} id={session.id} notify={notify} />}
                   <button
                     className="icon"
                     title="重命名对话"

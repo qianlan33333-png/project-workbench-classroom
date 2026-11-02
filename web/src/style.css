@@ -3865,3 +3865,12 @@ label input[type="file"] {
 @media(max-width:767px) { .understanding-status { align-items:flex-start; } .understanding-modal { padding:20px; } .understanding-actions > span { flex-basis:100%; } }
 .understanding-prose .markdown { font-size:14px; line-height:1.85; }
 .understanding-paragraph .markdown > :first-child { margin-top:0; }
+
+.gateway-settings { padding-block: 15px; }
+.gateway-settings summary { cursor: pointer; font-weight: 600; }
+.gateway-settings fieldset { margin: 0; padding: 0; border: 0; }
+.gateway-settings select, .gateway-settings textarea { width: 100%; border: 1px solid var(--line); border-radius: 8px; font: inherit; padding: 9px; }
+.gateway-settings .gateway-check { flex-direction: row; align-items: center; }
+.gateway-check input { width: auto; margin: 0; }
+.gateway-restore { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.gateway-restore span { font-size: .85em; }
