@@ -812,14 +812,15 @@ function App() {
       ),
     });
   };
-  const configureProject = () =>
+  const openLinkedSettings = useRef(new URLSearchParams(location.search).get("settings") === "auto-reply");
+  const configureProject = (showGateway = false) =>
     project &&
     setDialog({
       title: "项目设置",
       content: (
         <>
           <ProjectMetadata project={project} onSave={refresh} notify={notify} />
-          <GatewayProjectSettings project={project} experts={experts} />
+          <GatewayProjectSettings project={project} experts={experts} expanded={showGateway} />
           <ContextSettings
             project={project}
             notify={notify}
@@ -828,6 +829,12 @@ function App() {
         </>
       ),
     });
+  useEffect(() => {
+    if (auth && project && openLinkedSettings.current && project.id === initialLocation.get("project")) {
+      openLinkedSettings.current = false;
+      configureProject(true);
+    }
+  }, [auth, project]);
   const taskDraft = useRef<{
     id: string;
     version: number;
@@ -1190,7 +1197,7 @@ function App() {
                 <button
                   className="icon"
                   title="项目设置"
-                  onClick={configureProject}
+                  onClick={() => configureProject()}
                 >
                   <Settings size={16} />
                 </button>

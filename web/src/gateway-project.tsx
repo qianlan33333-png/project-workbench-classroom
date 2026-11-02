@@ -26,7 +26,9 @@ type Choice = { connection: Connection; accountId: string; binding?: Binding };
 export function GatewayProjectSettings({
   project,
   experts,
+  expanded = false,
 }: {
+  expanded?: boolean;
   project: Project;
   experts: Expert[];
 }) {
@@ -85,7 +87,7 @@ export function GatewayProjectSettings({
   }, [project.id, serial]);
   const choice = choices[selection];
   return (
-    <details className="project-metadata gateway-settings">
+    <details className="project-metadata gateway-settings" open={expanded}>
       <summary>自动化应答</summary>
       {error ? (
         <p role="alert">
