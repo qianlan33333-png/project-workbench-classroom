@@ -70,7 +70,12 @@ func (w *Worker) Recover(ctx context.Context) error {
 		r.State = "interrupted"
 		r.Error = "服务重启中断了执行；已保留文件变化。请查看后继续。"
 		r.FinishedAt = now()
-		if err = w.Store.saveRun(r); err != nil {
+		if r.ScheduleConfig != nil {
+			err = w.Store.finishConditional(&r, nil, nil)
+		} else {
+			err = w.Store.saveRun(r)
+		}
+		if err != nil {
 			return err
 		}
 		if _, err = w.Store.DB.Exec("DELETE FROM project_locks WHERE run_id=?", r.ID); err != nil {
@@ -237,9 +242,14 @@ func (w *Worker) execute(parent context.Context, r Run) {
 	}
 	s := w.Store
 	_ = s.Emit(r.SessionID, r.ID, "run.updated", r)
-	baseline, err := s.Snapshot(r.ProjectID)
-	if err == nil {
-		_, err = s.DB.Exec("INSERT INTO baselines VALUES(?,?)", r.ID, encode(baseline))
+	var err error
+	// A project-context run has only the extracted inputs and an empty scratch workspace.
+	if r.ScheduleConfig == nil || r.ScheduleConfig.Output != "project_context" {
+		var baseline map[string]string
+		baseline, err = s.Snapshot(r.ProjectID)
+		if err == nil {
+			_, err = s.DB.Exec("INSERT INTO baselines VALUES(?,?)", r.ID, encode(baseline))
+		}
 	}
 	if err == nil {
 		err = ctx.Err()
@@ -247,6 +257,8 @@ func (w *Worker) execute(parent context.Context, r Run) {
 	if err == nil {
 		err = s.MaterializeAttachments(&r)
 	}
+	var inputs []ContextSource
+	var brief *scheduleBrief
 	var result RuntimeResult
 	var rules *PersonalRules
 	if err == nil && r.ProjectID == personalProjectID {
@@ -304,7 +316,27 @@ func (w *Worker) execute(parent context.Context, r Run) {
 			if nativeCommand {
 				prompt = "/compact"
 			}
-			result, err = w.Executor.Execute(ctx, RuntimeInput{Run: r, Session: ss, Project: p, Prompt: prompt, NativeCommand: nativeCommand, PersonalRules: rules}, hooks)
+			in := RuntimeInput{Run: r, Session: ss, Project: p, Prompt: prompt, NativeCommand: nativeCommand, PersonalRules: rules}
+			if cfg := r.ScheduleConfig; cfg != nil {
+				inputs, err = s.scheduleSources(p, *cfg)
+				if err == nil && scheduleFingerprint(inputs) != r.InputFingerprint {
+					err = errors.New("排队期间资料已变化，请核对后手动执行")
+				}
+				if err == nil && cfg.Output == "project_context" {
+					var b scheduleBrief
+					b, err = s.prepareBrief(p, r, inputs)
+					brief = &b
+					in.Purpose = "context"
+					in.Routing = true
+					in.Prompt = b.prompt
+					in.NativeCommand = false
+					in.Project.ExpertIDs = nil
+					in.Run.ExpertVersions = map[string]string{}
+				}
+			}
+			if err == nil {
+				result, err = w.Executor.Execute(ctx, in, hooks)
+			}
 		}
 	}
 	// Cleanup is a hard prerequisite to recording a final snapshot and unlocking.
@@ -317,7 +349,7 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		_ = s.saveRun(r)
 		return
 	}
-	if r.ScheduleID != "" && result.Text != "" {
+	if r.ScheduleID != "" && result.Text != "" && (r.ScheduleConfig == nil || r.ScheduleConfig.Output != "project_context") {
 		root, e := s.ProjectRoot(r.ProjectID)
 		if e == nil {
 			rr, e := os.OpenRoot(root)
@@ -352,8 +384,13 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		}
 	}
 	s.mu.Lock()
-	saveErr := s.saveRun(r)
-	if saveErr == nil {
+	var saveErr error
+	if r.ScheduleConfig != nil {
+		saveErr = s.finishConditional(&r, inputs, brief)
+	} else {
+		saveErr = s.saveRun(r)
+	}
+	if saveErr == nil && r.ScheduleConfig == nil {
 		_, saveErr = s.DB.Exec("DELETE FROM project_locks WHERE run_id=?", r.ID)
 	}
 	s.mu.Unlock()

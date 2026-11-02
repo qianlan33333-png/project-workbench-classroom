@@ -20,6 +20,9 @@ c=sqlite3.connect('/var/lib/project-workbench/workbench.sqlite')
 c.execute("UPDATE projects SET archived=1,data=json_set(data,'$.archived',json('true')) WHERE id='personal-assistant'")
 if c.execute("SELECT count(*) FROM sqlite_master WHERE name='personal_memory_exclusions'").fetchone()[0]:
  c.execute("UPDATE personal_memories SET data=json_set(data,'$.forgotten',json('true'),'$.text','','$.quote','','$.source','') WHERE 'm:'||id IN (SELECT id FROM personal_memory_exclusions) OR 'r:'||json_extract(data,'$.source') IN (SELECT id FROM personal_memory_exclusions)")
+if c.execute("SELECT count(*) FROM sqlite_master WHERE name='schedule_inputs'").fetchone()[0]:
+ c.execute("""UPDATE schedules SET enabled=0,data=json_set(data,'$.enabled',json('false'),'$.pausedReason','版本回退，资料变化任务保持暂停')
+ WHERE json_extract(data,'$.condition')='changed' OR json_extract(data,'$.output')='project_context'""")
 c.commit()
 PY
 ln -sfn "$previous" /opt/project-workbench/current.today-rollback

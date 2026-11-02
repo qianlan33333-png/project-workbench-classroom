@@ -153,69 +153,23 @@ func (f *summaryExecutor) Execute(_ context.Context, in RuntimeInput, _ RuntimeH
 	return RuntimeResult{Text: `{"description":"已核对：保持长期目标，尚未完成的验证继续保留。","change":"记录一项实质变化"}`}, nil
 }
 func (f *summaryExecutor) Cleanup(context.Context, string) error { return nil }
-func TestContextRollingRecoverySourcesAndCAS(t *testing.T) {
+func TestProjectContextWindowAndOwnerCAS(t *testing.T) {
 	s := testStore(t)
-	p := testProject(t, s, "上下文测试")
-	_, e := s.SaveFile(p.ID, "长期目标.md", []byte("目标：提升表达。反对意见：不可占用交付时间。"), "")
-	if e != nil {
-		t.Fatal(e)
-	}
-	// Old evidence must be consumed, but not appear in the 72-hour window.
-	old := time.Now().Add(-100 * time.Hour)
-	root, _ := s.ProjectRoot(p.ID)
-	_ = os.Chtimes(filepath.Join(root, "长期目标.md"), old, old)
-	f := &summaryExecutor{}
-	w := NewWorker(s, f, nil)
-	_ = s.RequestContext(p.ID, true)
-	for i := 0; i < 20; i++ {
-		if !w.maintainContext(context.Background()) {
-			break
-		}
-	}
-	c, e := s.ProjectContext(p.ID)
-	if e != nil || c.State != "ready" || len(c.Sources) != 2 {
-		t.Fatal(e, c)
-	}
-	if !strings.Contains(strings.Join(f.prompts, ""), "反对意见") {
-		t.Fatal("missed evidence")
-	}
-	for _, change := range c.Recent {
-		if change.Source == "file:长期目标.md" {
-			t.Fatal("old evidence leaked into recent", c.Recent)
-		}
-	}
-	calls := f.calls
-	version := c.Version
-	_ = s.RequestContext(p.ID, false)
-	w.maintainContext(context.Background())
-	cached, _ := s.ProjectContext(p.ID)
-	if f.calls != calls || cached.Version != version {
-		t.Fatal("unchanged context was regenerated")
-	}
+	p := testProject(t, s, "说明")
 	at := now()
 	v := rollingChanges([]ContextChange{{At: at - recentWindow}, {At: at - recentWindow + 1}, {At: at + 1}}, at)
 	if len(v) != 1 {
 		t.Fatal(v)
 	}
-	c, e = s.CorrectContext(p.ID, "人工纠正：学习是重点，不是收入", c.Version)
+	c, e := s.ProjectContext(p.ID)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = s.CorrectContext(p.ID, "过期", c.Version-1); !errors.Is(e, ErrConflict) {
+	if _, e = s.CorrectContext(p.ID, "人工结论", c.Version); e != nil {
 		t.Fatal(e)
 	}
-	_ = s.RequestContext(p.ID, false)
-	f.hook = func() {
-		current, _ := s.ProjectContext(p.ID)
-		_, er := s.CorrectContext(p.ID, "更新的人工结论", current.Version)
-		if er != nil {
-			t.Fatal(er)
-		}
-	}
-	w.maintainContext(context.Background())
-	p, _ = s.Project(p.ID)
-	if p.Description != "更新的人工结论" {
-		t.Fatal("model overwrote correction")
+	if _, e = s.CorrectContext(p.ID, "旧草稿", c.Version); !errors.Is(e, ErrConflict) {
+		t.Fatal(e)
 	}
 	s.markContext(p.ID, true)
 	cat, _ := s.ContextCatalog()
@@ -303,49 +257,27 @@ func TestTaskChangeEntersRecentWithoutModel(t *testing.T) {
 	}
 }
 
-func TestNewEvidencePreservesPersonalHistoryAndStaleCheckpointRestarts(t *testing.T) {
+func TestProjectChangesDoNotEnqueueHiddenSummaries(t *testing.T) {
 	s := testStore(t)
-	p := testProject(t, s, "增量恢复")
-	rev, e := s.SaveFile(p.ID, "资料.md", []byte("初始事实"), "")
+	p := testProject(t, s, "增量")
+	rev, e := s.SaveFile(p.ID, "资料.md", []byte("初始资料"), "")
 	if e != nil {
 		t.Fatal(e)
 	}
 	if flag, _ := s.Setting("personal_context_reset"); flag == "true" {
-		t.Fatal("new evidence reset personal history")
+		t.Fatal("new evidence reset history")
 	}
-	f := &summaryExecutor{}
-	w := NewWorker(s, f, nil)
-	_ = s.RequestContext(p.ID, false)
-	for i := 0; i < 20; i++ {
-		if !w.maintainContext(context.Background()) {
-			break
-		}
-	}
-	root, _ := s.ProjectRoot(p.ID)
-	_ = os.WriteFile(filepath.Join(root, "资料.md"), []byte("第一处修改"), 0600)
-	_ = s.RequestContext(p.ID, false)
-	f.hook = func() { _ = os.WriteFile(filepath.Join(root, "资料.md"), []byte("第二处修改"), 0600) }
-	for i := 0; i < 20; i++ {
-		if !w.maintainContext(context.Background()) {
-			break
-		}
-	}
-	var jobs int
-	_ = s.DB.QueryRow("SELECT count(*) FROM context_jobs").Scan(&jobs)
-	if jobs != 0 || !strings.Contains(strings.Join(f.prompts, ""), "第二处修改") {
-		t.Fatal("stale checkpoint did not recover", jobs)
-	}
-	// A correction/removal of old evidence explicitly invalidates the stale native context.
-	current, _, _ := s.ReadFile(p.ID, "资料.md")
-	_, e = s.SaveFile(p.ID, "资料.md", []byte("人工更正"), digest(current))
-	if e != nil {
-		t.Fatal(e, rev)
+	if _, e = s.SaveFile(p.ID, "资料.md", []byte("人工修正"), rev.After); e != nil {
+		t.Fatal(e)
 	}
 	if flag, _ := s.Setting("personal_context_reset"); flag != "true" {
-		t.Fatal("correction retained stale native context")
+		t.Fatal("stale native context")
+	}
+	var n int
+	if e = s.DB.QueryRow("SELECT count(*) FROM context_jobs").Scan(&n); e != nil || n != 0 {
+		t.Fatal(n, e)
 	}
 }
-
 func TestDailyFailureKeepsPreviousAndRejectsChangedEvidence(t *testing.T) {
 	s := testStore(t)
 	_ = s.SetSetting("today_enabled", "true")
@@ -403,57 +335,6 @@ func waitSignal(t *testing.T, ch <-chan struct{}) {
 	case <-ch:
 	case <-time.After(3 * time.Second):
 		t.Fatal("maintenance did not yield promptly")
-	}
-}
-func TestInteractiveTaskCancelsSummaryAndPreservesCheckpoint(t *testing.T) {
-	s := testStore(t)
-	p := testProject(t, s, "交互优先")
-	_ = s.RequestContext(p.ID, false)
-	f := &yieldingSummaryExecutor{make(chan struct{}), make(chan struct{}), make(chan struct{})}
-	w := NewWorker(s, f, nil)
-	done := make(chan struct{})
-	go func() { w.maintainContext(context.Background()); close(done) }()
-	waitSignal(t, f.started)
-	m := submitRoute(t, s, Incoming{Source: "web", EventID: newID(), SessionID: p.DefaultSessionID, Text: "现在执行"})
-	waitSignal(t, f.cleaning)
-	if _, e := w.claim(); !errors.Is(e, ErrNotFound) {
-		t.Fatal("claimed before subprocess cleanup", e)
-	}
-	close(f.release)
-	waitSignal(t, done)
-	c, _ := s.ProjectContext(p.ID)
-	if c.State == "failed" || c.Error != "" {
-		t.Fatal("yield was treated as failure", c)
-	}
-	var checkpoint string
-	_ = s.DB.QueryRow("SELECT data FROM context_jobs WHERE project_id=?", p.ID).Scan(&checkpoint)
-	if checkpoint != "{}" {
-		t.Fatal("unfinished chunk was consumed", checkpoint)
-	}
-	r, e := w.claim()
-	if e != nil || r.ID != m.RunID {
-		t.Fatal(e, r)
-	}
-	// Even after the lock is released, a waiting interactive run wins the race
-	// between idle detection and maintenance admission.
-	r.State = "queued"
-	_ = s.saveRun(r)
-	_, _ = s.DB.Exec("DELETE FROM project_locks WHERE run_id=?", r.ID)
-	if _, e = w.compactCall(context.Background(), "daily", "unused"); !errors.Is(e, errMaintenanceYield) {
-		t.Fatal("background admitted ahead of queued run", e)
-	}
-	r.State = "completed"
-	_ = s.saveRun(r)
-	_ = s.RequestContext(p.ID, false)
-	resume := NewWorker(s, &summaryExecutor{}, nil)
-	for i := 0; i < 10; i++ {
-		if !resume.maintainContext(context.Background()) {
-			break
-		}
-	}
-	c, _ = s.ProjectContext(p.ID)
-	if c.State != "ready" {
-		t.Fatal("summary did not resume", c)
 	}
 }
 func TestDailyYieldRetainsRefreshRequest(t *testing.T) {

@@ -813,14 +813,14 @@ export function ContextSettings({
         />
       </label>
       <p className="muted">
-        一篇完整的项目说明，自动结合增量修订。你的纠正优先保留。
+        可直接保存说明，也可在项目的「定时」中添加整理任务。
       </p>
       <p>
         {(
           {
             ready: "已整理",
             pending: "待更新",
-            invalid: "正在重新核对",
+            invalid: "来源已变化",
             failed: "整理失败",
           } as Record<string, string>
         )[data?.state] || "加载中"}{" "}
@@ -844,30 +844,6 @@ export function ContextSettings({
           }
         >
           保存说明
-        </button>
-        <button
-          disabled={busy}
-          onClick={() =>
-            act(async () => {
-              await api(`/projects/${project.id}/context/refresh`, {});
-              notify("已进入后台整理队列");
-            })
-          }
-        >
-          更新说明
-        </button>
-        <button
-          disabled={busy}
-          onClick={() =>
-            act(async () => {
-              await api(`/projects/${project.id}/context/refresh`, {
-                rebuild: true,
-              });
-              notify("已请求重新核对全部有效资料");
-            })
-          }
-        >
-          全量重建
         </button>
       </div>
       <details>

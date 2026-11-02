@@ -66,6 +66,11 @@ func (s *Store) saveRun(r Run) error {
 	if err != nil {
 		return err
 	}
+	if r.ScheduleID != "" {
+		if _, err = s.DB.Exec("UPDATE schedule_checks SET outcome=?,detail=? WHERE schedule_id=? AND run_id=?", r.State, r.Error, r.ScheduleID, r.ID); err != nil {
+			return err
+		}
+	}
 	return s.Emit(r.SessionID, r.ID, "run.updated", r)
 }
 func (s *Store) saveMessage(m Message) error {

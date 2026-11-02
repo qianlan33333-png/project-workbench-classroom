@@ -264,8 +264,60 @@ func (a *API) Mount(r *gin.Engine) {
 		bind(c, func(v Schedule) (any, error) { v.ID = c.Param("id"); return s.SaveSchedule(v) })
 	})
 	owner.DELETE("/schedules/:id", func(c *gin.Context) {
-		_, e := s.DB.Exec("DELETE FROM schedules WHERE id=?", c.Param("id"))
+		s.scheduleMu.Lock()
+		defer s.scheduleMu.Unlock()
+		res, e := s.DB.Exec("DELETE FROM schedules WHERE id=? AND NOT EXISTS(SELECT 1 FROM runs WHERE json_extract(data,'$.scheduleId')=? AND state IN ('queued','running','waiting','stopping'))", c.Param("id"), c.Param("id"))
+		if e == nil {
+			n, _ := res.RowsAffected()
+			if n == 0 {
+				e = errors.New("请先停止执行，再删除任务")
+			}
+		}
 		reply(c, nil, e)
+	})
+	owner.POST("/schedules/:id/enabled", func(c *gin.Context) {
+		bind(c, func(v struct {
+			Enabled bool `json:"enabled"`
+		}) (any, error) {
+			sc, ids, e := s.toggleSchedule(c.Param("id"), v.Enabled)
+			if e != nil {
+				return nil, e
+			}
+			for _, id := range ids {
+				if e = a.Worker.Stop(id); e != nil {
+					r, er := s.Run(id)
+					if er != nil || !contains([]string{"completed", "failed", "cancelled", "interrupted"}, r.State) {
+						return nil, e
+					}
+				}
+			}
+			return sc, nil
+		})
+	})
+	owner.POST("/schedules/:id/run", func(c *gin.Context) {
+		bind(c, func(v struct {
+			Operation string `json:"operation"`
+		}) (any, error) {
+			return s.RunSchedule(c.Param("id"), v.Operation)
+		})
+	})
+	owner.GET("/schedules/:id/checks", func(c *gin.Context) {
+		rows, e := s.DB.Query("SELECT operation,checked_at,outcome,run_id,detail FROM schedule_checks WHERE schedule_id=? ORDER BY checked_at DESC LIMIT 30", c.Param("id"))
+		if e != nil {
+			reply(c, nil, e)
+			return
+		}
+		defer rows.Close()
+		data := []ScheduleReceipt{}
+		for rows.Next() {
+			var r ScheduleReceipt
+			if e = rows.Scan(&r.Operation, &r.At, &r.Outcome, &r.RunID, &r.Detail); e != nil {
+				reply(c, nil, e)
+				return
+			}
+			data = append(data, r)
+		}
+		reply(c, data, rows.Err())
 	})
 	owner.GET("/schedules/:id/runs", func(c *gin.Context) {
 		v, e := listJSON[Run](s.DB, "SELECT data FROM runs WHERE json_extract(data,'$.scheduleId')=? ORDER BY created_at DESC LIMIT 100", c.Param("id"))

@@ -93,6 +93,8 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
+	ScheduleConfig       *Schedule         `json:"scheduleConfig,omitempty"`
+	InputFingerprint     string            `json:"inputFingerprint,omitempty"`
 	PersonalRulesVersion int64             `json:"personalRulesVersion,omitempty"`
 	Capabilities         []Capability      `json:"capabilities,omitempty"`
 	Kind                 string            `json:"kind,omitempty"`
@@ -162,6 +164,9 @@ type Delivery struct {
 	CreatedAt      int64    `json:"createdAt"`
 }
 type Schedule struct {
+	Condition            string `json:"condition,omitempty"`
+	SourceScope          string `json:"sourceScope,omitempty"`
+	Output               string `json:"output,omitempty"`
 	PausedReason         string `json:"pausedReason,omitempty"`
 	ID                   string `json:"id"`
 	ProjectID            string `json:"projectId"`

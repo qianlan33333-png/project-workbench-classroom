@@ -3865,3 +3865,10 @@ label input[type="file"] {
 @media(max-width:767px) { .understanding-status { align-items:flex-start; } .understanding-modal { padding:20px; } .understanding-actions > span { flex-basis:100%; } }
 .understanding-prose .markdown { font-size:14px; line-height:1.85; }
 .understanding-paragraph .markdown > :first-child { margin-top:0; }
+
+/* The project rail is narrow. Keep each schedule action on one legible line. */
+.schedule-item > div { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
+.schedule-item button { min-height: 30px; font-size: 11px; white-space: nowrap; padding: 4px; }
+.schedule-item strong { font-size: 13px; color: var(--ink, #343d32); }
+.schedule-item small { font-size: 11px; color: #64705d; }
+.schedule-panel .panel-action + .panel-action { margin-top: 0; }

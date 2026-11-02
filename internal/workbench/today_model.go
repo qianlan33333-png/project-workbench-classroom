@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS project_tasks(id TEXT PRIMARY KEY,project_id TEXT NOT
 CREATE TABLE IF NOT EXISTS project_contexts(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS context_versions(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,version INTEGER NOT NULL,data TEXT NOT NULL,PRIMARY KEY(project_id,version));
 CREATE TABLE IF NOT EXISTS context_jobs(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,due_at INTEGER NOT NULL,data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS schedule_checks(schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,operation TEXT NOT NULL,checked_at INTEGER NOT NULL,outcome TEXT NOT NULL,run_id TEXT NOT NULL DEFAULT '',detail TEXT NOT NULL DEFAULT '',PRIMARY KEY(schedule_id,operation));
+CREATE TABLE IF NOT EXISTS schedule_inputs(schedule_id TEXT PRIMARY KEY REFERENCES schedules(id) ON DELETE CASCADE, fingerprint TEXT NOT NULL, sources TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS personal_understanding_versions(version INTEGER PRIMARY KEY,data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS personal_memory_progress(id TEXT PRIMARY KEY,version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS personal_memory_exclusions(id TEXT PRIMARY KEY);
@@ -58,19 +60,6 @@ type ContextChange struct {
 	Text   string `json:"text"`
 	At     int64  `json:"at"`
 	Source string `json:"source"`
-}
-type contextJob struct {
-	Fingerprint     string          `json:"fingerprint"`
-	BaseDescription string          `json:"baseDescription"`
-	Sources         []ContextSource `json:"sources"`
-	Pending         []ContextSource `json:"pending"`
-	Offset          int             `json:"offset"`
-	Cursor          int             `json:"cursor"`
-	Description     string          `json:"description"`
-	Recent          []ContextChange `json:"recent"`
-	StartedAt       int64           `json:"startedAt"`
-	Calls           int             `json:"calls"`
-	RetryAt         int64           `json:"retryAt"`
 }
 type PersonalMemory struct {
 	Correction bool             `json:"correction,omitempty"`

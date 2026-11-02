@@ -2586,6 +2586,22 @@ function Schedules({
   useEffect(() => {
     act(load);
   }, [project.id]);
+  const [receipt, setReceipt] = useState<Record<string,string>>({});
+  const executing = useRef(new Set<string>());
+  const runOnce = (id:string) => act(async () => {
+    if (executing.current.has(id)) return;
+    executing.current.add(id);
+    const key="manual-schedule:"+id;
+    try {
+      const operation=sessionStorage.getItem(key) || crypto.randomUUID();
+      sessionStorage.setItem(key,operation);
+      const r=await api<any>(`/schedules/${id}/run`,{operation});
+      sessionStorage.removeItem(key);
+      setReceipt(old=>({...old,[id]:r.detail || (r.runId ? "执行记录 #"+r.runId.slice(0,8) : r.outcome)}));
+      await load();
+    } finally {executing.current.delete(id)}
+  });
+  useEffect(()=>{const timer=setInterval(()=>{void load().catch(()=>{})},5000);return ()=>clearInterval(timer)},[project.id]);
   const edit = (v: any = {}) =>
     setDialog({
       title: v.id ? "编辑定时任务" : "新建定时任务",
@@ -2612,6 +2628,9 @@ function Schedules({
           label: "时区",
           value: v.timezone ?? "Asia/Shanghai",
         },
+        { key:"condition",label:"执行条件",value:v.condition || "always", options:[{value:"always",label:"每次到点执行"},{value:"changed",label:"仅在所选资料有变化时执行"}]},
+        { key:"sourceScope",label:"参与检查的资料",value:v.sourceScope || "",type:"textarea",hint:"每行一个文件或目录，也可填写 @任务、@对话、@人工说明。留空使用全部项目资料。"},
+        { key:"output",label:"结果位置",value:v.output || "record",options:[{value:"record",label:"任务结果"},{value:"project_context",label:"使用整理 Skill 更新项目说明和三天动态"}]},
         {
           key: "expertId",
           label: "使用专家（留空为通用助手）",
@@ -2638,10 +2657,12 @@ function Schedules({
           {
             ...v,
             ...fields,
+            condition: fields.condition==="changed" ? "changed" : "",
+            output: fields.output==="project_context" ? fields.output : "",
             notifyConnectionId: fields.notifyTarget?.split("|")[0] || "",
             notifyConversationId: fields.notifyTarget?.split("|")[1] || "",
             projectId: project.id,
-            enabled: v.enabled ?? true,
+            enabled: v.enabled ?? (fields.condition!=="changed" && fields.output!=="project_context"),
             pausedReason: "",
           },
           v.id ? "PUT" : "POST",
@@ -2655,6 +2676,9 @@ function Schedules({
         <Plus size={15} />
         新建定时任务
       </button>
+      <button className="panel-action" onClick={()=>edit({name:"整理项目说明",condition:"changed",output:"project_context",enabled:false,cron:"0 7 * * *",instruction:"根据选定资料的实质变化，修订项目说明和最近三天动态。保留人工结论，标明未覆盖资料。"})}>
+        整理项目说明模板
+      </button>
       {list.map((v) => (
         <div className="schedule-item" key={v.id}>
           <Clock size={16} />
@@ -2662,36 +2686,39 @@ function Schedules({
           <small>
             {v.cron} · {v.timezone}
           </small>
-          <small>下次：{stamp(v.nextAt)}</small>
+          <small>{v.enabled ? "下次："+stamp(v.nextAt) : "已暂停"}{v.condition==="changed" ? " · 资料变化时执行" : ""}</small>
+          {receipt[v.id] && <small role="status">{receipt[v.id]}</small>}
           {v.pausedReason && <p className="lock-note">{v.pausedReason}</p>}
           <div>
             <button onClick={() => edit(v)}>编辑</button>
+            <button onClick={()=>runOnce(v.id)}>手动执行一次</button>
             <button
               onClick={() =>
                 act(async () => {
-                  if (v.pausedReason) {
+                  if (v.pausedReason?.includes("已删除") && !v.expertId && v.condition!=="changed") {
                     edit(v);
                     return;
                   }
                   await api(
-                    `/schedules/${v.id}`,
-                    { ...v, enabled: !v.enabled },
-                    "PUT",
+                    `/schedules/${v.id}/enabled`,
+                    { enabled: !v.enabled },
+                    "POST",
                   );
                   await load();
                 })
               }
             >
-              {v.pausedReason ? "重新配置" : v.enabled ? "暂停" : "启用"}
+              {v.enabled ? "暂停" : "启用定时"}
             </button>
             <button
               onClick={() =>
                 act(async () => {
-                  const rs = await api<Run[]>(`/schedules/${v.id}/runs`);
+                  const [rs,checks] = await Promise.all([api<Run[]>(`/schedules/${v.id}/runs`),api<any[]>(`/schedules/${v.id}/checks`)]);
                   setDialog({
                     title: v.name,
                     content: (
                       <div>
+                        {checks.filter(x=>!x.runId).map(x=><p key={x.operation}>{stamp(x.at)} · {x.detail || x.outcome}</p>)}
                         {rs.length === 0 ? (
                           <p>还没有执行记录。</p>
                         ) : (
@@ -2700,7 +2727,7 @@ function Schedules({
                               <State state={r.state} />
                               <small>{stamp(r.createdAt)}</small>
                               <RichText
-                                text={r.result || r.error || "等待执行"}
+                                text={r.error || r.result || "等待执行"}
                               />
                             </article>
                           ))

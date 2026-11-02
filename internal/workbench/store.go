@@ -17,6 +17,7 @@ type Store struct {
 	DB                 *sql.DB
 	Root               string
 	mu                 sync.Mutex
+	scheduleMu         sync.Mutex
 	expertMu           sync.RWMutex
 	browsers           sync.Map // run ID -> browserEndpoint, only while its container is alive
 	notify             chan struct{}

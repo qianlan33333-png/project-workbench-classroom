@@ -20,11 +20,7 @@ func (a *API) mountToday(g *gin.RouterGroup) {
 	g.PUT("/personal/rules", func(c *gin.Context) { bind(c, func(v PersonalRules) (any, error) { return s.SavePersonalRules(v) }) })
 	g.GET("/projects/:id/context", func(c *gin.Context) { v, e := s.ProjectContext(c.Param("id")); reply(c, v, e) })
 	g.POST("/projects/:id/context/refresh", func(c *gin.Context) {
-		bind(c, func(v struct {
-			Rebuild bool `json:"rebuild"`
-		}) (any, error) {
-			return nil, s.RequestContext(c.Param("id"), v.Rebuild)
-		})
+		c.JSON(409, gin.H{"error": "请在该项目的定时任务中执行整理"})
 	})
 	g.PUT("/projects/:id/context", func(c *gin.Context) {
 		bind(c, func(v struct {

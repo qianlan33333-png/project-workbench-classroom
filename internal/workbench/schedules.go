@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"path"
 	"strings"
 	"time"
 	_ "time/tzdata"
@@ -34,8 +36,19 @@ func (s *Store) SaveSchedule(v Schedule) (Schedule, error) {
 func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
 	s.expertMu.RLock()
 	defer s.expertMu.RUnlock()
-	if v.Enabled && v.PausedReason != "" {
-		return v, errors.New("请先编辑任务，重新确认使用的专家后再启用")
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
+	if v.Condition != "" && v.Condition != "changed" {
+		return v, errors.New("无法识别执行条件")
+	}
+	if v.Output != "" && v.Output != "project_context" {
+		return v, errors.New("无法识别结果位置")
+	}
+	for _, line := range strings.Split(v.SourceScope, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && (strings.HasPrefix(line, "/") || strings.Contains(line, "\\") || path.Clean(line) == ".." || strings.HasPrefix(path.Clean(line), "../")) {
+			return v, errors.New("资料范围应填写项目内的相对路径")
+		}
 	}
 	v.PausedReason = ""
 	p, err := s.Project(v.ProjectID)
@@ -85,6 +98,15 @@ func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
 			return v, errors.New("定时任务不能更换所属项目")
 		}
 		v.CreatedAt = old.CreatedAt
+		if old.Condition == "changed" || old.Output != "" {
+			v.Enabled = old.Enabled
+		}
+		if old.PausedReason != "" && !v.Enabled {
+			v.PausedReason = old.PausedReason
+		}
+		if old.Enabled != v.Enabled && v.Enabled && old.PausedReason != "" && old.Condition != "changed" && old.Output == "" && v.ExpertID == "" && strings.Contains(old.PausedReason, "专家") {
+			return v, errors.New("请先重新选择专家")
+		}
 	}
 	v.NextAt, err = nextSchedule(v, time.Now())
 	if err != nil {
@@ -94,53 +116,136 @@ func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
 	return v, err
 }
 func (s *Store) FireSchedules(at time.Time) error {
-	s.expertMu.RLock()
-	defer s.expertMu.RUnlock()
 	due, err := listJSON[Schedule](s.DB, "SELECT data FROM schedules WHERE enabled=1 AND next_at<=? ORDER BY next_at", at.UnixMilli())
 	if err != nil {
 		return err
 	}
-	for _, schedule := range due {
-		p, e := s.Project(schedule.ProjectID)
-		if e != nil {
-			return e
+	for _, sc := range due {
+		if _, err = s.fireSchedule(sc.ID, at, ""); err != nil && !errors.Is(err, ErrNotFound) {
+			return err
 		}
-		if p.Archived {
+	}
+	return nil
+}
+
+type ScheduleReceipt struct {
+	Operation string `json:"operation"`
+	At        int64  `json:"at"`
+	Outcome   string `json:"outcome"`
+	RunID     string `json:"runId,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+}
+
+func (s *Store) RunSchedule(id, key string) (ScheduleReceipt, error) {
+	if len(key) < 8 || len(key) > 100 {
+		return ScheduleReceipt{}, errors.New("需要有效的操作编号")
+	}
+	return s.fireSchedule(id, time.Now(), "manual:"+key)
+}
+
+func (s *Store) fireSchedule(id string, at time.Time, operation string) (receipt ScheduleReceipt, err error) {
+	s.expertMu.RLock()
+	defer s.expertMu.RUnlock()
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
+	schedule, err := s.Schedule(id)
+	if err != nil {
+		return receipt, err
+	}
+	manual := operation != ""
+	if !manual {
+		if !schedule.Enabled || schedule.NextAt > at.UnixMilli() {
+			return receipt, nil
+		}
+		operation = fmt.Sprintf("cron:%d", schedule.NextAt)
+	}
+	receipt.Operation = operation
+	receipt.At = at.UnixMilli()
+	err = s.DB.QueryRow("SELECT checked_at,outcome,run_id,detail FROM schedule_checks WHERE schedule_id=? AND operation=?", id, operation).Scan(&receipt.At, &receipt.Outcome, &receipt.RunID, &receipt.Detail)
+	if err == nil {
+		return receipt, nil
+	}
+	if err != sql.ErrNoRows {
+		return receipt, err
+	}
+	p, err := s.Project(schedule.ProjectID)
+	if err != nil {
+		return receipt, err
+	}
+	if p.Archived {
+		if !manual {
 			schedule.Enabled = false
-			_, e = s.DB.Exec("UPDATE schedules SET enabled=0,data=? WHERE id=?", encode(schedule), schedule.ID)
-			if e != nil {
-				return e
-			}
-			continue
+			_, e := s.DB.Exec("UPDATE schedules SET enabled=0,data=? WHERE id=?", encode(schedule), id)
+			return receipt, e
 		}
-		planned := schedule.NextAt
-		versions := map[string]string{}
+		return receipt, errors.New("项目已归档")
+	}
+	if schedule.ExpertID == "" && strings.HasPrefix(schedule.PausedReason, "原专家") {
+		return receipt, errors.New("请编辑任务以指定有效专家")
+	}
+	if !manual {
+		schedule.NextAt, err = nextSchedule(schedule, at)
+		if err != nil {
+			return receipt, err
+		}
+	}
+	var fingerprint string
+	guarded := schedule.Condition == "changed" || schedule.Output != ""
+	if guarded || manual {
+		err = s.DB.QueryRow("SELECT id FROM runs WHERE json_extract(data,'$.scheduleId')=? AND state IN ('queued','running','waiting','stopping') ORDER BY created_at DESC LIMIT 1", id).Scan(&receipt.RunID)
+		if err == nil {
+			receipt.Outcome = "active"
+			receipt.Detail = "已有执行"
+		} else if err != sql.ErrNoRows {
+			return receipt, err
+		}
+	}
+	if guarded && receipt.Outcome == "" {
+		var inputs []ContextSource
+		inputs, err = s.scheduleSources(p, schedule)
+		if err != nil {
+			receipt.Outcome = "failed"
+			receipt.Detail = "检查资料失败：" + err.Error()
+			schedule.Enabled = false
+			schedule.PausedReason = receipt.Detail
+		} else {
+			fingerprint = scheduleFingerprint(inputs)
+			var last string
+			err = s.DB.QueryRow("SELECT fingerprint FROM schedule_inputs WHERE schedule_id=?", id).Scan(&last)
+			if err != nil && err != sql.ErrNoRows {
+				return receipt, err
+			}
+			if schedule.Condition == "changed" && (last == fingerprint || last == "" && len(inputs) == 0) {
+				receipt.Outcome = "skipped"
+				receipt.Detail = "资料无变化"
+			}
+		}
+	}
+	versions := map[string]string{}
+	if receipt.Outcome == "" {
 		for _, id := range p.ExpertIDs {
 			ex, e := s.Expert(id)
 			if e != nil {
-				return e
+				return receipt, e
 			}
 			versions[id] = ex.Digest
 		}
-		next, e := nextSchedule(schedule, at)
-		if e != nil {
-			return e
-		}
-		// Session, inbox, run and occurrence are committed together. Missed ticks coalesce here.
-		e = s.Transaction(context.Background(), func(tx *sql.Tx) error {
-			var count int
-			if e := tx.QueryRow("SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND scheduled_at=?", schedule.ID, planned).Scan(&count); e != nil {
-				return e
-			}
-			if count > 0 {
-				return nil
-			}
+	}
+	err = s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if receipt.Outcome == "" {
+			receipt.Outcome = "queued"
 			ss := Session{ID: newID(), ProjectID: p.ID, Title: schedule.Name + " · " + at.In(time.FixedZone("CST", 8*3600)).Format("01-02 15:04"), Kind: "automation", ExpertID: schedule.ExpertID, CreatedAt: now(), UpdatedAt: now()}
 			ss.HarnessID = "pw-" + ss.ID
-			m := Message{ID: newID(), Incoming: Incoming{Source: "automation", EventID: schedule.ID + ":" + time.UnixMilli(planned).UTC().Format(time.RFC3339Nano), SessionID: ss.ID, Text: schedule.Instruction, ExpertID: schedule.ExpertID}, State: "queued", SessionID: ss.ID, CreatedAt: now()}
+			m := Message{ID: newID(), Incoming: Incoming{Source: "automation", EventID: schedule.ID + ":" + operation, SessionID: ss.ID, Text: schedule.Instruction, ExpertID: schedule.ExpertID}, State: "queued", SessionID: ss.ID, CreatedAt: now()}
 			r := Run{ID: newID(), ProjectID: p.ID, SessionID: ss.ID, MessageID: m.ID, State: "queued", Source: "automation", Text: schedule.Instruction, ExpertID: schedule.ExpertID, ScheduleID: schedule.ID, CreatedAt: now()}
 			r.ExpertVersions = versions
+			if schedule.Condition == "changed" || schedule.Output != "" {
+				cfg := schedule
+				r.ScheduleConfig = &cfg
+				r.InputFingerprint = fingerprint
+			}
 			m.RunID = r.ID
+			receipt.RunID = r.ID
 			if r.ExpertID != "" {
 				var raw string
 				if e := tx.QueryRow("SELECT data FROM experts WHERE id=?", r.ExpertID).Scan(&raw); e != nil {
@@ -162,20 +267,71 @@ func (s *Store) FireSchedules(at time.Time) error {
 			if _, e := tx.Exec("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)", r.ID, p.ID, ss.ID, m.ID, r.State, 10, r.CreatedAt, encode(r)); e != nil {
 				return e
 			}
-			if _, e := tx.Exec("INSERT INTO schedule_occurrences VALUES(?,?,?)", schedule.ID, planned, m.ID); e != nil {
-				return e
+
+			if !manual {
+				if _, e := tx.Exec("INSERT INTO schedule_occurrences VALUES(?,?,?)", id, strings.TrimPrefix(operation, "cron:"), m.ID); e != nil {
+					return e
+				}
 			}
-			schedule.NextAt = next
-			_, e := tx.Exec("UPDATE schedules SET next_at=?,data=? WHERE id=?", next, encode(schedule), schedule.ID)
-			return e
-		})
-		if e != nil {
+		}
+		if _, e := tx.Exec("INSERT INTO schedule_checks VALUES(?,?,?,?,?,?)", id, operation, receipt.At, receipt.Outcome, receipt.RunID, receipt.Detail); e != nil {
 			return e
 		}
-	}
-	return nil
+		_, e := tx.Exec("UPDATE schedules SET enabled=?,next_at=?,data=? WHERE id=?", schedule.Enabled, schedule.NextAt, encode(schedule), id)
+		return e
+	})
+	return receipt, err
 }
 
 func (s *Store) Schedule(id string) (Schedule, error) {
 	return getJSON[Schedule](s.DB, "SELECT data FROM schedules WHERE id=?", id)
+}
+
+func (s *Store) toggleSchedule(id string, enabled bool) (Schedule, []string, error) {
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
+	sc, e := s.Schedule(id)
+	if e != nil {
+		return sc, nil, e
+	}
+	if enabled {
+		p, e := s.Project(sc.ProjectID)
+		if e != nil {
+			return sc, nil, e
+		}
+		if p.Archived {
+			return sc, nil, errors.New("项目已归档")
+		}
+		if sc.ExpertID == "" && strings.HasPrefix(sc.PausedReason, "原专家") {
+			return sc, nil, errors.New("请先选择专家")
+		}
+		sc.NextAt, e = nextSchedule(sc, time.Now())
+		if e != nil {
+			return sc, nil, e
+		}
+	}
+	sc.Enabled = enabled
+	sc.PausedReason = ""
+	var active []string
+	if !enabled {
+		rows, e := s.DB.Query("SELECT id FROM runs WHERE json_extract(data,'$.scheduleId')=? AND state IN ('queued','running','waiting')", id)
+		if e != nil {
+			return sc, nil, e
+		}
+		for rows.Next() {
+			var id string
+			if e = rows.Scan(&id); e != nil {
+				rows.Close()
+				return sc, nil, e
+			}
+			active = append(active, id)
+		}
+		e = rows.Err()
+		rows.Close()
+		if e != nil {
+			return sc, nil, e
+		}
+	}
+	_, e = s.DB.Exec("UPDATE schedules SET enabled=?,next_at=?,data=? WHERE id=?", enabled, sc.NextAt, encode(sc), id)
+	return sc, active, e
 }

@@ -414,33 +414,13 @@ func (w *Worker) maintainToday(ctx context.Context) bool {
 		}
 		_ = s.SetSetting("personal_context_reset", "")
 	}
-	projects, _ := s.Projects()
-	for _, p := range projects {
-		if p.Archived {
-			continue
-		}
-		var n int
-		_ = s.DB.QueryRow("SELECT count(*) FROM project_contexts WHERE project_id=?", p.ID).Scan(&n)
-		if n == 0 {
-			_ = s.RequestContext(p.ID, false)
-		}
-	}
-
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	dayNow := shanghaiDay()
-	collected, _ := s.Setting("today_collected_day")
-	if time.Now().In(loc).Hour() >= 8 && collected != dayNow {
-		_, _ = s.DB.Exec("UPDATE context_jobs SET due_at=min(due_at,?)", now())
-		_ = s.SetSetting("today_collected_day", dayNow)
-	}
 	requestNow, _ := s.Setting("today_refresh")
 	dailyNow, _ := getJSON[DailyContent](s.DB, "SELECT data FROM daily_contents WHERE day=?", dayNow)
 	dailyDue := requestNow != "" || time.Now().In(loc).Hour() >= 8 && dailyNow.State == ""
 	if !dailyDue {
 		if w.maintainUnderstanding(ctx) {
-			return true
-		}
-		if w.maintainContext(ctx) {
 			return true
 		}
 	}
