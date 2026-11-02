@@ -194,6 +194,27 @@ func TestDeferredRoutePreservesLaterExplicitFocus(t *testing.T) {
 	}
 }
 
+func TestDueRouteRetryPrecedesFreshEntries(t *testing.T) {
+	s := testStore(t)
+	retry, e := s.Submit(Incoming{Source: "web", ConversationID: "retry", EventID: newID(), Text: "due retry"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	at := now()
+	if _, e = s.DB.Exec("UPDATE inbox SET created_at=?,data=json_set(data,'$.routeAfter',?) WHERE id=?", at-2000, at-1000, retry.ID); e != nil {
+		t.Fatal(e)
+	}
+	for i := range 25 {
+		if _, e = s.Submit(Incoming{Source: "web", ConversationID: fmt.Sprint("new-", i), EventID: newID(), Text: "fresh"}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	batch, e := listJSON[Message](s.DB, routeInboxSQL, now())
+	if e != nil || len(batch) != 20 || batch[0].ID != retry.ID {
+		t.Fatal("due retry starved behind fresh entries", len(batch), e)
+	}
+}
+
 func offlineCapacityHarness(t *testing.T) (*Store, *Harness, RuntimeInput) {
 	t.Helper()
 	s, h, in := gatewayRuntimeFixture(t)
