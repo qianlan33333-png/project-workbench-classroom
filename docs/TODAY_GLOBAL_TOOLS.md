@@ -17,3 +17,5 @@ flowchart LR
 参考：项目现有 CapabilityComposer、全局 MCP 与 CLI wrapper；[MCP SDK 工具及结构化参数](https://ts.sdk.modelcontextprotocol.io/server)。
 
 验收：同一全局配置供项目和个人选择；三个入口的真实工具调用；禁用即不可用；业务项目写工具拒绝、外部进程看不到业务目录；自动整理不加载工具；网页 / 键盘选择不自动发送。
+
+隔离验收：Go 全量 race / vet、前端类型检查与构建、10 项 Node 渠道与状态测试通过。内置浏览器验证 / 菜单、键盘选定与手动发送；真实 Harness 根据选定飞书 CLI 返回 1.0.98。网页调用 stdio MCP 获得随机回显，微信入站查询 CRM 版本返回 0.6.1，飞书入站查询飞书版本返回 1.0.98，事件和回执指向原个人会话及请求来源。隔离渠道使用入站 API 和 outbox 回放，未向真实联系人发送消息。可用脚本：PW_PREVIEW_TOKEN_FILE=... python3 scripts/verify-today-global-tools.py。HTTP MCP 复用原适配器，本轮没有真实远端 HTTP MCP 验收。
