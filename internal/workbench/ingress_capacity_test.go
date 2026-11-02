@@ -52,7 +52,7 @@ func TestBusySemanticEntriesRotateAndRetryWithoutClarification(t *testing.T) {
 	var batch []Message
 	// The fast explicit message is beyond the first page of deferred semantic work.
 	for i := 0; i < 21; i++ {
-		m, err := s.Submit(Incoming{Source: "web", EventID: newID(), Text: fmt.Sprint("unknown ", i)})
+		m, err := s.Submit(Incoming{Source: "web", ConversationID: fmt.Sprint("entry-", i), EventID: newID(), Text: fmt.Sprint("unknown ", i)})
 		if err != nil {
 			t.Fatal(err)
 		}

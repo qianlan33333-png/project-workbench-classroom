@@ -160,7 +160,7 @@ func (w *Worker) Start(ctx context.Context) {
 				return
 			case <-t.C:
 			}
-			messages, err := listJSON[Message](w.Store.DB, "SELECT data FROM inbox WHERE state='gateway_pending' ORDER BY created_at,rowid LIMIT 20")
+			messages, err := listJSON[Message](w.Store.DB, gatewayInboxSQL)
 			if err != nil {
 				continue
 			}
@@ -182,9 +182,7 @@ func (w *Worker) Start(ctx context.Context) {
 				return
 			case <-t.C:
 			}
-			messages, err := listJSON[Message](w.Store.DB, `SELECT data FROM inbox WHERE state='unrouted'
-			  AND coalesce(json_extract(data,'$.routeAfter'),0)<=?
-			  ORDER BY coalesce(json_extract(data,'$.routeAfter'),created_at),rowid LIMIT 20`, now())
+			messages, err := listJSON[Message](w.Store.DB, routeInboxSQL, now())
 			if err != nil {
 				continue
 			}
@@ -468,6 +466,15 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		}
 		_ = s.saveRun(r)
 		return
+	}
+	// The final fence succeeded. An earlier cleanup error says nothing about
+	// whether the model produced a valid result; retain the execution error only.
+	var cleanupFailure *harnessCleanupFailure
+	if errors.As(err, &cleanupFailure) {
+		err = cleanupFailure.executionErr
+	}
+	if r.hostSlot != nil {
+		r.hostSlot.setQuarantine(false)
 	}
 	if r.ScheduleID != "" && !r.ConversationOutput && result.Text != "" && (r.ScheduleConfig == nil || r.ScheduleConfig.Output != "project_context") {
 		root, e := s.ProjectRoot(r.ProjectID)

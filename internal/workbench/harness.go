@@ -518,7 +518,6 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 	if err = cmd.Start(); err != nil {
 		return RuntimeResult{}, fmt.Errorf("启动 Harness: %w", err)
 	}
-	slot.markStarted()
 	processDone := make(chan error, 1)
 	go func() { processDone <- cmd.Wait() }()
 	defer func() {
@@ -538,7 +537,7 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 		defer stop()
 		if err := h.cleanupProcessSlot(cleanupCtx, input.Run.ID, slot); err != nil {
-			executeErr = errors.Join(executeErr, err)
+			executeErr = &harnessCleanupFailure{executeErr, err}
 		}
 	}()
 	var stderrMu sync.Mutex
@@ -744,6 +743,9 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 	if err = json.Unmarshal(info, &handshake); err != nil || handshake.ServerInfo.Name != "deepseek-harness-sdk-runtime" {
 		return RuntimeResult{}, errors.New("Harness 协议不兼容")
 	}
+	// podman run starting is not proof that its container has started. The
+	// initialized runtime is: keep the startup reservation until this handshake.
+	slot.markStarted()
 	if h.Config.RuntimeMode == "podman" && !input.Routing && input.Project.ID != personalProjectID && !h.gatewayInput(input) {
 		lookup, stop := context.WithTimeout(ctx, 5*time.Second)
 		raw, err := exec.CommandContext(lookup, h.Config.Podman, "port", "pw-"+input.Run.ID, "6080/tcp").Output()

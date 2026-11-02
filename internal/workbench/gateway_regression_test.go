@@ -55,12 +55,25 @@ func TestGatewayHarnessProtocolChild(t *testing.T) {
 		var result any = map[string]any{}
 		switch f.Method {
 		case "initialize":
+			if gate := os.Getenv("PW_TEST_INITIALIZE_GATE"); gate != "" {
+				_ = os.WriteFile(gate+".waiting", nil, 0600)
+				for {
+					if _, e := os.Stat(gate); e == nil {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
 			result = map[string]any{"serverInfo": map[string]string{"name": "deepseek-harness-sdk-runtime"}}
 		case "session/prompt":
 			session, _ = f.Params["sessionId"].(string)
 			result = map[string]string{"messageId": "offline-message"}
 			_ = out.Encode(map[string]any{"jsonrpc": "2.0", "method": "session.event", "params": map[string]any{"sessionId": session, "event": map[string]any{"seq": 1, "type": "assistant/message", "data": map[string]any{"message": map[string]any{"content": []map[string]string{{"type": "text", "text": `{"action":"reply","text":"offline success"}`}}}}}}})
-			_ = out.Encode(map[string]any{"jsonrpc": "2.0", "method": "session.event", "params": map[string]any{"sessionId": session, "event": map[string]any{"seq": 2, "type": "turn/end", "data": map[string]any{"reason": map[string]string{"kind": "completed"}}}}})
+			terminal := "completed"
+			if os.Getenv("PW_TEST_MODEL_FAILURE") == "1" {
+				terminal = "error"
+			}
+			_ = out.Encode(map[string]any{"jsonrpc": "2.0", "method": "session.event", "params": map[string]any{"sessionId": session, "event": map[string]any{"seq": 2, "type": "turn/end", "data": map[string]any{"reason": map[string]string{"kind": terminal}}}}})
 		}
 		_ = out.Encode(map[string]any{"jsonrpc": "2.0", "id": f.ID, "result": result})
 		if f.Method == "shutdown" {

@@ -70,6 +70,23 @@ type harnessSlot struct {
 var hostPool = harnessPool{slots: make(map[*harnessSlot]struct{})}
 var errHarnessAdmission = errors.New("执行容量暂满，请保留排队")
 
+// Cleanup and model execution have different recovery rules. Direct callers
+// fail safely; the Worker can preserve a result after its final cleanup succeeds.
+type harnessCleanupFailure struct {
+	executionErr error
+	cleanupErr   error
+}
+
+func (e *harnessCleanupFailure) Error() string {
+	return errors.Join(e.executionErr, e.cleanupErr).Error()
+}
+func (e *harnessCleanupFailure) Unwrap() []error {
+	if e.executionErr == nil {
+		return []error{e.cleanupErr}
+	}
+	return []error{e.executionErr, e.cleanupErr}
+}
+
 const lightStartKiB = 192 * 1024
 const heavyStartKiB = 384 * 1024
 
