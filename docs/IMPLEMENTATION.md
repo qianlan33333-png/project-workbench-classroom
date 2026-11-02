@@ -1,5 +1,29 @@
 # 实施记录
 
+## 2026-11-02 侧栏菜单前端正式发布
+
+按用户明确授权，将前端 `66c4a1077a78254aae987d5a02d4a948f3530ad4` 增量发布到正式入口。线上后端已更新为 `cloud-20261102-17-schedule-review` / `ac1b77e00285ae6b791b2fe41c9ecf778de35191`，20 项前端基线文件一致，保留该后端及渠道进程，仅追加散列资源并原子替换 index。最终收据在 `/opt/project-workbench/frontend-releases/web-20261102-66c4a10-r2/`，旧入口与回滚脚本在 `/opt/project-workbench/frontend-rollbacks/web-20261102-66c4a10-r2/`。
+
+首次验收长标题夹具超过线上既有 80 字限制，按约定回退旧入口并清理测试项目；使用合法标题、根入口正常登录后，重新发布同一前端字节，10 组真实线上检查全部通过。真实 Harness 回复随机校验码，原生 SSE 接收 28 个本轮事件且未压缩；置顶 SSE 可见耗时 888ms。菜单显示与关闭、键盘互斥、自动滚动保留、重排/换行后关闭并正确重开、不改变锚点的更新保留、底部向上展开、触摸与草稿均通过。console/page error 为空。
+
+公网 HTML/JS/CSS 摘要再次独立读回一致；生产二进制 SHA256、配置、服务 PID、原有项目 ID/会话 Harness 映射、定时任务记录在切换前后及测试清理后保持一致。微信/飞书 connected 且心跳在 90 秒内；6 项渠道回放测试通过，未向实际联系人发送验收消息。两轮临时项目均清理。详细结果见 `ACCEPTANCE.md`、根目录 `design-qa.md` 和 `artifacts/session-menu-live/{report,deployment}.json`。
+
+## 2026-11-02 侧栏菜单 SSE 动态更新 P2 修复（本地已验证）
+
+修复滚动误关闭和列表重排后位置过期：仅触发器祖先的滚动关闭菜单；每次 React 提交后，只有已打开菜单测量触发器矩形，位置或尺寸变化时在绘制前关闭。聊天自动滚动及不影响位置的 SSE 更新保留菜单。沿用当前样式与业务回调，没有轮询、持续动画帧或新增依赖。
+
+在 `758734f` 构建上使用新增 HTTP SSE 夹具和浏览器原生 EventSource，确认聊天滚动、置顶重排、前序标题换行三项断言失败；修复后已有 13 组加新增 5 组浏览器检查共 18 组全部通过。新增覆盖真实事件解析、会话合并、后台 refresh、滚动结束后菜单可操作、重排后重新打开位置及操作对象、不改变几何的元数据更新与新增后序会话。原五档视口、键盘、触摸、侧栏滚动、窗口缩放、草稿和确认框继续通过，console/page error 均为空。
+
+`npm run check`、最终 `npm run build`、4 项网页状态测试、`go test ./...`（缓存命中）、`go vet ./...` 通过；保留既有构建大 chunk 提醒。负向对照在 `artifacts/session-menu-p2/baseline/report.json`；最终截图、原生 SSE 事件记录及构建摘要在 `artifacts/session-menu/report.json`、`validation.json`。新增 `PW_MENU_P2_BASELINE=1` 复跑审查基线（需 before-dist，预期失败），`PW_MENU_SSE_ONLY=1` 仅跑五组 SSE，默认命令跑全部 18 组。本地隔离验收不等于模型/渠道或生产部署；本轮未发布生产。
+
+## 2026-11-02 对话侧栏操作菜单修复（本地已验证）
+
+按 `SESSION_MENU_PRD.md` 的业务流程及 MDN/Radix 参考，将对话操作菜单从 details 改为独立 `SessionMenu` 原生 auto Popover。浏览器顶层显示绕过列表 overflow 裁切；一次只展开一个，外部点击、重复点击、Esc、Tab、操作选择、上下文切换、列表滚动和窗口缩放关闭。菜单按实际可用空间上下避让；复用原有图标、字号、颜色、按钮回调及归档/删除确认框，保留归档中禁用状态与停止入口。没有新增运行依赖。
+
+通过隔离 Chromium 复现旧版三项缺陷，并完成 13 组修复后交互检查、1280×720 / 1280×480 / 1154×828 / 390×844 / 320×568 视口、方向键/Enter/Space/快速 Tab、触摸、草稿保留与操作 API 调用检查；无 console/page error。修正了首轮实现中立即按 Tab 可能留下弹层的竞态，并重跑全部菜单检查通过。`npm run check`、最终 `npm run build`、4 项既有网页状态测试、`go test ./...`、`go vet ./...` 均通过；构建保留既有大 chunk 提醒。`verify-lifecycle.mjs` 已更新为新按钮及 menuitem 入口，本轮未运行其中需要真实模型的全链路归档。
+
+证据：`artifacts/session-menu/baseline.json`、`report.json` 与前后截图；视觉对照及边界见根目录 `design-qa.md` 最新章节。复跑：`PW_MENU_BASELINE=1 node scripts/verify-session-menu.mjs`（需本轮 before-dist）、`node scripts/verify-session-menu.mjs`（修复版）；后者内置本地静态服务和内存夹具，不访问生产或真实账户。生产尚未发布；此处不将本地验收视为线上完成。
+
 2026-10-30：新系统已部署到正式入口 `https://dsh.qianlan333.cloud/`。独立源码、服务及数据目录；旧业务代码没有被引入新应用。当前发布目录 `cloud-20261030-09-composer`。
 
 ## 已交付

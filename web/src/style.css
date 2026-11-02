@@ -3121,36 +3121,44 @@ label input[type="file"] {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.session-menu {
+.session-list .session-menu-trigger {
   flex: none;
+  width: auto;
   margin: 10px 3px 0 0;
-}
-.session-menu > summary {
   cursor: pointer;
-  list-style: none;
   padding: 5px;
+  color: inherit;
 }
-.session-menu > div {
-  position: absolute;
-  right: 4px;
-  top: 35px;
+.session-menu-popover {
+  position: fixed;
+  inset: auto;
+  margin: 0;
   min-width: 115px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
   background: var(--surface, #fff);
+  color: var(--ink);
   border: 1px solid #dce2d5;
   box-shadow: 0 6px 24px #0002;
   border-radius: 8px;
   padding: 4px;
-  z-index: 20;
 }
-.session-list .session-menu button {
+.session-menu-popover > button {
   padding: 8px;
   width: 100%;
+  font-size: 12px;
 }
-.session-menu:not([open]) > summary {
+.session-menu-popover > button:hover,
+.session-menu-popover > button:focus-visible {
+  background: #eef1e8;
+}
+.session-menu-trigger[aria-expanded="false"] {
   opacity: 0;
 }
-.session-row:hover .session-menu > summary,
-.session-menu:focus-within > summary {
+.session-row:hover .session-menu-trigger,
+.session-menu-trigger:focus-visible,
+.session-menu-trigger[aria-expanded="true"] {
   opacity: 1;
 }
 .tool-actions {
@@ -3191,7 +3199,7 @@ label input[type="file"] {
   color: #a15340;
 }
 @media (max-width: 767px) {
-  .session-menu:not([open]) > summary {
+  .session-menu-trigger[aria-expanded="false"] {
     opacity: 1;
   }
   .setting-row {

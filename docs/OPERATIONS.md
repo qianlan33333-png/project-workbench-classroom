@@ -1,5 +1,19 @@
 # 部署、重启与回滚
 
+## 2026-11-02 · 侧栏菜单前端发行
+
+正式前端为 `66c4a10`，增量发行 `/opt/project-workbench/frontend-releases/web-20261102-66c4a10-r2`，活动收据为 `/opt/project-workbench/frontend-active.json`。后端仍是 `cloud-20261102-17-schedule-review` / `ac1b77e`，二进制 SHA256 `3c2c17c7f9a0188beaab352021685e7fc09678631ebfd3f74511f76495f18cbc`。前端与后端 SHA 不同是本次已记录的发布边界。
+
+该版本只追加散列资源并原子替换 `current/web/dist/index.html`，保留旧资源，不改数据库/配置/Caddy、不重启应用或渠道；已打开页面需刷新后加载新入口。发行目录保留 `artifact.tar.gz`、`source-frontend.tar.gz`、`manifest.json`、`receipt.json`、`final-readback.json`、`online-acceptance.json`。源码归档 SHA256 为 `3b2369826b7fcb67c28101e7f98075833ddfe73230816fad94aa8c14d517bf5c`。
+
+若需回退这次前端，在服务器执行以下受版本校验保护的脚本。它核对 current 和当前 index 摘要，拒绝覆盖后续发布；只恢复旧入口，保留数据库、渠道、应用进程与散列资源：
+
+```sh
+sudo python3 /opt/project-workbench/frontend-rollbacks/web-20261102-66c4a10-r2/rollback-web.py --rollback /opt/project-workbench/frontend-rollbacks/web-20261102-66c4a10-r2
+```
+
+初次验收因测试标题超限曾实际回退，后用合法夹具重新发布并通过 10 组线上验收；首次收据及备份继续保留。不要用旧全量数据库快照回退这个前端补丁。复验脚本为 `scripts/verify-session-menu-live.mjs`，只针对发布预检查准备的新专用项目，结束后删除该项目；重新执行前需重新准备 `.var/menu-live-fixture.json` 与准确发布 manifest，不复用已清理项目。
+
 ## 固定运行环境
 
 Ubuntu 24.04 / Linux amd64，Go 1.26.10，Node 24.22.0（完整发行包含头文件），pnpm 11.28.5。igo 0.4.5，Harness ce7073d51254c26cd63b22a60835b8f948deb447。运行镜像基础层固定摘要，系统工具由 Debian 签名仓库安装；需要严格复现所有系统包时应保留已验收镜像。

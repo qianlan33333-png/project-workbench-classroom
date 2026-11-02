@@ -1,5 +1,19 @@
 # 验收记录
 
+## 2026-11-02 · 侧栏菜单与 SSE 前端发布
+
+正式入口 `https://dsh.qianlan333.cloud/` 已加载前端 `66c4a1077a78254aae987d5a02d4a948f3530ad4`。采用前端增量发布，保留线上后端 `ac1b77e00285ae6b791b2fe41c9ecf778de35191`，不重启服务。公网 HTML、CSS、JS 独立读回分别匹配已验收包：
+
+- index：`6df606784c968efdb771448e46fb0e94278186c7f3d147e80729e78382de37ad`。
+- JS `index-B8FYVBA_.js`：`b61a7948f67766b3be6c646acd8439f8c0c8377867c3c04bab7f3025d0b52007`。
+- CSS `index-Cg5Y7S6l.css`：`0a435f0ae2b151c4d8849d5b8d52b5746d1825741c2a49d8be502b90231b3c4b`。
+
+浏览器使用正式 API、正常登录、独立测试项目及原生 EventSource，没有 API 回放或事件替换。10 组检查全部通过：完整四项菜单；重复点击/外部/Esc/Tab；方向键/互斥/确认框；真实 Harness 消息引起的自动滚动不误关菜单；外部置顶 SSE 使移位菜单关闭并正确重开；合法长标题换行；无位移的元数据更新与后序新增保持打开；长列表底部向上避让与滚动关闭；390/320px 触摸及草稿；公网产物摘要。SSE 为 HTTP 200、identity 编码，收到 28 个本轮事件，包含实际 `harness.turn/start`、`harness.assistant/message`、`harness.turn/end`、`run.updated` 和会话更新。置顶从请求到页面可见 888ms。正式模型运行 `45701d97-88bc-407c-8932-f4da396e9539` 完成且随机校验码匹配；发布前预检查运行 `b6940244-f973-4d2f-baac-c9b12acab467` 亦通过。
+
+首次验收因测试长标题超过既有 80 字限制中断；已实际回退入口、清理临时项目并纠正测试夹具，随后重发同一前端字节通过完整验收。首次收据保留在 `artifacts/session-menu-live-attempt1/`，不把首次失败写成通过。最终结果、截图和独立读回在 `artifacts/session-menu-live/{report,deployment}.json`。最终无 console/page error，临时项目已清理，原有项目 ID/会话 Harness 映射、定时任务记录、配置与服务 PID 保持一致，公网 health 正常。微信/飞书 connected 且心跳新鲜，6 项渠道回放通过；未向真实联系人发消息，不据此宣称新测了平台发送/已读。
+
+前端发行 `web-20261102-66c4a10-r2` 的包 SHA256 为 `4a21ca80f9c69b899b3cf6b84effdb650ffee81a49bd668fef23359cb287f1ab`；服务器保留完整包、前端源码归档、发布/最终读回/线上验收收据与旧入口。回滚入口见 `OPERATIONS.md` 最新章节。手机为 Chromium 触摸和视口模拟，不是 iOS/Safari 真机验收。
+
 2026-10-30，Linux amd64 / Ubuntu 24.04。基础系统验收发行 cloud-20261030-03；独立 CLI 增量发行 cloud-20261030-04-cli。记录区分替身行为测试、真实 Harness／模型、真实平台及用户可见检查。
 
 ## 已自动验证
