@@ -51,7 +51,7 @@ import { RichText, FileContent, useUnsavedChanges } from "./file-ui";
 import { ProjectFiles } from "./project-files";
 import { ExpertDetail } from "./expert-detail";
 import { useMessageSubmissions } from "./message-submissions";
-import { mergeRuns, mergeSessions, initialSessionTitle } from "./chat-state";
+import { mergeRuns, mergeSessions, mergeEvents, initialSessionTitle } from "./chat-state";
 import { RecycleBin, GlobalTools } from "./lifecycle-ui";
 import { SessionMenu } from "./session-menu";
 import { CapabilityComposer, CapabilityBadges } from "./capability-composer";
@@ -333,10 +333,7 @@ function App() {
           setEvents((old) => old.filter((e) => e.sessionId !== id));
         });
       }
-      setEvents((old) => {
-        if (old.some((x) => x.seq === event.seq)) return old;
-        return [...old, event].slice(-1800);
-      });
+      setEvents((old) => mergeEvents(old, [event], sessionRef.current));
       if (
         !event.type.startsWith("harness.") ||
         event.type === "harness.turn/end"
@@ -362,6 +359,7 @@ function App() {
     act(async () => {
       const requestedAt = latestEvent.current;
       const history = await api<Run[]>(`/runs?sessionId=${sessionId}`);
+      if (sessionRef.current !== sessionId) return;
       historyCursors.current[sessionId] ??= history.at(-1)?.id || "";
       setRuns((old) =>
         mergeRuns(old, history, runEventSequences.current, requestedAt),
@@ -372,14 +370,12 @@ function App() {
         const batch = await api<WorkEvent[]>(
           `/events?json=1&sessionId=${sessionId}&after=${after}`,
         );
+        if (sessionRef.current !== sessionId) return;
         all.push(...batch);
         if (batch.length < 500) break;
         after = batch.at(-1)!.seq;
       }
-      setEvents((old) => {
-        const map = new Map([...old, ...all].map((e) => [e.seq, e]));
-        return [...map.values()].sort((a, b) => a.seq - b.seq);
-      });
+      setEvents((old) => mergeEvents(old, all, sessionRef.current));
     });
   }, [sessionId, auth, act]);
   useEffect(() => {

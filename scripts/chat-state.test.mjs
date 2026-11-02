@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   mergeRuns,
+  mergeEvents,
   mergeSessions,
   initialSessionTitle,
 } from "../web/src/chat-state.ts";
@@ -61,4 +62,26 @@ test("archive maintenance never becomes a user chat turn", () => {
     mergeRuns([], [run("completed", { kind: "archive" })]).length,
     0,
   );
+});
+
+const event = (seq, sessionId, type="harness.tool/call") => ({seq,sessionId,runId:"r-"+sessionId,type,data:{},createdAt:seq});
+test("global event pressure never erases selected history or tool counts",()=>{
+  const history=Array.from({length:2400},(_,i)=>event(i+1,"selected"));
+  const flood=Array.from({length:4000},(_,i)=>event(i+2401,"another-project","run.updated"));
+  let state=mergeEvents([],history,"selected");
+  for (let i=0;i<flood.length;i+=100) state=mergeEvents(state,flood.slice(i,i+100),"selected");
+  assert.equal(state.filter(e=>e.sessionId==="selected"&&e.type==="harness.tool/call").length,2400);
+  assert.equal(state.filter(e=>e.sessionId!=="selected").length,1800);
+  for(const replay of [history.slice().reverse(), flood.slice().reverse()]) state=mergeEvents(state,replay,"selected");
+  assert.equal(state.filter(e=>e.sessionId==="selected").length,2400);
+  assert.equal(new Set(state.map(e=>e.seq)).size,state.length);
+});
+test("history and realtime arrival order converge; changing focus bounds old history",()=>{
+  const history=[event(1,"a"),event(2,"a"),event(3,"a")];
+  const live=event(4,"a");
+  assert.deepEqual(mergeEvents(mergeEvents([],history,"a"),[live],"a"),mergeEvents(mergeEvents([],[live],"a"),history,"a"));
+  const other=Array.from({length:3000},(_,i)=>event(i+5,"b"));
+  const changed=mergeEvents(mergeEvents([],history,"a"),other,"b");
+  assert.equal(changed.filter(e=>e.sessionId==="b").length,3000);
+  const cleared=mergeEvents(changed,[],"");assert.equal(cleared.length,1800);
 });

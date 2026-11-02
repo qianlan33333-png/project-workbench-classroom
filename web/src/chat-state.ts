@@ -1,4 +1,4 @@
-import type { Run, Session } from "./api";
+import type { Run, Session, WorkEvent } from "./api";
 
 // Snapshot requests may finish after a newer SSE event. Never let them regress a run.
 export function mergeRuns(
@@ -48,4 +48,14 @@ export function initialSessionTitle(text: string): string {
   return chars.length > 24
     ? chars.slice(0, 24).join("") + "…"
     : words || "附件讨论";
+}
+
+// The live stream is global. A bounded background cache must not evict the
+// selected conversation's historical tool calls when any new event arrives.
+export function mergeEvents(existing: WorkEvent[], incoming: WorkEvent[], sessionId: string): WorkEvent[] {
+  const rows = new Map([...existing, ...incoming].map(event => [event.seq, event]));
+  const ordered = [...rows.values()].sort((a,b) => a.seq-b.seq);
+  const selected = sessionId ? ordered.filter(event => event.sessionId === sessionId) : [];
+  const background = ordered.filter(event => !sessionId || event.sessionId !== sessionId).slice(-1800);
+  return [...selected, ...background].sort((a,b) => a.seq-b.seq);
 }
