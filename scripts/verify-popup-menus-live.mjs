@@ -481,6 +481,9 @@ try {
         .click();
       await page.setViewportSize({ width: 1280, height: 340 });
       await add.click();
+      await page.waitForFunction(
+        () => document.activeElement?.getAttribute("role") === "menuitem",
+      );
       const b = await panel.boundingBox();
       assert(b.y >= 8 && b.y + b.height <= 332);
       await panel.getByRole("menuitem").last().click({ trial: true });
@@ -500,7 +503,7 @@ try {
       await option.waitFor();
       const title = "外部 SSE 更新，能力选择继续";
       await api(`/sessions/${s2}`, { title }, "PUT");
-      await row(s2).getByText(title, { exact: true }).waitFor();
+      await wait(async () => assert((await row(s2).locator(".session-select").innerText()).includes(title)));
       assert.equal(await list.count(), 1);
       assert.equal(await input.inputValue(), "/");
       assert(await input.evaluate((el) => el === document.activeElement));
@@ -660,6 +663,9 @@ try {
       ]) {
         await page.setViewportSize(viewport);
         await add.click();
+        await page.waitForFunction(
+          () => document.activeElement?.getAttribute("role") === "menuitem",
+        );
         const b = await panel.boundingBox();
         assert(
           b.x >= 8 &&
