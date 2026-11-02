@@ -670,7 +670,9 @@ try {
         description: "仅用于弹出菜单验收",
         instructions: "菜单验收，不执行任务。",
       });
-      await page.goto(url + "/#expert=" + testExpert.id);
+      await page.goto(
+        url + "/?popup-expert=" + testExpert.id + "#expert=" + testExpert.id,
+      );
       await page.locator(".expert-file-header").waitFor();
       await wait(async () =>
         assert(
@@ -744,10 +746,19 @@ try {
   if (browser) await browser.close();
   try {
     if (testExpert) {
-      await api(`/experts/${testExpert.id}`, undefined, "DELETE");
+      await api(
+        `/experts/${testExpert.id}`,
+        { baseDigest: testExpert.digest },
+        "DELETE",
+      );
       assert(!(await api("/experts")).some((e) => e.id === testExpert.id));
       report.testExpertCleaned = true;
     }
+  } catch (error) {
+    report.passed = false;
+    report.expertCleanupError = redact(error.stack || error);
+  }
+  try {
     const own = (await api("/runs")).filter(
       (r) =>
         r.projectId === pid &&

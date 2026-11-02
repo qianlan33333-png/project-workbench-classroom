@@ -26,4 +26,20 @@
 
 ## 线上复验
 
-待发布后补充独立收据；不以本地测试代替部署验证。
+正式入口：https://dsh.qianlan333.cloud/ 。前端 `b9c1cc86dad2a83e98593a7c3079965de7cf88c6`，发布资源 `web-20261102-popup-b9c1cc8`。保留已安装日历/计划版后端 `cloud-20261102-19-planner-r2` / `f1a6ed0`，后端二进制和服务 PID 未变。应用源码 SHA 与前端 SHA 不同是本轮仅更新前端的明确边界。
+
+- 完整 14 组真实线上检查通过，`live/report.json` 为 `passed:true`。两个文件菜单的桌面、短窗口、手机关闭及可达性；能力选择的真实 SSE 自动滚动、快速输入光标、草稿；项目改名 SSE 的最新提示；原会话菜单重排/换行/稳定锚点均通过。
+- 使用真实 Harness 完成两轮回复并校验随机口令，接收 45 个本轮原生 SSE 事件，返回为未压缩 identity。另有发布前真实 Harness 预检查。console/page error 为空，渠道状态均 connected；没有向联系人发送验收消息。
+- 公网 HTML/JS/CSS 在开始与最终独立读回时均匹配发布包；`final-read.json` 健康检查 ok。服务 PID、二进制、配置摘要、原有项目/会话 Harness 映射及定时任务记录与发布前一致（`deployment.json`）。六轮专用项目及本轮专家全部清理，最终剩余自身测试数据为零。
+- 最终线上截图 `live/project-add.png`、`project-add-short.png`、`expert-add-1280.png`、`expert-add-390.png`、`capability-live-sse.png`、`capability-mobile.png`、`project-tip-live-sse.png` 已保存并检查；项目菜单、专家手机图与本地已验收截图成对查看。
+- 前五轮中断均为验收夹具问题，分别涉及首帧定位等待、带子说明的标题定位、合成输入与原值相同被 React 忽略、手机转桌面后迟到的 resize、仅改 hash 没有进入专家页及删除缺少 baseDigest。没有据此改产品代码或重复发布。记录保留在 `live-attempt1` 至 `live-attempt5`；第五轮清理参数错误后已按准确 ID/摘要补清并独立读回，见 `live-attempt5/recovered-cleanup.json`。最终完整运行通过。
+
+## 复跑
+
+```sh
+(cd web && npm run build)
+node scripts/verify-popup-menus.mjs
+node scripts/verify-session-menu.mjs
+```
+
+线上脚本 `scripts/verify-popup-menus-live.mjs` 必须使用新专用项目与匹配已部署包的 manifest；不能复用已清理的项目。发布包及源归档在 `/opt/project-workbench/frontend-releases/web-20261102-popup-b9c1cc8/`，旧前端入口在对应 `frontend-rollbacks` 目录。后续发布/回滚遵循项目当前发布规则，勿将历史收据当作当前活动版本。
