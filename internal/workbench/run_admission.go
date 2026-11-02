@@ -65,6 +65,11 @@ WHERE (SELECT COUNT(*) FROM active)<?
       AND (a.shared=0 OR q.shared=0 OR a.session_id=q.session_id))
   AND (q.shared=1 OR q.project_id=? OR (SELECT COUNT(*) FROM active WHERE shared=0 AND project_id<>?)<?)
   AND q.session_position=1 AND (q.shared=0 OR q.writers_ahead=0)
+  -- Rank the complete queue before applying startup cost: an ineligible
+  -- writer still protects its own project, but does not block another one.
+  AND CASE WHEN q.project_id=? OR json_type(r.data,'$.gateway')='object'
+       OR json_extract(r.data,'$.scheduleConfig.output')='project_context'
+       OR json_extract(r.data,'$.kind')='archive' THEN ? ELSE ? END <= ?
 ORDER BY (q.project_id=?) DESC,q.priority,
   (SELECT count(*) FROM active a WHERE a.project_id=q.project_id),q.created_at,q.seq LIMIT 1
 `

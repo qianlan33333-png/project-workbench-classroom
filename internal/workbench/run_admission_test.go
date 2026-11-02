@@ -256,3 +256,65 @@ func TestGatewayReaderRecoveryAndMaintenance(t *testing.T) {
 		t.Fatal("maintenance did not block readers", e)
 	}
 }
+
+func TestLowStartBudgetBypassesHeavyInOtherProjectOnly(t *testing.T) {
+	s := testStore(t)
+	c, b := gatewaySetup(t, s, newGatewayProvider(t))
+	projectA, err := s.Project(b.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heavy := submitRoute(t, s, Incoming{Source: "web", SessionID: projectA.DefaultSessionID, EventID: newID(), Text: "writer"})
+	_ = queueTestCustomer(t, s, c, b, "same-project")
+	projectB := testProject(t, s, "independent project")
+	second, err := s.SaveGatewayBinding(GatewayBinding{ConnectionID: c.ID, AccountID: "account-B", ProjectID: projectB.ID, Enabled: true, NotifyChatID: "fixture-ops"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	light := queueTestCustomer(t, s, c, second, "other-project")
+	w := NewWorker(s, nil, nil)
+	r, err := w.claimWithinBudget(250 * 1024)
+	if err != nil || r.ID != light.ID || r.Gateway == nil || !r.Gateway.SharedRead {
+		t.Fatalf("250 MiB should admit independent reader: %s %v", r.ID, err)
+	}
+	if _, err = w.claimWithinBudget(250 * 1024); !errors.Is(err, ErrNotFound) {
+		t.Fatal("reader passed waiting writer in its own project", err)
+	}
+	if r, err = w.claimWithinBudget(heavyStartKiB); err != nil || r.ID != heavy.RunID {
+		t.Fatal("heavy writer lost its place", r.ID, err)
+	}
+}
+
+func TestRoutingTurnKeepsPersonalAssistantFirstAtLastSlot(t *testing.T) {
+	s := testStore(t)
+	c, b := gatewaySetup(t, s, newGatewayProvider(t))
+	_ = queueTestCustomer(t, s, c, b, "customer")
+	w := NewWorker(s, &Harness{Store: s, Config: Config{RuntimeMode: "podman"}}, nil)
+	var held []*harnessSlot
+	defer func() {
+		for _, s := range held {
+			s.finish()
+		}
+	}()
+	for range maxConcurrentRuns - 1 {
+		slot := hostPool.try(time.Now(), 1<<40, 1)
+		if slot == nil {
+			t.Fatal("fixture capacity unavailable")
+		}
+		held = append(held, slot)
+	}
+	w.routeTurnUntil.Store(now() + 10000)
+	if _, err := w.claimWithinBudget(250 * 1024); !errors.Is(err, ErrLocked) {
+		t.Fatal("ordinary customer took the router's turn", err)
+	}
+	p, err := s.PersonalSpace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := submitRoute(t, s, Incoming{Source: "web", SessionID: p.DefaultSessionID, Text: "interactive", EventID: newID()})
+	r, err := w.claimWithinBudget(250 * 1024)
+	if err != nil || r.ID != owner.RunID {
+		t.Fatal("personal assistant lost next available slot", r.ID, err)
+	}
+	defer r.hostSlot.finish()
+}

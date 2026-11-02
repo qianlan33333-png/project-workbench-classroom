@@ -70,25 +70,36 @@ type harnessSlot struct {
 var hostPool = harnessPool{slots: make(map[*harnessSlot]struct{})}
 var errHarnessAdmission = errors.New("执行容量暂满，请保留排队")
 
+const lightStartKiB = 192 * 1024
+const heavyStartKiB = 384 * 1024
+
 func hostSlotCost(in RuntimeInput) int64 {
 	if !in.Routing && in.Run.Gateway == nil && in.Project.ID != personalProjectID {
-		return 384 * 1024
+		return heavyStartKiB
 	}
-	return 192 * 1024
+	return lightStartKiB
 }
 func tryHostSlot(cost int64) *harnessSlot { return hostPool.try(time.Now(), hostStartHeadroom(), cost) }
-func (p *harnessPool) try(now time.Time, headroom, cost int64) *harnessSlot {
+func (p *harnessPool) availableStartKiB() int64 {
 	p.Lock()
 	defer p.Unlock()
+	return p.remainingLocked(time.Now(), hostStartHeadroom())
+}
+func (p *harnessPool) remainingLocked(now time.Time, headroom int64) int64 {
 	if len(p.slots) >= maxConcurrentRuns {
-		return nil
+		return -1
 	}
 	for s := range p.slots {
 		if s.started.IsZero() || now.Sub(s.started) < 5*time.Second {
 			headroom -= s.kib
 		}
 	}
-	if headroom < cost {
+	return headroom
+}
+func (p *harnessPool) try(now time.Time, headroom, cost int64) *harnessSlot {
+	p.Lock()
+	defer p.Unlock()
+	if p.remainingLocked(now, headroom) < cost {
 		return nil
 	}
 	s := &harnessSlot{pool: p, kib: cost}

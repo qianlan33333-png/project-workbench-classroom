@@ -258,7 +258,14 @@ func (w *Worker) Start(ctx context.Context) {
 }
 func (w *Worker) Wait() { w.wg.Wait() }
 func (w *Worker) claim() (Run, error) {
-	if h, ok := w.Executor.(*Harness); ok && h.Config.RuntimeMode == "podman" && !hostMemoryReady() {
+	budget := int64(heavyStartKiB)
+	if h, ok := w.Executor.(*Harness); ok && h.Config.RuntimeMode == "podman" {
+		budget = hostPool.availableStartKiB()
+	}
+	return w.claimWithinBudget(budget)
+}
+func (w *Worker) claimWithinBudget(budget int64) (Run, error) {
+	if budget < lightStartKiB {
 		return Run{}, ErrLocked
 	}
 	s := w.Store
@@ -268,7 +275,7 @@ func (w *Worker) claim() (Run, error) {
 	err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var raw string
 		var shared bool
-		err := tx.QueryRow(claimRunSQL, encode(w.readMCPGrants), maxConcurrentRuns, personalProjectID, personalProjectID, maxProjectRuns, personalProjectID).Scan(&raw, &shared)
+		err := tx.QueryRow(claimRunSQL, encode(w.readMCPGrants), maxConcurrentRuns, personalProjectID, personalProjectID, maxProjectRuns, personalProjectID, lightStartKiB, heavyStartKiB, budget, personalProjectID).Scan(&raw, &shared)
 		if err == sql.ErrNoRows {
 			return ErrNotFound
 		}
