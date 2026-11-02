@@ -204,6 +204,11 @@ func (h *Harness) gatewayModelHandler(in RuntimeInput) (http.Handler, error) {
 				up.Header.Set(name, v)
 			}
 		}
+		// Reading the caller's HTTP body may have taken time; recheck at dispatch.
+		if !h.Store.gatewayRunLive(in.Run) {
+			deny(409)
+			return
+		}
 		res, err := client.Do(up)
 		if err != nil {
 			deny(502)

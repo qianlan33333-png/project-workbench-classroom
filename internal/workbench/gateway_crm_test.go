@@ -346,3 +346,42 @@ func TestCRMLargeHistoryIsCompleteAndSessionScoped(t *testing.T) {
 		t.Fatal("incomplete or cross-session spill", len(raw), e)
 	}
 }
+
+type pauseDuringModelBody struct {
+	io.Reader
+	pause func()
+}
+
+func (p *pauseDuringModelBody) Read(b []byte) (int, error) {
+	if p.pause != nil {
+		p.pause()
+		p.pause = nil
+	}
+	return p.Reader.Read(b)
+}
+func TestCRMPauseWhileModelRequestUploads(t *testing.T) {
+	s, h, in := gatewayRuntimeFixture(t)
+	w := NewWorker(s, nil, nil)
+	var e error
+	in.Run, e = w.claim()
+	if e != nil {
+		t.Fatal(e)
+	}
+	remote := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("paused request reached external model") }))
+	defer remote.Close()
+	h.Config.GatewayModelBaseURL = remote.URL
+	handler, e := h.gatewayModelHandler(in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	body := &pauseDuringModelBody{strings.NewReader(`{"model":"offline-model"}`), func() {
+		if e := s.SetGatewayMode(in.Session.ID, "human", "human replied"); e != nil {
+			t.Fatal(e)
+		}
+	}}
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest("POST", "/gateway-model/v1/messages", body))
+	if res.Code != 409 {
+		t.Fatal("missing final dispatch gate", res.Code)
+	}
+}
