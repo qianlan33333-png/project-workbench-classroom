@@ -61,6 +61,7 @@ func bind[T any](c *gin.Context, f func(T) (any, error)) {
 func (a *API) Mount(r *gin.Engine) {
 	s := a.Store
 	s.toolManager = a.startToolJob
+	s.calendarRunner = (&Harness{Store: s, Config: a.Config}).calendarCommand
 	r.Use(a.sameOrigin)
 	r.MaxMultipartMemory = 8 << 20
 	base := strings.TrimRight(a.Config.BasePath, "/")

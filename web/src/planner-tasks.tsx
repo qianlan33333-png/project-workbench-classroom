@@ -645,7 +645,7 @@ function RuleForm({
             结果
             <select
               value={v.output || ""}
-              onChange={(e) => field({ output: e.target.value })}
+              onChange={(e) => field({ output: e.target.value, ...(e.target.value === "project_context" ? {sessionId:"", ...(!v.id ? {enabled:false} : {})} : {}) })}
             >
               <option value="">对话结果</option>
               <option value="project_context">整理项目说明</option>

@@ -19,6 +19,7 @@ type Store struct {
 	mu                 sync.Mutex
 	feishuCalendarID   string // Primary by default; a dedicated calendar can be used for integration tests.
 	calendarMu         sync.Mutex
+	calendarRunner     func(context.Context, CLITool, []string) ([]byte, error)
 	scheduleMu         sync.Mutex
 	stopScheduleRun    func(string) error
 	expertMu           sync.RWMutex

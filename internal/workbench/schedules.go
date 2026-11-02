@@ -94,6 +94,9 @@ func (s *Store) saveScheduleLocked(v Schedule, creationID string, explicitEnable
 			return v, errors.New("通知只能发送到已验证的本人私聊")
 		}
 	}
+	if v.Output == "project_context" && v.SessionID != "" {
+		return v, errors.New("项目整理使用独立会话，请选择每次新开对话")
+	}
 	if v.SessionID != "" {
 		ss, e := s.Session(v.SessionID)
 		if e != nil || ss.ProjectID != p.ID || ss.Lifecycle != "" || ss.Draft {

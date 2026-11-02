@@ -35,14 +35,12 @@ func (s *Store) failure(id string) (Failure, error) {
 	if e != nil {
 		return v, ErrNotFound
 	}
-	if v.Run != "" {
-		var count int
-		e = s.DB.QueryRow("SELECT count(*) FROM events WHERE run_id=? AND type='harness.tool/call'", v.Run).Scan(&count)
-		if e != nil {
-			return v, e
-		}
-		v.CheckExternal = count > 0
+	var required int
+	e = s.DB.QueryRow("SELECT check_external FROM failure_safety WHERE id=?", id).Scan(&required)
+	if e != nil {
+		return v, e
 	}
+	v.CheckExternal = required != 0
 	var r ScheduleReceipt
 	if e = s.DB.QueryRow("SELECT operation,checked_at,outcome,run_id,detail FROM schedule_checks WHERE schedule_id=? AND operation=?", v.Schedule, "manual:retry-"+id).Scan(&r.Operation, &r.At, &r.Outcome, &r.RunID, &r.Detail); e == nil {
 		v.Retry = &r
@@ -58,7 +56,7 @@ func (a *API) mountPlanner(g *gin.RouterGroup) {
 		v, e := s.calendarView(c.Request.Context(), lo, hi, c.Query("projectId"), c.Query("remote") == "1")
 		reply(c, v, e)
 	})
-	for _, action := range []string{"create", "edit", "delete", "reconcile"} {
+	for _, action := range []string{"create", "edit", "delete", "reconcile", "accept_remote"} {
 		g.POST("/calendar/"+action, func(c *gin.Context) {
 			bind(c, func(v CalendarEvent) (any, error) { return s.changeEvent(c.Request.Context(), action, v, "") })
 		})
@@ -126,6 +124,20 @@ func (a *API) mountPlanner(g *gin.RouterGroup) {
 		if e != nil {
 			reply(c, nil, e)
 			return
+		}
+		if f.Run != "" {
+			run, err := s.Run(f.Run)
+			if err == nil {
+				var ss Session
+				ss, err = s.rawSession(run.SessionID)
+				if err == nil && (ss.RecycledAt > 0 || ss.Lifecycle != "") {
+					err = ErrNotFound
+				}
+			}
+			if err != nil {
+				reply(c, nil, ErrNotFound)
+				return
+			}
 		}
 		rows, e := s.DB.Query("SELECT type,data FROM events WHERE run_id=? AND type LIKE 'harness.tool/%' ORDER BY seq LIMIT 500", f.Run)
 		if e != nil {

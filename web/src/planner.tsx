@@ -136,7 +136,7 @@ function EventEditor({
         ...v,
         operation: key,
       });
-      if (reply.pending) {
+      if (reply.pending || reply.sync === "failed") {
         set({ ...reply, kind: "event" });
         notify(reply.error || "飞书操作待核对");
       } else {
@@ -254,6 +254,7 @@ function EventEditor({
         >
           {v.pending ? "核对飞书操作" : "保存日程"}
         </button>
+        {v.pending && v.id && <button disabled={busy} onClick={()=>window.confirm("采用飞书上的当前日程并结束本次待核对操作？")&&commit("accept_remote")}>采用飞书现状</button>}
         {v.id && !v.pending && (
           <button
             disabled={busy}

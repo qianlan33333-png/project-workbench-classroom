@@ -16,3 +16,9 @@
 - Web: npm run check，npm run build。
 - 对入口路由、重复投递、文件修订、崩溃恢复提供行为测试。
 - 每个实现阶段更新 docs/IMPLEMENTATION.md，明确真实验证与未验证项。
+
+## 发布、回滚与空间治理
+
+- 本项目发布、回滚或生产磁盘清理前，先读 `skills/project-workbench-release/SKILL.md`，由它统一约束现有发布入口。该 skill 只服务本工作台，不适用 CRM 或同机公司官网。
+- 2026-11-02 用户选择的稳态为一个正式版本加一个上次成功的回滚版本；其他旧发布、过期快照、无用构建资源及退休旧环境必须清理。复用既有发布验收，不开发独立清理验证模块，不记录清理收据。
+- 该策略替代旧文档中的七天保留规则。已接入现有发布、安装、回滚及清理脚本；它们共用 `scripts/release-common.py`、一把锁、current/previous 和发版中临时恢复信息。生产固定入口在 `/opt/project-workbench/`，不要再临时复制旧发布脚本绕行。

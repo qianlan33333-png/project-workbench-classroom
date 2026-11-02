@@ -101,10 +101,11 @@ function App() {
     [files, setFiles] = useState<FileEntry[]>([]),
     [events, setEvents] = useState<WorkEvent[]>([]),
     [interactions, setInteractions] = useState<any[]>([]);
+  const historyGuard = useRef<()=>Promise<boolean>>(async()=>true);
   const [pageParams,setPageParams]=useState(initialLocation),[unread,setUnread]=useState(0);
   const badge=useCallback(()=>{void api("/notices/count").then(v=>setUnread(v.unread)).catch(()=>{})},[]);
   useEffect(()=>{if(!auth)return;badge();const timer=setInterval(badge,10000);return()=>clearInterval(timer)},[auth,badge]);
-  useEffect(()=>{const pop=()=>{const q=new URLSearchParams(location.hash.slice(1));setPageParams(q);const p=q.get("page");if(p&&["tasks","notices","calendar","today","settings"].includes(p))setPage(p)};window.addEventListener("hashchange",pop);window.addEventListener("popstate",pop);return()=>{window.removeEventListener("hashchange",pop);window.removeEventListener("popstate",pop)}},[]);
+  useEffect(()=>{const pop=async()=>{if(!(await historyGuard.current())){history.forward();return}const q=new URLSearchParams(location.hash.slice(1));setPageParams(q);const p=q.get("page");if(p&&["tasks","notices","calendar","today","settings"].includes(p))setPage(p);else if(q.has("project")){setProjectId(q.get("project")||"");setSessionId(q.get("session")||"");setPage("project")}else if(q.has("expert")){setExpertId(q.get("expert")||"");setPage("expert-detail")}else setPage("projects")};window.addEventListener("hashchange",pop);window.addEventListener("popstate",pop);return()=>{window.removeEventListener("hashchange",pop);window.removeEventListener("popstate",pop)}},[]);
   const plannerNav=(name:string,params:Record<string,string>={})=>{const q=new URLSearchParams({page:name,...params});history.pushState(null,"","#"+q);setPageParams(q);setPage(name);setMobileNav(false)};
   const [toast, setToast] = useState(""),
     [dialog, setDialog] = useState<Dialog | null>(null),
@@ -427,6 +428,7 @@ function App() {
     page === "expert-detail"
       ? await (expertGuard.current?.() ?? Promise.resolve(true))
       : await documentGuard();
+  historyGuard.current = async()=>{if(!(await canLeave()))return false;await flushTaskDraft();return true};
   const navigate = async (next: string) => {
     if (!(await canLeave())) return;
     fileRequest.current++;
@@ -866,9 +868,21 @@ function App() {
   }, [projectId, sessionId]);
   const beginTask = async (d: PreparedTask) => {
     if(d.task.projectId===personal){
-      const draft=localStorage.getItem("pwb.personalDraft")||"";
-      if(draft.trim()&&!window.confirm("今天已有草稿。将待办追加到草稿末尾？"))return;
-      localStorage.setItem("pwb.personalDraft",draft?draft+"\n\n"+d.text:d.text);sessionStorage.setItem("today.taskId",d.task.id);await navigate("today");return;
+      let existing:{text:string,taskId?:string}={text:localStorage.getItem("pwb.personalDraft")||""};
+      try {existing=JSON.parse(localStorage.getItem("pwb.personalComposer")||"null")||existing}catch{}
+      const draft=existing.text;
+      let next=d.text;
+      if(draft.trim()){
+        if(existing.taskId && existing.taskId!==d.task.id){
+          if(!window.confirm("已有另一条待办草稿。替换为本次待办？取消将保留原草稿。"))return;
+        }else{
+          if(!window.confirm("今天已有草稿。将待办追加到草稿末尾？"))return;
+          next=draft+"\n\n"+d.text;
+        }
+      }
+      localStorage.setItem("pwb.personalDraft",next);
+      localStorage.setItem("pwb.personalComposer",JSON.stringify({text:next,taskId:d.task.id}));
+      await navigate("today");return;
     }
     const p = projects.find((p) => p.id === d.task.projectId);
     if (!p) return;

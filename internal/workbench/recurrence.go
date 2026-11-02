@@ -9,8 +9,9 @@ import (
 )
 
 type SeriesChange struct {
-	From int64  `json:"from"`
-	Cron string `json:"cron"`
+	From  int64  `json:"from"`
+	Cron  string `json:"cron"`
+	Start int64  `json:"start,omitempty"`
 }
 type Exception struct {
 	Original int64 `json:"original"`
@@ -60,7 +61,7 @@ func nextTick(sc Schedule, after int64, compiled map[string]cron.Schedule) (tick
 	if err != nil {
 		return best, err
 	}
-	rules := append([]SeriesChange{{sc.CreatedAt, sc.Cron}}, sc.Changes...)
+	rules := append([]SeriesChange{{From: sc.CreatedAt, Cron: sc.Cron}}, sc.Changes...)
 	for i, seg := range rules {
 		if i+1 < len(rules) && rules[i+1].From <= after {
 			continue
@@ -74,11 +75,21 @@ func nextTick(sc Schedule, after int64, compiled map[string]cron.Schedule) (tick
 			compiled[seg.Cron] = spec
 		}
 		cursor := after
-		if seg.From-1 > cursor {
-			cursor = seg.From - 1
+		start := seg.From
+		if seg.Start != 0 {
+			start = seg.Start
+		}
+		if start-1 > cursor {
+			cursor = start - 1
 		}
 		for {
 			n := spec.Next(time.UnixMilli(cursor).In(loc))
+			if interval, ok := spec.(cron.ConstantDelaySchedule); ok {
+				step := interval.Delay.Milliseconds()
+				// Anchor interval rules to their creation/segment boundary, never query time.
+				count := max(int64(1), (cursor-seg.From)/step+1)
+				n = time.UnixMilli(seg.From + count*step).In(loc)
+			}
 			if n.IsZero() {
 				break
 			}
@@ -146,7 +157,7 @@ func (s *Store) editTime(id, kind string, in TimeEdit) (Schedule, error) {
 			}
 		}
 		sc.Exceptions = retained
-		if in.At != 0 && in.At != in.Original {
+		if in.At != 0 {
 			v, _ := scheduleTick(sc, in.At-1)
 			if v.At == in.At {
 				return sc, errors.New("该时间已有本任务的另一次执行")
@@ -168,11 +179,38 @@ func (s *Store) editTime(id, kind string, in TimeEdit) (Schedule, error) {
 				keep = append(keep, x)
 			}
 		}
-		sc.Changes = append(keep, SeriesChange{in.Original, in.Cron})
+		loc, err := time.LoadLocation(sc.Timezone)
+		if err != nil {
+			return sc, err
+		}
+		d := time.UnixMilli(in.Original).In(loc)
+		midnight := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
+		spec, _ := cron.ParseStandard(in.Cron)
+		first := spec.Next(midnight.Add(-time.Millisecond)).UnixMilli()
+		start := in.Original
+		if first < start {
+			start = first
+		}
+		if start <= now() {
+			return sc, errors.New("调整后的首次执行时间已过去，请选择下一次实例")
+		}
+		sc.Changes = append(keep, SeriesChange{From: in.Original, Cron: in.Cron, Start: start})
 		var conflicts []string
 		valid := []Exception{}
 		for _, x := range sc.Exceptions {
-			if x.Original >= in.Original && !originalExists(sc, x.Original) {
+			base := sc
+			base.Exceptions = nil
+			hit, err := scheduleTick(base, x.At-1)
+			if err != nil {
+				return sc, err
+			}
+			collision := x.At > now() && x.At != x.Original && hit.At == x.At
+			for _, other := range valid {
+				if x.At > now() && x.At == other.At {
+					collision = true
+				}
+			}
+			if collision || (x.Original >= in.Original && !originalExists(sc, x.Original)) {
 				conflicts = append(conflicts, time.UnixMilli(x.Original).UTC().Format(time.RFC3339))
 			} else {
 				valid = append(valid, x)

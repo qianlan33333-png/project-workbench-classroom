@@ -7,6 +7,11 @@ CREATE TABLE IF NOT EXISTS calendar_events(id TEXT PRIMARY KEY,operation TEXT UN
 CREATE UNIQUE INDEX IF NOT EXISTS calendar_remote_id ON calendar_events(json_extract(data,'$.remoteId')) WHERE coalesce(json_extract(data,'$.remoteId'),'')<>'';
 CREATE TABLE IF NOT EXISTS user_notices(id TEXT PRIMARY KEY DEFAULT(lower(hex(randomblob(16)))),kind TEXT NOT NULL,event_key TEXT NOT NULL,title TEXT NOT NULL,summary TEXT NOT NULL,link TEXT NOT NULL,created INTEGER NOT NULL DEFAULT(CAST(unixepoch('subsec')*1000 AS INTEGER)),seen INTEGER NOT NULL DEFAULT 0,cleared INTEGER NOT NULL DEFAULT 0,UNIQUE(kind,event_key));
 CREATE TABLE IF NOT EXISTS schedule_failures(id TEXT PRIMARY KEY DEFAULT(lower(hex(randomblob(16)))),schedule TEXT NOT NULL,operation TEXT NOT NULL,run TEXT NOT NULL,detail TEXT NOT NULL,at INTEGER NOT NULL,name TEXT NOT NULL,UNIQUE(schedule,operation));
+CREATE TABLE IF NOT EXISTS failure_safety(id TEXT PRIMARY KEY,check_external INTEGER NOT NULL);
+INSERT OR IGNORE INTO failure_safety SELECT id,CASE WHEN run='' THEN 0 ELSE 1 END FROM schedule_failures;
+CREATE TRIGGER IF NOT EXISTS capture_failure_safety AFTER INSERT ON schedule_failures BEGIN
+ INSERT OR IGNORE INTO failure_safety VALUES(NEW.id,CASE WHEN EXISTS(SELECT 1 FROM events WHERE run_id=NEW.run AND type='harness.tool/call') THEN 1 ELSE 0 END);
+END;
 CREATE TRIGGER IF NOT EXISTS notify_schedule_failure AFTER INSERT ON schedule_failures BEGIN
  INSERT OR IGNORE INTO user_notices(id,kind,event_key,title,summary,link,created) VALUES(NEW.id,'schedule.failed',NEW.id,NEW.name||' · 执行失败',NEW.detail,'#page=notices&failure='||NEW.id,NEW.at);
 END;

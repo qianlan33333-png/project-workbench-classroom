@@ -1,5 +1,15 @@
 # 部署、重启与回滚
 
+## 2026-11-02 · 两版本保留机制
+
+后续发布、回滚与清理统一先读 [项目发布 skill](../skills/project-workbench-release/SKILL.md)。用户已选择只保留一个正式版和一个上次成功的回滚版，清退其余版本、无用资源和全部退休旧环境；此策略替代本文历史章节中的七天保留和旧系统继续兜底要求。两个版本及其必要运行依赖必须保留，不能按目录时间排序删除。
+
+设计与对抗性推演见 [极简 PRD](../skills/project-workbench-release/references/retention-prd.md)。已在现有入口接入共用锁、current/previous、发版中临时恢复信息和退出清理，共用实现为 `scripts/release-common.py`；不新增计划器、采集器、清理收据或 timer。生产固定入口已安装在 `/opt/project-workbench/`，两个保留版本内的脚本也转到固定入口，调用方法见 skill。首次旧资源清退完成，正式程序保持原版。
+
+2026-11-02 接管时正式版为 `cloud-20261102-19-planner-r2`，上一成功版本为 `cloud-20261102-18-personal-tools`，两者都使用已固定 ID 的 ce7073d 运行镜像。今后以 current/previous 为准。普通回滚执行 `sudo bash /opt/project-workbench/rollback-today.sh`，不再接受旧数据快照参数；旧 snapshot、frontend rollback 和迁回旧系统的命令仅作历史记录，不得照抄执行。
+
+以下具体版本号与回滚命令均为当时的历史记录，实际操作必须以实时 current、运行进程、发布收据和当前 skill 为准。
+
 ## 2026-11-02 · 侧栏菜单前端发行
 
 正式前端为 `66c4a10`，增量发行 `/opt/project-workbench/frontend-releases/web-20261102-66c4a10-r2`，活动收据为 `/opt/project-workbench/frontend-active.json`。后端仍是 `cloud-20261102-17-schedule-review` / `ac1b77e`，二进制 SHA256 `3c2c17c7f9a0188beaab352021685e7fc09678631ebfd3f74511f76495f18cbc`。前端与后端 SHA 不同是本次已记录的发布边界。

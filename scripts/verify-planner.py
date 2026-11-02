@@ -1,5 +1,5 @@
 """Planner journeys in the isolated localhost preview, with real Harness and channel replay."""
-import base64,json,os,pathlib,time,urllib.request,urllib.error,uuid
+import atexit,base64,json,os,pathlib,time,urllib.request,urllib.error,uuid
 url="http://127.0.0.1:3107/api/v1"
 creds=json.loads((pathlib.Path.home()/".config/project-workbench/cli.json").read_text())
 owner="Basic "+base64.b64encode(("owner:"+creds["password"]).encode()).decode()
@@ -19,6 +19,11 @@ def wait(check):
 key=lambda:uuid.uuid4().hex
 suffix=key()[:6];name="规划验收"+suffix
 p=api("/projects",{"name":name});sid=api("/planner/personal-space")["defaultSessionId"]
+def cleanup():
+    for rule in api("/schedules"):
+        if rule["projectId"] == p["id"]:
+            api("/schedules/"+rule["id"],method="DELETE")
+atexit.register(cleanup)
 t=api("/projects/"+p["id"]+"/tasks",{"title":"核对交付清单","operation":key()})
 pt=api("/projects/personal-assistant/tasks",{"title":"梳理本周安排","operation":key()})
 d=api("/tasks/"+pt["id"]+"/prepare",{});assert d["session"]["id"]==sid and d["task"]["state"]=="pending"

@@ -461,7 +461,7 @@ export function Today({
 }) {
   const [data, setData] = useState<any>(null),
     [text, setText] = useState(
-      () => localStorage.getItem("pwb.personalDraft") || "",
+      () => {try {return JSON.parse(localStorage.getItem("pwb.personalComposer")||"null")?.text ?? localStorage.getItem("pwb.personalDraft") ?? ""}catch{return ""}},
     ),
     [capabilities, setCapabilities] = useState<Capability[]>(() => {
       try { const v=JSON.parse(localStorage.getItem("pwb.personalDraftTools") || "[]"); return Array.isArray(v)?v:[]; } catch { return []; }
@@ -475,6 +475,8 @@ export function Today({
     [rules, setRules] = useState(false),
     [busy, setBusy] = useState(false),
     [refreshing, setRefreshing] = useState(false);
+  const [draftTaskId,setDraftTaskId] = useState<string|undefined>(()=>{try{return JSON.parse(localStorage.getItem("pwb.personalComposer")||"null")?.taskId}catch{return undefined}});
+  const editText=(value:string)=>{setText(value);if(!value.trim())setDraftTaskId(undefined)};
   const end = useRef<HTMLDivElement>(null);
   const refresh = useCallback(async () => setData(await api("/today")), []);
   useEffect(() => {
@@ -482,7 +484,7 @@ export function Today({
     const timer = setInterval(() => void refresh().catch(() => {}), 2500);
     return () => clearInterval(timer);
   }, [refresh]);
-  useEffect(() => localStorage.setItem("pwb.personalDraft", text), [text]);
+  useEffect(() => {localStorage.setItem("pwb.personalDraft",text);localStorage.setItem("pwb.personalComposer",JSON.stringify({text,taskId:draftTaskId}));}, [text,draftTaskId]);
   useEffect(() => localStorage.setItem("pwb.personalDraftTools", JSON.stringify(capabilities)), [capabilities]);
   const runs: Run[] = data?.runs || [];
   const applyRun = useCallback(
@@ -506,7 +508,9 @@ export function Today({
   const send = async () => {
     if (!text.trim() || !data || busy) return;
     const body = text;
-    const taskId=sessionStorage.getItem("today.taskId")||undefined;sessionStorage.removeItem("today.taskId");
+    const taskId=draftTaskId;
+    setDraftTaskId(undefined);
+    sessionStorage.removeItem("today.taskId");
     setText("");
     setCapabilities([]);
     setBusy(true);
@@ -734,7 +738,7 @@ export function Today({
         </div>
         <div className="today-composer">
           <CapabilityComposer personal projectId="personal-assistant" sessionId={data?.sessionId || ""} value={text}
-            onChange={setText} selected={capabilities} onSelected={setCapabilities} send={() => void send()}/>
+            onChange={editText} selected={capabilities} onSelected={setCapabilities} send={() => void send()}/>
           <footer>
             <small>Enter 发送 · Shift + Enter 换行</small>
             <button

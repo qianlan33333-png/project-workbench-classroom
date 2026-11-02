@@ -188,6 +188,16 @@ func (s *Store) saveChatSchedule(in RuntimeInput, raw json.RawMessage, notify bo
 			return v, nil, fmt.Errorf("不支持修改 %s", key)
 		}
 	}
+	if requested.ID != "" && requested.Enabled != nil && !*requested.Enabled {
+		old, e := s.Schedule(requested.ID)
+		if e != nil {
+			return v, nil, e
+		}
+		if old.ProjectID != in.Project.ID {
+			return v, nil, ErrNotFound
+		}
+		return s.toggleSchedule(requested.ID, false)
+	}
 	s.expertMu.RLock()
 	defer s.expertMu.RUnlock()
 	s.scheduleMu.Lock()
@@ -202,9 +212,7 @@ func (s *Store) saveChatSchedule(in RuntimeInput, raw json.RawMessage, notify bo
 		}
 		v = old
 	}
-	if requested.ID == "" {
-		v.Enabled = true
-	}
+
 	if e := json.Unmarshal(raw, &v); e != nil {
 		return v, nil, e
 	}

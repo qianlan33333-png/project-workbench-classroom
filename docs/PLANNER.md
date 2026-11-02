@@ -25,4 +25,4 @@ POST /api/v1/schedules/:id/occurrence 接收 original、version、at 或 skip；
 
 隔离服务器通过真实 Harness 验证微信入口创建个人日程、飞书入口查回、项目对话保存规则、绑定对话失效后修正规则再在原指定对话执行。渠道为入站及 outbox 回放。独立飞书日历使用已授权账号真实创建、改期、读取、删除双写事件，并清理验收日历。生产日历只做读取验证。浏览器验收截图见 artifacts/planner。
 
-生产最终发布 cloud-20261102-19-planner-r2，应用源码 f1a6ed0。生产网页、日历、飞书主日历读取、待办及未读数读回通过，微信和飞书均有上线后的 connected 心跳。发布前后的 schedules 与 context_jobs 逐行摘要相同，project_context_paused 为 true。初次发布快照 /opt/project-workbench/rollback-today-20261102-121456；随后仅增加个人记忆来源判断，切换前对业务表和项目文件与该快照进行了核对。回滚可以直接切回上版服务并使用当前数据目录；如需撤销整个功能，保留新日程和站内信的数据库表以便再次升级。
+生产最终发布 cloud-20261102-19-planner-r2，应用源码 f1a6ed0。生产网页、日历、飞书主日历读取、待办及未读数读回通过，微信和飞书均有上线后的 connected 心跳。发布前后的 schedules 与 context_jobs 逐行摘要相同，project_context_paused 为 true。初次发布快照 /opt/project-workbench/rollback-today-20261102-121456；随后仅增加个人记忆来源判断，切换前对业务表和项目文件与该快照进行了核对。回滚复用当前数据目录并保留新日程和站内信表。固定回滚入口会先暂停旧调度器不能识别的单次、系列例外、指定会话及新对话输出规则，增加版本并记录原因；核对后由本人开启，避免旧程序将单次任务当作每日任务。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -142,6 +143,9 @@ func TestCalendarUnknownCreateReconcilesOnceAndExternalScope(t *testing.T) {
 	cli := toolPresets()[0]
 	if e := os.MkdirAll(filepath.Dir(s.toolBinary(cli)), 0700); e != nil {
 		t.Fatal(e)
+	}
+	s.calendarRunner = func(ctx context.Context, t CLITool, args []string) ([]byte, error) {
+		return exec.CommandContext(ctx, s.toolBinary(t), args...).Output()
 	}
 	state := filepath.Join(s.Root, "provider-key")
 	body := "#!/bin/sh\ncase \"$3\" in\ncreate) while [ \"$1\" != '--idempotency-key' ]; do shift; done; shift; if ! test -f '" + state + "'; then echo \"$1\" > '" + state + "'; exit 1; fi; test \"$(cat '" + state + "')\" = \"$1\" || exit 3; echo '{\"ok\":true,\"data\":{\"event\":{\"event_id\":\"ext-1\"}}}';;\ninstance_view) echo '{\"ok\":true,\"data\":{\"items\":[]}}';;\nesac\n"
