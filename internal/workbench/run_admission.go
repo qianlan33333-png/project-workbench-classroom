@@ -50,18 +50,23 @@ queued AS MATERIALIZED (
        AND json_extract(p.data,'$.url') GLOB 'https://*' AND COALESCE(json_extract(p.data,'$.enabled'),1)=1))
  THEN 1 ELSE 0 END AS shared
  FROM runs r WHERE r.state='queued'
+),
+ranked AS (
+ SELECT q.*,row_number() OVER(PARTITION BY session_id ORDER BY created_at,seq) AS session_position,
+   count(*) FILTER(WHERE shared=0) OVER(PARTITION BY project_id ORDER BY created_at,seq
+     ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS writers_ahead
+ FROM queued q
 )
-SELECT r.data,q.shared FROM queued q JOIN runs r ON r.id=q.id
+SELECT r.data,q.shared FROM ranked q JOIN runs r ON r.id=q.id
 WHERE (SELECT COUNT(*) FROM active)<?
   AND NOT EXISTS(SELECT 1 FROM active WHERE run_id LIKE 'maintenance:%')
   AND NOT EXISTS(SELECT 1 FROM settings WHERE key='tool_install_running')
   AND NOT EXISTS(SELECT 1 FROM active a WHERE a.project_id=q.project_id
       AND (a.shared=0 OR q.shared=0 OR a.session_id=q.session_id))
   AND (q.shared=1 OR q.project_id=? OR (SELECT COUNT(*) FROM active WHERE shared=0 AND project_id<>?)<?)
-  AND NOT EXISTS(SELECT 1 FROM queued earlier WHERE earlier.project_id=q.project_id
-     AND (earlier.created_at,earlier.seq)<(q.created_at,q.seq)
-     AND (earlier.session_id=q.session_id OR (q.shared=1 AND earlier.shared=0)))
-ORDER BY (q.project_id=?) DESC,q.priority,q.created_at,q.seq LIMIT 1
+  AND q.session_position=1 AND (q.shared=0 OR q.writers_ahead=0)
+ORDER BY (q.project_id=?) DESC,q.priority,
+  (SELECT count(*) FROM active a WHERE a.project_id=q.project_id),q.created_at,q.seq LIMIT 1
 `
 
 func (s *Store) finishRunSnapshot(r Run) error {
