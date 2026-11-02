@@ -503,7 +503,13 @@ try {
       await option.waitFor();
       const title = "外部 SSE 更新，能力选择继续";
       await api(`/sessions/${s2}`, { title }, "PUT");
-      await wait(async () => assert((await row(s2).locator(".session-select").innerText()).includes(title)));
+      await wait(async () =>
+        assert(
+          (await row(s2).locator(".session-select").innerText()).includes(
+            title,
+          ),
+        ),
+      );
       assert.equal(await list.count(), 1);
       assert.equal(await input.inputValue(), "/");
       assert(await input.evaluate((el) => el === document.activeElement));
@@ -554,13 +560,13 @@ try {
         Object.getOwnPropertyDescriptor(
           HTMLTextAreaElement.prototype,
           "value",
-        ).set.call(el, "/");
-        el.setSelectionRange(1, 1);
+        ).set.call(el, "/cli");
+        el.setSelectionRange(4, 4);
         el.dispatchEvent(
           new InputEvent("input", {
             bubbles: true,
             inputType: "insertText",
-            data: "/",
+            data: "/cli",
           }),
         );
       });
@@ -570,12 +576,12 @@ try {
             requestAnimationFrame(() => requestAnimationFrame(r)),
           ),
       );
-      assert.equal(await input.evaluate((el) => el.selectionStart), 1);
+      assert.equal(await input.evaluate((el) => el.selectionStart), 4);
       assert.equal(await list.count(), 1);
       await screenshot("capability-live-sse");
       await input.press("Escape");
       assert.equal(await list.count(), 0);
-      assert.equal(await input.inputValue(), "/");
+      assert.equal(await input.inputValue(), "/cli");
       await page.getByRole("button", { name: /^移除 / }).click();
       await input.fill("上线菜单验收草稿，不发送");
       await page.setViewportSize({ width: 390, height: 568 });
@@ -587,17 +593,51 @@ try {
       );
       await screenshot("capability-mobile");
       await input.press("Escape");
+      await page.evaluate(() => {
+        window.__popupTiming = [];
+        for (const [target, type] of [
+          [window, "resize"],
+          [window.visualViewport, "resize"],
+          [window.visualViewport, "scroll"],
+          [document, "scroll"],
+        ]) {
+          target?.addEventListener(
+            type,
+            (event) =>
+              window.__popupTiming.push({
+                type,
+                target:
+                  event.target === window
+                    ? "window"
+                    : event.target === window.visualViewport
+                      ? "visualViewport"
+                      : event.target?.className || event.target?.nodeName,
+                at: performance.now(),
+              }),
+            true,
+          );
+        }
+      });
       await page.setViewportSize({ width: 1280, height: 720 });
     },
   );
   await check(
     "Project name tip reflects a real project rename SSE and dismisses with Escape",
     async () => {
+      await page.evaluate(
+        () =>
+          new Promise((r) =>
+            requestAnimationFrame(() => requestAnimationFrame(r)),
+          ),
+      );
       const link = page
         .locator(".project-links")
         .getByRole("button", { name: fixture.project.name, exact: true });
       await link.focus();
       await page.getByRole("tooltip").waitFor();
+      await page.evaluate(() =>
+        window.__popupTiming.push({ type: "tip-open", at: performance.now() }),
+      );
       const name = fixture.project.name + " SSE";
       await api(`/projects/${pid}`, { name }, "PATCH");
       await page
@@ -608,6 +648,7 @@ try {
         assert.equal(await page.getByRole("tooltip").innerText(), name),
       );
       await screenshot("project-tip-live-sse");
+      report.popupTiming = await page.evaluate(() => window.__popupTiming);
       await page.keyboard.press("Escape");
       assert.equal(await page.getByRole("tooltip").count(), 0);
     },
@@ -694,6 +735,10 @@ try {
   report.passed = true;
 } catch (error) {
   report.error = redact(error.stack || error);
+  if (page)
+    report.popupTiming = await page
+      .evaluate(() => window.__popupTiming)
+      .catch(() => []);
   if (page) await screenshot("live-failure").catch(() => {});
 } finally {
   if (browser) await browser.close();
