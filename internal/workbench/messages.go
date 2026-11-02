@@ -62,14 +62,18 @@ func (s *Store) Run(id string) (Run, error) {
 	return r, e
 }
 func (s *Store) saveRun(r Run) error {
-	_, err := s.DB.Exec("UPDATE runs SET state=?,data=? WHERE id=?", r.State, encode(r), r.ID)
+	err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if _, e := tx.Exec("UPDATE runs SET state=?,data=? WHERE id=?", r.State, encode(r), r.ID); e != nil {
+			return e
+		}
+		if r.ScheduleID != "" {
+			_, e := tx.Exec("UPDATE schedule_checks SET outcome=?,detail=? WHERE schedule_id=? AND run_id=? AND outcome<>'active'", r.State, r.Error, r.ScheduleID, r.ID)
+			return e
+		}
+		return nil
+	})
 	if err != nil {
 		return err
-	}
-	if r.ScheduleID != "" {
-		if _, err = s.DB.Exec("UPDATE schedule_checks SET outcome=?,detail=? WHERE schedule_id=? AND run_id=?", r.State, r.Error, r.ScheduleID, r.ID); err != nil {
-			return err
-		}
 	}
 	return s.Emit(r.SessionID, r.ID, "run.updated", r)
 }
@@ -315,6 +319,19 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		}
 		if _, err := tx.Exec("UPDATE inbox SET state=?,session_id=?,data=? WHERE id=?", m.State, m.SessionID, encode(m), m.ID); err != nil {
 			return err
+		}
+		if p.ID == personalProjectID && m.Incoming.TaskID != "" {
+			if m.Incoming.Source != "web" {
+				return errors.New("待办交接来源无效")
+			}
+			res, e := tx.Exec("UPDATE project_tasks SET data=json_set(data,'$.state','in_progress','$.version',json_extract(data,'$.version')+1,'$.updatedAt',?) WHERE id=? AND project_id=? AND json_extract(data,'$.state') IN ('pending','in_progress')", now(), m.Incoming.TaskID, p.ID)
+			if e != nil {
+				return e
+			}
+			n, _ := res.RowsAffected()
+			if n != 1 {
+				return errors.New("待办已结束或不可用")
+			}
 		}
 		if err = startTaskForSession(tx, sess.ID); err != nil {
 			return err

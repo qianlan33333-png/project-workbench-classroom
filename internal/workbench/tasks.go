@@ -40,7 +40,7 @@ func (s *Store) SaveTask(t ProjectTask) (ProjectTask, error) {
 	if e != nil {
 		return t, e
 	}
-	if p.Archived || p.ID == personalProjectID {
+	if p.Archived {
 		return t, errors.New("请选择有效业务项目")
 	}
 	if t.ID == "" {
@@ -113,6 +113,14 @@ func (s *Store) PrepareTask(id string, another, refill bool) (TaskDraft, error) 
 	}
 	if t.State == "completed" || t.State == "cancelled" {
 		return TaskDraft{}, errors.New("请先恢复任务状态")
+	}
+	if t.ProjectID == personalProjectID {
+		p, e := s.Project(personalProjectID)
+		if e != nil {
+			return TaskDraft{}, e
+		}
+		ss, e := s.Session(p.DefaultSessionID)
+		return TaskDraft{t, ss, "# " + t.Title + "\n\n" + t.Description, false}, e
 	}
 	ss, e := s.Session(t.SessionID)
 	if e != nil || another {

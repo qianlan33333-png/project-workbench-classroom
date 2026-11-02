@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Sun,
+  Sun, CalendarDays, ListChecks,
   Folder,
   Library,
   Settings,
@@ -74,9 +74,11 @@ export function NavigationRail({
       <nav>
         {[
           { id: "today", text: "今天", Icon: Sun },
+          { id: "calendar", text: "日历", Icon: CalendarDays },
+          { id: "tasks", text: "任务", Icon: ListChecks },
           { id: "projects", text: "项目", Icon: Folder },
           { id: "experts", text: "专家库", Icon: Library },
-          { id: "settings", text: "设置", Icon: Settings },
+
         ].map(({ id, text, Icon }) => (
           <button
             key={id}
@@ -147,7 +149,7 @@ export function NavigationRail({
         </div>
       )}
       <div className="rail-bottom">
-        <span className="rail-status">个人云端工作台</span>
+        <button aria-label="设置" title="设置" className={page==="settings"?"active":""} onClick={()=>navigate("settings")}><Settings size={18}/><span>设置</span></button>
         <button aria-label="退出登录" title="退出登录" onClick={logout}>
           <LogOut size={17} />
           <span className="compact-label">退出</span>

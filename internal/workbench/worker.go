@@ -366,7 +366,7 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		_ = s.saveRun(r)
 		return
 	}
-	if r.ScheduleID != "" && result.Text != "" && (r.ScheduleConfig == nil || r.ScheduleConfig.Output != "project_context") {
+	if r.ScheduleID != "" && !r.ConversationOutput && result.Text != "" && (r.ScheduleConfig == nil || r.ScheduleConfig.Output != "project_context") {
 		root, e := s.ProjectRoot(r.ProjectID)
 		if e == nil {
 			rr, e := os.OpenRoot(root)

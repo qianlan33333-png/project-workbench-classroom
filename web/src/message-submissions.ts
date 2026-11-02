@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Message, type Run, type Capability } from "./api";
 
 export type MessageInput = {
+  taskId?:string;
   capabilities?: Capability[];
   eventId: string;
   sessionId: string;

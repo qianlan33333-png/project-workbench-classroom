@@ -481,7 +481,7 @@ func (s *Store) finishConditional(r *Run, src []ContextSource, b *scheduleBrief)
 		if _, e = tx.Exec("UPDATE runs SET state=?,data=? WHERE id=?", r.State, encode(r), r.ID); e != nil {
 			return e
 		}
-		if _, e = tx.Exec("UPDATE schedule_checks SET outcome=?,detail=? WHERE schedule_id=? AND run_id=?", r.State, r.Error, sc.ID, r.ID); e != nil {
+		if _, e = tx.Exec("UPDATE schedule_checks SET outcome=?,detail=? WHERE schedule_id=? AND run_id=? AND outcome<>'active'", r.State, r.Error, sc.ID, r.ID); e != nil {
 			return e
 		}
 		_, e = tx.Exec("DELETE FROM project_locks WHERE run_id=?", r.ID)

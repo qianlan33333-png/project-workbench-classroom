@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"reflect"
 	"strings"
 	"time"
 	_ "time/tzdata"
@@ -55,6 +56,12 @@ func (s *Store) saveScheduleLocked(v Schedule, creationID string, explicitEnable
 	}
 	v.PausedReason = ""
 	v.ExpertRequired = false
+	if v.ProjectID == "" || v.ProjectID == personalProjectID {
+		if _, e := s.PersonalSpace(); e != nil {
+			return v, e
+		}
+		v.ProjectID = personalProjectID
+	}
 	p, err := s.Project(v.ProjectID)
 	if err != nil {
 		return v, err
@@ -87,7 +94,20 @@ func (s *Store) saveScheduleLocked(v Schedule, creationID string, explicitEnable
 			return v, errors.New("通知只能发送到已验证的本人私聊")
 		}
 	}
+	if v.SessionID != "" {
+		ss, e := s.Session(v.SessionID)
+		if e != nil || ss.ProjectID != p.ID || ss.Lifecycle != "" || ss.Draft {
+			return v, errors.New("请选择所属范围内的有效对话")
+		}
+	}
+	if _, e := s.selectCapabilities(p.ID, v.Capabilities); e != nil {
+		return v, e
+	}
 	if v.ID == "" {
+		v.Version = 1
+		v.ConversationOutput = true
+		v.Changes = nil
+		v.Exceptions = nil
 		v.ID = newID()
 		if creationID != "" {
 			v.ID = creationID
@@ -101,6 +121,16 @@ func (s *Store) saveScheduleLocked(v Schedule, creationID string, explicitEnable
 		if old.ProjectID != v.ProjectID {
 			return v, errors.New("定时任务不能更换所属项目")
 		}
+		if v.Version != old.Version {
+			return v, ErrConflict
+		}
+		if (len(old.Changes) > 0 || len(old.Exceptions) > 0) && (v.Cron != old.Cron || v.OnceAt != old.OnceAt || v.Timezone != old.Timezone) {
+			return v, errors.New("请在日历中选择实例，更改单次或周期")
+		}
+		v.Changes = old.Changes
+		v.Exceptions = old.Exceptions
+		v.ConversationOutput = old.ConversationOutput
+		v.Version = old.Version + 1
 		v.CreatedAt = old.CreatedAt
 		if !explicitEnabled && (old.Condition == "changed" || old.Output != "") {
 			v.Enabled = old.Enabled
@@ -116,7 +146,10 @@ func (s *Store) saveScheduleLocked(v Schedule, creationID string, explicitEnable
 			return v, errors.New("请先重新选择专家")
 		}
 	}
-	v.NextAt, err = nextSchedule(v, time.Now())
+	err = v.advance(now())
+	if err == nil && v.Enabled && v.NextAt == 0 {
+		return v, errors.New("没有未来的执行时间")
+	}
 	if err != nil {
 		return v, err
 	}
@@ -182,20 +215,35 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 	if err != nil {
 		return receipt, err
 	}
-	if observed != schedule {
+	if !reflect.DeepEqual(observed, schedule) {
 		return receipt, ErrConflict
 	}
 	manual := operation != ""
+	original := schedule.OriginalNext
+	if original == 0 {
+		original = schedule.NextAt
+	}
+	plannedAt := schedule.NextAt
 	if !manual {
 		if !schedule.Enabled || schedule.NextAt > at.UnixMilli() {
 			return receipt, nil
 		}
-		operation = fmt.Sprintf("cron:%d", schedule.NextAt)
+		operation = fmt.Sprintf("cron:%d", original)
 	}
 	receipt.Operation = operation
 	receipt.At = at.UnixMilli()
 	err = s.DB.QueryRow("SELECT checked_at,outcome,run_id,detail FROM schedule_checks WHERE schedule_id=? AND operation=?", id, operation).Scan(&receipt.At, &receipt.Outcome, &receipt.RunID, &receipt.Detail)
 	if err == nil {
+		if !manual {
+			if err = schedule.advance(at.UnixMilli()); err != nil {
+				return receipt, err
+			}
+			if schedule.NextAt == 0 {
+				schedule.Enabled = false
+			}
+			_, err = s.DB.Exec("UPDATE schedules SET next_at=?,enabled=?,data=? WHERE id=?", schedule.NextAt, schedule.Enabled, encode(schedule), id)
+			return receipt, err
+		}
 		return receipt, nil
 	}
 	if err != sql.ErrNoRows {
@@ -213,11 +261,19 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 		}
 		return receipt, errors.New("项目已归档")
 	}
-	if schedule.ExpertRequired {
-		return receipt, errors.New("请编辑任务以指定有效专家")
+	if schedule.ExpertRequired && manual {
+		receipt.Outcome = "failed"
+		receipt.Detail = "请编辑任务以指定有效专家"
+		if _, err = s.DB.Exec("INSERT INTO schedule_checks VALUES(?,?,?,?,?,?)", id, operation, receipt.At, receipt.Outcome, "", receipt.Detail); err != nil {
+			return receipt, err
+		}
+		return receipt, errors.New(receipt.Detail)
 	}
 	if !manual {
-		schedule.NextAt, err = nextSchedule(schedule, at)
+		err = schedule.advance(at.UnixMilli())
+		if schedule.NextAt == 0 {
+			schedule.Enabled = false
+		}
 		if err != nil {
 			return receipt, err
 		}
@@ -227,6 +283,9 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 	if guarded || manual {
 		err = s.DB.QueryRow("SELECT id FROM runs WHERE json_extract(data,'$.scheduleId')=? AND state IN ('queued','running','waiting','stopping') ORDER BY created_at DESC LIMIT 1", id).Scan(&receipt.RunID)
 		if err == nil {
+			if strings.HasPrefix(operation, "manual:retry-") {
+				return receipt, ErrLocked
+			}
 			receipt.Outcome = "active"
 			receipt.Detail = "已有执行"
 		} else if err != sql.ErrNoRows {
@@ -253,12 +312,33 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 			}
 		}
 	}
+	var target Session
+	if schedule.SessionID != "" && receipt.Outcome == "" {
+		target, err = s.Session(schedule.SessionID)
+		if err != nil || target.ProjectID != p.ID || target.Lifecycle != "" || target.Draft {
+			receipt.Outcome = "failed"
+			receipt.Detail = "绑定对话已失效，请重新选择"
+			schedule.Enabled = false
+			schedule.PausedReason = receipt.Detail
+		}
+	}
+	caps, capErr := s.selectCapabilities(p.ID, schedule.Capabilities)
+	if capErr != nil && receipt.Outcome == "" {
+		receipt.Outcome = "failed"
+		receipt.Detail = capErr.Error()
+		schedule.Enabled = false
+		schedule.PausedReason = receipt.Detail
+	}
 	versions := map[string]string{}
 	if receipt.Outcome == "" {
 		for _, id := range p.ExpertIDs {
 			ex, e := s.Expert(id)
 			if e != nil {
-				return receipt, e
+				receipt.Outcome = "failed"
+				receipt.Detail = "专家不可用：" + id
+				schedule.Enabled = false
+				schedule.PausedReason = receipt.Detail
+				break
 			}
 			versions[id] = ex.Digest
 		}
@@ -273,9 +353,17 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 			receipt.Outcome = "queued"
 			ss := Session{ID: newID(), ProjectID: p.ID, Title: schedule.Name + " · " + at.In(time.FixedZone("CST", 8*3600)).Format("01-02 15:04"), Kind: "automation", ExpertID: schedule.ExpertID, CreatedAt: now(), UpdatedAt: now()}
 			ss.HarnessID = "pw-" + ss.ID
+			if target.ID != "" {
+				ss = target
+			}
 			m := Message{ID: newID(), Incoming: Incoming{Source: "automation", EventID: schedule.ID + ":" + operation, SessionID: ss.ID, Text: schedule.Instruction, ExpertID: schedule.ExpertID}, State: "queued", SessionID: ss.ID, CreatedAt: now()}
 			r := Run{ID: newID(), ProjectID: p.ID, SessionID: ss.ID, MessageID: m.ID, State: "queued", Source: "automation", Text: schedule.Instruction, ExpertID: schedule.ExpertID, ScheduleID: schedule.ID, CreatedAt: now()}
 			r.ExpertVersions = versions
+			r.ConversationOutput = schedule.ConversationOutput
+			r.Capabilities = caps
+			if !manual {
+				r.ScheduledFor = plannedAt
+			}
 			if schedule.Condition == "changed" || schedule.Output != "" {
 				cfg := schedule
 				r.ScheduleConfig = &cfg
@@ -295,8 +383,15 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 				r.ExpertDigest = ex.Digest
 				r.ExpertName = ex.Name
 			}
-			if _, e := tx.Exec("INSERT INTO sessions VALUES(?,?,?,?,?,?)", ss.ID, p.ID, ss.HarnessID, ss.Kind, ss.UpdatedAt, encode(ss)); e != nil {
-				return e
+			if target.ID == "" {
+				if _, e := tx.Exec("INSERT INTO sessions VALUES(?,?,?,?,?,?)", ss.ID, p.ID, ss.HarnessID, ss.Kind, ss.UpdatedAt, encode(ss)); e != nil {
+					return e
+				}
+			} else {
+				var valid int
+				if e := tx.QueryRow("SELECT count(*) FROM sessions WHERE id=? AND project_id=? AND coalesce(json_extract(data,'$.recycledAt'),0)=0 AND coalesce(json_extract(data,'$.lifecycle'),'')=''", ss.ID, p.ID).Scan(&valid); e != nil || valid != 1 {
+					return ErrConflict
+				}
 			}
 			if _, e := tx.Exec("INSERT INTO inbox VALUES(?,?,?,?,?,?,?,?,?)", m.ID, "automation", "", m.Incoming.EventID, entryKey(m.Incoming), m.State, ss.ID, m.CreatedAt, encode(m)); e != nil {
 				return e
@@ -344,11 +439,15 @@ func (s *Store) toggleSchedule(id string, enabled bool) (Schedule, []string, err
 		if sc.ExpertRequired {
 			return sc, nil, errors.New("请先选择专家")
 		}
-		sc.NextAt, e = nextSchedule(sc, time.Now())
+		e = sc.advance(now())
+		if e == nil && sc.NextAt == 0 {
+			return sc, nil, errors.New("没有未来的执行时间")
+		}
 		if e != nil {
 			return sc, nil, e
 		}
 	}
+	sc.Version++
 	sc.Enabled = enabled
 	if !sc.ExpertRequired {
 		sc.PausedReason = ""

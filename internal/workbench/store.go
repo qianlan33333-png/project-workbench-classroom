@@ -17,6 +17,8 @@ type Store struct {
 	DB                 *sql.DB
 	Root               string
 	mu                 sync.Mutex
+	feishuCalendarID   string // Primary by default; a dedicated calendar can be used for integration tests.
+	calendarMu         sync.Mutex
 	scheduleMu         sync.Mutex
 	stopScheduleRun    func(string) error
 	expertMu           sync.RWMutex
@@ -82,7 +84,7 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(schema + todaySchema); err != nil {
+	if _, err := db.Exec(schema + todaySchema + plannerSchema); err != nil {
 		return nil, fmt.Errorf("数据库初始化: %w", err)
 	}
 	var version int

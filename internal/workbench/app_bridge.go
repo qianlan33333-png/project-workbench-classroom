@@ -73,6 +73,10 @@ func (h *Harness) startBridge(in RuntimeInput) (func(), error) {
 }
 
 func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {
+	switch tool {
+	case "query_calendar", "change_calendar", "update_occurrence", "update_series", "delete_schedule", "save_schedule", "list_schedules":
+		return s.plannerTool(in, tool, args)
+	}
 	if in.Project.ID == personalProjectID {
 		return s.personalTool(in, tool, args)
 	}
@@ -128,20 +132,6 @@ func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any
 			return nil, errors.New("只能读取当前项目的执行历史")
 		}
 		return r, nil
-	case "list_schedules":
-		return s.Schedules(in.Project.ID)
-	case "save_schedule":
-		if in.Run.Source == "automation" {
-			return nil, errors.New("自动任务不能自行创建或修改定时任务")
-		}
-		result, ids, e := s.saveChatSchedule(in, a.Schedule, a.NotifySource)
-		if e == nil {
-			e = s.stopScheduleRuns(ids)
-		}
-		if e == nil {
-			e = s.Emit(in.Session.ID, in.Run.ID, "schedule.updated", result)
-		}
-		return result, e
 	case "list_references", "read_reference":
 		m, e := s.Message(in.Run.MessageID)
 		if e != nil {
@@ -190,7 +180,7 @@ func (s *Store) saveChatSchedule(in RuntimeInput, raw json.RawMessage, notify bo
 	}
 	for key := range patch {
 		switch key {
-		case "id", "name", "instruction", "cron", "timezone", "expertId", "enabled", "condition", "sourceScope", "output":
+		case "id", "name", "instruction", "cron", "timezone", "expertId", "enabled", "condition", "sourceScope", "output", "sessionId", "onceAt", "capabilities":
 		default:
 			return v, nil, fmt.Errorf("不支持修改 %s", key)
 		}
@@ -208,6 +198,9 @@ func (s *Store) saveChatSchedule(in RuntimeInput, raw json.RawMessage, notify bo
 			return v, nil, ErrNotFound
 		}
 		v = old
+	}
+	if requested.ID == "" {
+		v.Enabled = true
 	}
 	if e := json.Unmarshal(raw, &v); e != nil {
 		return v, nil, e

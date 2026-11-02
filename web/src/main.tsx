@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  Folder,
+  Bell,Folder,
   Plus,
   ArrowUp,
   Settings,
@@ -57,6 +57,9 @@ import { SessionMenu } from "./session-menu";
 import { CapabilityComposer, CapabilityBadges } from "./capability-composer";
 import { Today, TasksPanel, ContextSettings, type PreparedTask } from "./today";
 import "./style.css";
+import {CalendarPage,personal} from "./planner";
+import {TaskCenter,NoticePage} from "./planner-tasks";
+import "./planner.css";
 
 type Field = {
   key: string;
@@ -83,8 +86,8 @@ function App() {
         ? "expert-detail"
         : initialLocation.get("project")
           ? "project"
-          : initialLocation.get("page") === "today"
-            ? "today"
+          : ["today","tasks","calendar","notices","settings"].includes(initialLocation.get("page")||"")
+            ? initialLocation.get("page")!
             : "projects",
     ),
     [projects, setProjects] = useState<Project[]>([]),
@@ -98,6 +101,11 @@ function App() {
     [files, setFiles] = useState<FileEntry[]>([]),
     [events, setEvents] = useState<WorkEvent[]>([]),
     [interactions, setInteractions] = useState<any[]>([]);
+  const [pageParams,setPageParams]=useState(initialLocation),[unread,setUnread]=useState(0);
+  const badge=useCallback(()=>{void api("/notices/count").then(v=>setUnread(v.unread)).catch(()=>{})},[]);
+  useEffect(()=>{if(!auth)return;badge();const timer=setInterval(badge,10000);return()=>clearInterval(timer)},[auth,badge]);
+  useEffect(()=>{const pop=()=>{const q=new URLSearchParams(location.hash.slice(1));setPageParams(q);const p=q.get("page");if(p&&["tasks","notices","calendar","today","settings"].includes(p))setPage(p)};window.addEventListener("hashchange",pop);window.addEventListener("popstate",pop);return()=>{window.removeEventListener("hashchange",pop);window.removeEventListener("popstate",pop)}},[]);
+  const plannerNav=(name:string,params:Record<string,string>={})=>{const q=new URLSearchParams({page:name,...params});history.pushState(null,"","#"+q);setPageParams(q);setPage(name);setMobileNav(false)};
   const [toast, setToast] = useState(""),
     [dialog, setDialog] = useState<Dialog | null>(null),
     [busy, setBusy] = useState(false),
@@ -389,15 +397,15 @@ function App() {
           }).toString()
         : page === "expert-detail"
           ? new URLSearchParams({ expert: expertId }).toString()
-          : page === "today"
-            ? "page=today"
+          : ["tasks","notices","calendar","today","settings"].includes(page)
+            ? (pageParams.get("page")===page?pageParams.toString():"page="+page)
             : "";
     history.replaceState(
       null,
       "",
       location.pathname + location.search + (hash ? "#" + hash : ""),
     );
-  }, [page, projectId, sessionId, expertId]);
+  }, [page, projectId, sessionId, expertId,pageParams]);
   const saveDocument = async () => {
     if (!filePath || content === saved) return;
     if (locked) throw new Error("任务正在写入，请等待任务结束或停止后再保存。");
@@ -424,7 +432,7 @@ function App() {
     fileRequest.current++;
     await flushTaskDraft();
     composerDrafts.current.set(sessionRef.current, composerCurrent.current);
-    setPage(next);
+    if(["tasks","notices","calendar","today","settings"].includes(next))plannerNav(next);else setPage(next);
     setMobileNav(false);
     if (next !== "project") {
       setFilePath("");
@@ -857,6 +865,11 @@ function App() {
       .catch(() => {});
   }, [projectId, sessionId]);
   const beginTask = async (d: PreparedTask) => {
+    if(d.task.projectId===personal){
+      const draft=localStorage.getItem("pwb.personalDraft")||"";
+      if(draft.trim()&&!window.confirm("今天已有草稿。将待办追加到草稿末尾？"))return;
+      localStorage.setItem("pwb.personalDraft",draft?draft+"\n\n"+d.text:d.text);sessionStorage.setItem("today.taskId",d.task.id);await navigate("today");return;
+    }
     const p = projects.find((p) => p.id === d.task.projectId);
     if (!p) return;
     if (!(await canLeave())) return;
@@ -942,7 +955,7 @@ function App() {
       <main>
         <header
           className="topbar"
-          style={page === "today" ? { display: "none" } : undefined}
+
         >
           <button
             className="mobile-only icon"
@@ -962,9 +975,10 @@ function App() {
                     ? "项目"
                     : page.startsWith("expert")
                       ? "专家库"
-                      : "设置"}
+                      : ({tasks:"任务",calendar:"日历",notices:"站内信"} as Record<string,string>)[page]||"设置"}
             </span>
           </div>
+          <button className="notice-bell" aria-label={"站内信，"+unread+"条未读"} onClick={()=>void navigate("notices")}><Bell size={17}/>{unread>0&&<b>{unread}</b>}</button>
           <span className="top-status">
             {runs.some((r) => ["running", "waiting"].includes(r.state)) ? (
               <>
@@ -979,10 +993,13 @@ function App() {
             )}
           </span>
         </header>
+        {page==="calendar"&&<CalendarPage projects={projects} notify={notify} openTask={id=>plannerNav("tasks",{task:id})} openRule={id=>plannerNav("tasks",{tab:"ai",rule:id})}/>}
+        {page==="tasks"&&<TaskCenter key={pageParams.toString()} projects={projects} experts={experts} begin={beginTask} notify={notify} parameters={pageParams}/>}
+        {page==="notices"&&<NoticePage failure={pageParams.get("failure")||""} select={id=>plannerNav("notices",id?{failure:id}:{})} openRule={id=>plannerNav("tasks",{tab:"ai",rule:id})} notify={notify} refreshBadge={badge}/>}
         {page === "today" && (
           <Today
             projects={projects}
-            openTasks={(id)=>{const p=projects.find(v=>v.id===id);if(p)act(()=>openProject(p,undefined,"tasks"))}}
+            openTasks={(id)=>{if(id===personal){plannerNav("tasks",{scope:personal});return};const p=projects.find(v=>v.id===id);if(p)act(()=>openProject(p,undefined,"tasks"))}}
             notify={notify}
             openNavigation={() => setMobileNav(true)}
           />
@@ -1354,12 +1371,7 @@ function App() {
                 />
               )}
               {tab === "schedules" && (
-                <Schedules
-                  project={project}
-                  experts={experts}
-                  setDialog={setDialog}
-                  act={act}
-                />
+                <button className="panel-action" onClick={()=>plannerNav("tasks",{tab:"ai",scope:project.id})}><Clock size={15}/>管理本项目的 AI 任务</button>
               )}
               <div className="project-panel-footer">
                 <button
@@ -2570,194 +2582,6 @@ function ProjectCapabilities({
           </span>
         </label>
       ))}
-    </div>
-  );
-}
-function Schedules({
-  project,
-  experts,
-  setDialog,
-  act,
-}: {
-  project: Project;
-  experts: Expert[];
-  setDialog: (d: Dialog | null) => void;
-  act: (f: () => Promise<any>) => Promise<any>;
-}) {
-  const [list, setList] = useState<any[]>([]);
-  const [targets, setTargets] = useState<any[]>([]);
-  useEffect(() => {
-    act(async () => setTargets(await api("/notification-targets")));
-  }, []);
-  const load = () =>
-    api<any[]>(`/schedules?projectId=${project.id}`).then(setList);
-  useEffect(() => {
-    act(load);
-  }, [project.id]);
-  const [receipt, setReceipt] = useState<Record<string,string>>({});
-  const executing = useRef(new Set<string>());
-  const runOnce = (id:string) => act(async () => {
-    if (executing.current.has(id)) return;
-    executing.current.add(id);
-    const key="manual-schedule:"+id;
-    try {
-      const operation=sessionStorage.getItem(key) || crypto.randomUUID();
-      sessionStorage.setItem(key,operation);
-      const r=await api<any>(`/schedules/${id}/run`,{operation});
-      sessionStorage.removeItem(key);
-      setReceipt(old=>({...old,[id]:r.detail || (r.runId ? "执行记录 #"+r.runId.slice(0,8) : r.outcome)}));
-      await load();
-    } finally {executing.current.delete(id)}
-  });
-  useEffect(()=>{const timer=setInterval(()=>{void load().catch(()=>{})},5000);return ()=>clearInterval(timer)},[project.id]);
-  const edit = (v: any = {}) =>
-    setDialog({
-      title: v.id ? "编辑定时任务" : "新建定时任务",
-      description:
-        v.pausedReason || "每次独立执行，成果留在项目中，不刷入项目助手。",
-      fields: [
-        { key: "name", label: "任务名称", required: true, value: v.name },
-        {
-          key: "instruction",
-          label: "执行指令",
-          type: "textarea",
-          required: true,
-          value: v.instruction,
-        },
-        {
-          key: "cron",
-          label: "时间规则（cron）",
-          required: true,
-          value: v.cron ?? "0 9 * * *",
-          hint: "默认每天 09:00；0 9 * * 1 表示每周一 09:00",
-        },
-        {
-          key: "timezone",
-          label: "时区",
-          value: v.timezone ?? "Asia/Shanghai",
-        },
-        { key:"condition",label:"执行条件",value:v.condition || "always", options:[{value:"always",label:"每次到点执行"},{value:"changed",label:"仅在所选资料有变化时执行"}]},
-        { key:"sourceScope",label:"参与检查的资料",value:v.sourceScope || "",type:"textarea",hint:"每行一个文件或目录，也可填写 @任务、@对话、@人工说明。留空使用全部项目资料。"},
-        { key:"output",label:"结果位置",value:v.output || "record",options:[{value:"record",label:"任务结果"},{value:"project_context",label:"使用整理 Skill 更新项目说明和三天动态"}]},
-        {
-          key: "expertId",
-          label: "使用专家（留空为通用助手）",
-          value: v.expertId,
-          options: experts
-            .filter((e) => project.expertIds.includes(e.id))
-            .map((e) => ({ value: e.id, label: e.name })),
-        },
-        {
-          key: "notifyTarget",
-          label: "完成通知（留空仅保存结果）",
-          value: v.notifyConnectionId
-            ? `${v.notifyConnectionId}|${v.notifyConversationId}`
-            : "",
-          options: targets.map((t) => ({
-            value: `${t.connectionId}|${t.conversationId}`,
-            label: t.label,
-          })),
-        },
-      ],
-      action: async (fields) => {
-        await api(
-          v.id ? `/schedules/${v.id}` : "/schedules",
-          {
-            ...v,
-            ...fields,
-            condition: fields.condition==="changed" ? "changed" : "",
-            output: fields.output==="project_context" ? fields.output : "",
-            notifyConnectionId: fields.notifyTarget?.split("|")[0] || "",
-            notifyConversationId: fields.notifyTarget?.split("|")[1] || "",
-            projectId: project.id,
-            enabled: v.enabled ?? (fields.condition!=="changed" && fields.output!=="project_context"),
-            pausedReason: "",
-          },
-          v.id ? "PUT" : "POST",
-        );
-        await load();
-      },
-    });
-  return (
-    <div className="schedule-panel">
-      <button className="panel-action" onClick={() => edit()}>
-        <Plus size={15} />
-        新建定时任务
-      </button>
-      <button className="panel-action" onClick={()=>edit({name:"整理项目说明",condition:"changed",output:"project_context",enabled:false,cron:"0 7 * * *",instruction:"根据选定资料的实质变化，修订项目说明和最近三天动态。保留人工结论，标明未覆盖资料。"})}>
-        整理项目说明模板
-      </button>
-      {list.map((v) => (
-        <div className="schedule-item" key={v.id}>
-          <Clock size={16} />
-          <strong>{v.name}</strong>
-          <small>
-            {v.cron} · {v.timezone}
-          </small>
-          <small>{v.enabled ? "下次："+stamp(v.nextAt) : "已暂停"}{v.condition==="changed" ? " · 资料变化时执行" : ""}</small>
-          {receipt[v.id] && <small role="status">{receipt[v.id]}</small>}
-          {v.pausedReason && <p className="lock-note">{v.pausedReason}</p>}
-          <div>
-            <button onClick={() => edit(v)}>编辑</button>
-            <button onClick={()=>runOnce(v.id)}>手动执行一次</button>
-            <button
-              onClick={() =>
-                act(async () => {
-                  if (v.pausedReason?.includes("已删除") && !v.expertId && v.condition!=="changed") {
-                    edit(v);
-                    return;
-                  }
-                  await api(
-                    `/schedules/${v.id}/enabled`,
-                    { enabled: !v.enabled },
-                    "POST",
-                  );
-                  await load();
-                })
-              }
-            >
-              {v.enabled ? "暂停" : "启用定时"}
-            </button>
-            <button
-              onClick={() =>
-                act(async () => {
-                  const [rs,checks] = await Promise.all([api<Run[]>(`/schedules/${v.id}/runs`),api<any[]>(`/schedules/${v.id}/checks`)]);
-                  setDialog({
-                    title: v.name,
-                    content: (
-                      <div>
-                        {checks.filter(x=>!x.runId).map(x=><p key={x.operation}>{stamp(x.at)} · {x.detail || x.outcome}</p>)}
-                        {rs.length === 0 ? (
-                          <p>还没有执行记录。</p>
-                        ) : (
-                          rs.map((r) => (
-                            <article className="schedule-result" key={r.id}>
-                              <State state={r.state} />
-                              <small>{stamp(r.createdAt)}</small>
-                              <RichText
-                                text={r.error || r.result || "等待执行"}
-                              />
-                            </article>
-                          ))
-                        )}
-                      </div>
-                    ),
-                  });
-                })
-              }
-            >
-              结果
-            </button>
-          </div>
-        </div>
-      ))}
-      {!list.length && (
-        <div className="panel-empty">
-          把重复的工作交给助手。
-          <br />
-          执行时间按上海时区。
-        </div>
-      )}
     </div>
   );
 }

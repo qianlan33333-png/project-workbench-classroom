@@ -58,6 +58,7 @@ type Expert struct {
 	CreatedAt   int64    `json:"createdAt"`
 }
 type Incoming struct {
+	TaskID         string          `json:"taskId,omitempty"`
 	Capabilities   []CapabilityRef `json:"capabilities,omitempty"`
 	Source         string          `json:"source"`
 	ConnectionID   string          `json:"connectionId"`
@@ -93,6 +94,8 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
+	ConversationOutput   bool              `json:"conversationOutput,omitempty"`
+	ScheduledFor         int64             `json:"scheduledFor,omitempty"`
 	ScheduleConfig       *Schedule         `json:"scheduleConfig,omitempty"`
 	InputFingerprint     string            `json:"inputFingerprint,omitempty"`
 	PersonalRulesVersion int64             `json:"personalRulesVersion,omitempty"`
@@ -164,23 +167,31 @@ type Delivery struct {
 	CreatedAt      int64    `json:"createdAt"`
 }
 type Schedule struct {
-	ExpertRequired       bool   `json:"expertRequired,omitempty"`
-	Condition            string `json:"condition,omitempty"`
-	SourceScope          string `json:"sourceScope,omitempty"`
-	Output               string `json:"output,omitempty"`
-	PausedReason         string `json:"pausedReason,omitempty"`
-	ID                   string `json:"id"`
-	ProjectID            string `json:"projectId"`
-	Name                 string `json:"name"`
-	ExpertID             string `json:"expertId"`
-	Instruction          string `json:"instruction"`
-	Cron                 string `json:"cron"`
-	Timezone             string `json:"timezone"`
-	Enabled              bool   `json:"enabled"`
-	NextAt               int64  `json:"nextAt"`
-	NotifyConnectionID   string `json:"notifyConnectionId"`
-	NotifyConversationID string `json:"notifyConversationId"`
-	CreatedAt            int64  `json:"createdAt"`
+	Version              int64           `json:"version,omitempty"`
+	OnceAt               int64           `json:"onceAt,omitempty"`
+	OriginalNext         int64           `json:"originalNext,omitempty"`
+	Changes              []SeriesChange  `json:"changes,omitempty"`
+	Exceptions           []Exception     `json:"exceptions,omitempty"`
+	SessionID            string          `json:"sessionId,omitempty"`
+	ConversationOutput   bool            `json:"conversationOutput,omitempty"`
+	Capabilities         []CapabilityRef `json:"capabilities,omitempty"`
+	ExpertRequired       bool            `json:"expertRequired,omitempty"`
+	Condition            string          `json:"condition,omitempty"`
+	SourceScope          string          `json:"sourceScope,omitempty"`
+	Output               string          `json:"output,omitempty"`
+	PausedReason         string          `json:"pausedReason,omitempty"`
+	ID                   string          `json:"id"`
+	ProjectID            string          `json:"projectId"`
+	Name                 string          `json:"name"`
+	ExpertID             string          `json:"expertId"`
+	Instruction          string          `json:"instruction"`
+	Cron                 string          `json:"cron"`
+	Timezone             string          `json:"timezone"`
+	Enabled              bool            `json:"enabled"`
+	NextAt               int64           `json:"nextAt"`
+	NotifyConnectionID   string          `json:"notifyConnectionId"`
+	NotifyConversationID string          `json:"notifyConversationId"`
+	CreatedAt            int64           `json:"createdAt"`
 }
 type FileInfo struct {
 	Path       string `json:"path"`

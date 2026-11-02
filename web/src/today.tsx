@@ -55,7 +55,9 @@ export function TasksPanel({
   begin,
   notify,
   openTasks,
+  selectedId,
 }: {
+  selectedId?: string;
   projectId?: string;
   projects: Project[];
   begin?: (d: PreparedTask) => Promise<void>;
@@ -106,6 +108,7 @@ export function TasksPanel({
         };
       await begin(d);
     });
+  useEffect(()=>{if(selectedId) api("/tasks/"+selectedId).then(setEditing).catch(e=>notify(e.message))},[selectedId]);
   const sorted = [...tasks]
     .filter((t) => !compact || ["pending", "in_progress"].includes(t.state))
     .sort((a, b) => {
@@ -126,7 +129,7 @@ export function TasksPanel({
           className="wide"
           onClick={() =>
             setEditing({
-              projectId,
+              projectId:projectId||"personal-assistant",
               title: "",
               description: "",
               state: "pending",
@@ -153,7 +156,7 @@ export function TasksPanel({
       ) : (
         <article className="task-card" key={t.id}>
           <small>
-            {projects.find((p) => p.id === t.projectId)?.name} ·{" "}
+            {projects.find((p) => p.id === t.projectId)?.name||"个人"} ·{" "}
             {states[t.state]}
           </small>
           <button className="task-title" onClick={() => setEditing(t)}>
@@ -193,6 +196,7 @@ export function TasksPanel({
                 <X size={18} />
               </button>
             </header>
+            {!projectId&&!editing.id&&<label>归属<select value={editing.projectId} onChange={e=>setEditing({...editing,projectId:e.target.value})}><option value="personal-assistant">个人</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
             <label>
               标题
               <input
@@ -296,11 +300,11 @@ export function TasksPanel({
                   </button>
                   <button
                     onClick={() => {
-                      void start(editing as Task, true);
+                      void start(editing as Task);
                       setEditing(null);
                     }}
                   >
-                    另开对话
+                    执行待办
                   </button>
                   <button
                     className="danger"
@@ -501,6 +505,7 @@ export function Today({
   const send = async () => {
     if (!text.trim() || !data || busy) return;
     const body = text;
+    const taskId=sessionStorage.getItem("today.taskId")||undefined;sessionStorage.removeItem("today.taskId");
     setText("");
     setCapabilities([]);
     setBusy(true);
@@ -508,7 +513,7 @@ export function Today({
       await submissions.submit({
         eventId: crypto.randomUUID(),
         sessionId: data.sessionId,
-        text: body,
+        text: body,taskId,
         capabilities,
         attachments: [],
         references: [],

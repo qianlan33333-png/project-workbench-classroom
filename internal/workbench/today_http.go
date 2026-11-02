@@ -9,6 +9,7 @@ import (
 
 func (a *API) mountToday(g *gin.RouterGroup) {
 	s := a.Store
+	a.mountPlanner(g)
 	g.GET("/personal/understanding", func(c *gin.Context) { v, e := s.Understanding(); reply(c, v, e) })
 	g.POST("/personal/understanding/refresh", func(c *gin.Context) { reply(c, gin.H{"state": "pending"}, s.RequestUnderstanding()) })
 	g.GET("/personal/understanding/evidence", func(c *gin.Context) {
@@ -36,6 +37,11 @@ func (a *API) mountToday(g *gin.RouterGroup) {
 		bind(c, func(t ProjectTask) (any, error) {
 			t.ID = ""
 			t.ProjectID = c.Param("id")
+			if t.ProjectID == personalProjectID {
+				if _, e := s.PersonalSpace(); e != nil {
+					return nil, e
+				}
+			}
 			t.Source = ""
 			return s.SaveTask(t)
 		})
