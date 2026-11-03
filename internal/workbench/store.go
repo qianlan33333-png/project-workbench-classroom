@@ -22,6 +22,8 @@ type Store struct {
 	mu                 sync.Mutex
 	feishuCalendarID   string // Primary by default; a dedicated calendar can be used for integration tests.
 	calendarMu         sync.Mutex
+	calendarSyncMu     sync.Mutex
+	calendarWake       chan struct{}
 	calendarRunner     func(context.Context, CLITool, []string) ([]byte, error)
 	scheduleMu         sync.Mutex
 	stopScheduleRun    func(string) error
@@ -92,7 +94,7 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(schema + ingressQueueSchema + runLeaseSchema + todaySchema + plannerSchema + gatewaySchema + crmSchema); err != nil {
+	if _, err := db.Exec(schema + ingressQueueSchema + runLeaseSchema + todaySchema + plannerSchema + calendarSyncSchema + gatewaySchema + crmSchema); err != nil {
 		return nil, fmt.Errorf("数据库初始化: %w", err)
 	}
 	var version int
@@ -106,7 +108,7 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{crmGrants: grants, DB: db, Root: root, notify: make(chan struct{}, 1)}
+	s := &Store{crmGrants: grants, DB: db, Root: root, notify: make(chan struct{}, 1), calendarWake: make(chan struct{}, 1)}
 	if err := s.migratePausedHistory(); err != nil {
 		return nil, err
 	}

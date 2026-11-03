@@ -459,3 +459,5 @@
     justify-content: center;
   }
 }
+
+.cal-sync-state { margin-left: auto; font-size: 12px; color: var(--muted); }

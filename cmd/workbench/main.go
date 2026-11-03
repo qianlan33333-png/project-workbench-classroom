@@ -109,7 +109,13 @@ func run() error {
 	defer cancel()
 	api := &workbench.API{Store: store, Worker: worker, Config: c.Config, Shutdown: ctx.Done()}
 	api.Mount(app.Web.Router)
-	app.AddStartupHook(func() error { worker.Start(ctx); log.Info("项目工作台已启动"); return nil })
-	app.AddShutdownHook(func() error { cancel(); worker.Wait(); return nil })
+	calendarDone := make(chan struct{})
+	app.AddStartupHook(func() error {
+		worker.Start(ctx)
+		go func() { defer close(calendarDone); store.CalendarSyncLoop(ctx) }()
+		log.Info("项目工作台已启动")
+		return nil
+	})
+	app.AddShutdownHook(func() error { cancel(); worker.Wait(); <-calendarDone; return nil })
 	return app.RunWithGracefulShutdown()
 }

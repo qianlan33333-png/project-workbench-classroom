@@ -181,11 +181,10 @@ func TestReviewArchivedProjectCanCancelAndRemoteMovePersists(t *testing.T) {
 	}
 	remote := CalendarEvent{ID: newID(), Operation: newID(), Title: "飞书", Start: start, End: start + 3600000, Destination: "both", RemoteID: "moved", Version: 1, Sync: "ready"}
 	s.storeEvent(ctx, remote)
+	s.feishuCalendarID = "test-calendar"
 	fakeCalendar(t, s, func(args []string) ([]byte, error) {
-		if args[2] == "instance_view" {
-			return []byte(`{"ok":true,"data":{"items":[]}}`), nil
-		}
-		return eventReply(larkEvent{ID: "moved", Title: "飞书", Start: larkTime{Timestamp: "2001000000"}, End: larkTime{Timestamp: "2001003600"}}), nil
+		event := larkEvent{ID: "moved", Title: "飞书", Start: larkTime{Timestamp: "2001000000"}, End: larkTime{Timestamp: "2001003600"}}
+		return []byte(encode(map[string]any{"ok": true, "data": map[string]any{"items": []larkEvent{event}, "sync_token": "next"}})), nil
 	})
 	if _, e = s.calendarView(ctx, start-1, start+7200000, "", true); e != nil {
 		t.Fatal(e)

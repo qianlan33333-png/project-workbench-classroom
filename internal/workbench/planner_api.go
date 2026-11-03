@@ -49,6 +49,7 @@ func (s *Store) failure(id string) (Failure, error) {
 }
 func (a *API) mountPlanner(g *gin.RouterGroup) {
 	s := a.Store
+	g.POST("/calendar/sync", func(c *gin.Context) { s.RequestCalendarSync(); v, e := s.CalendarSyncStatus(); reply(c, v, e) })
 	g.GET("/planner/personal-space", func(c *gin.Context) { p, e := s.PersonalSpace(); reply(c, p, e) })
 	g.GET("/calendar", func(c *gin.Context) {
 		lo, _ := strconv.ParseInt(c.Query("start"), 10, 64)
@@ -198,7 +199,7 @@ func (s *Store) plannerTool(ctx context.Context, in RuntimeInput, tool string, r
 	}
 	switch tool {
 	case "query_calendar":
-		return s.calendarView(ctx, q.Start, q.End, scope, q.Remote == nil || *q.Remote)
+		return s.calendarView(ctx, q.Start, q.End, scope, q.Remote != nil && *q.Remote)
 	case "change_calendar":
 		if q.Action == "create" {
 			q.Event.ProjectID = scope

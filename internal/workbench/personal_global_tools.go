@@ -63,13 +63,18 @@ func (h *Harness) cleanupExternal(name string) {
 }
 
 type limitedOutput struct {
-	b       bytes.Buffer
-	clipped bool
+	b        bytes.Buffer
+	clipped  bool
+	maxBytes int
 }
 
 func (w *limitedOutput) Write(p []byte) (int, error) {
 	n := len(p)
-	left := 65536 - w.b.Len()
+	limit := w.maxBytes
+	if limit == 0 {
+		limit = 65536
+	}
+	left := limit - w.b.Len()
 	if len(p) > left {
 		p = p[:left]
 		w.clipped = true

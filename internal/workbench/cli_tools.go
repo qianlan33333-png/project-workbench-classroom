@@ -397,6 +397,9 @@ func (a *API) runToolJob(v CLITool, j ToolJob) {
 			}
 		}
 		_, _ = a.Store.DB.Exec("UPDATE cli_tools SET data=json_set(data,'$.authStatus',?,'$.authCheckedAt',?,'$.authExpiresAt',?,'$.authScopeCount',?) WHERE id=?", status, now(), expires, scopes, v.ID)
+		if v.ID == "lark" && status == "ready" {
+			a.Store.RequestCalendarSync()
+		}
 		if status != "ready" && e == nil {
 			e = errors.New("工具尚未登录或授权已失效，请完成登录")
 		}

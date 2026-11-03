@@ -31,6 +31,7 @@ const instant = (s: string) =>
   Date.parse(s + (s.length === 10 ? "T00:00" : "") + ":00+08:00");
 const weekStart = (n: number) => n - new Date(n + offset).getUTCDay() * day;
 const weekDays = ["日", "一", "二", "三", "四", "五", "六"];
+type SyncStatus = {lastSuccess:number;lastAttempt:number;syncing:boolean;paused:boolean;error?:string};
 type Item = {
   id: string;
   kind: string;
@@ -290,6 +291,7 @@ export function CalendarPage({
     [items, setItems] = useState<Item[]>([]),
     [detail, setDetail] = useState<Item | null>(null),
     [warning, setWarning] = useState(""),
+    [sync, setSync] = useState<SyncStatus|null>(null),
     [rev, bump] = useState(0),
     [loading, setLoading] = useState(false),
     [editAt, setEditAt] = useState(""),
@@ -321,35 +323,23 @@ export function CalendarPage({
     let ok = true;
     const abort = new AbortController();
     setLoading(true);
-    setWarning("");
-    setItems([]);
+    let latestRequest = 0;
     const read = async () => {
-      const path = "/calendar?start=" + lo + "&end=" + hi;
-      const local = await api<{ items: Item[] }>(
-        path,
-        undefined,
-        undefined,
-        abort.signal,
+      const request = ++latestRequest;
+      const local = await api<{ items: Item[]; providerError?: string; sync: SyncStatus }>(
+        "/calendar?start=" + lo + "&end=" + hi, undefined, undefined, abort.signal,
       );
-      if (!ok) return;
+      if (!ok || request !== latestRequest) return;
       setItems(local.items);
-      if (filter !== "AI 执行") {
-        const full = await api<{ items: Item[]; providerError?: string }>(
-          path + "&remote=1",
-          undefined,
-          undefined,
-          abort.signal,
-        );
-        if (ok) {
-          setItems(full.items);
-          setWarning(full.providerError || "");
-        }
-      }
+      setSync(local.sync);
+      setWarning(local.providerError || "");
     };
     void read()
       .catch((e) => ok && setWarning(e.message))
       .finally(() => ok && setLoading(false));
+    const timer=setInterval(()=>void read().catch(()=>{}),5000);
     return () => {
+      clearInterval(timer);
       ok = false;
       abort.abort();
     };
@@ -529,7 +519,8 @@ export function CalendarPage({
             </button>
           ))}
           <small>{loading ? "读取中…" : warning || "北京时间 GMT+8"}</small>
-          <button aria-label="刷新日历" onClick={() => bump((n) => n + 1)}>
+          <span role="status" className="cal-sync-state">{sync?.syncing ? "飞书同步中 · 已有日程仍可查看" : sync?.lastSuccess ? "飞书上次同步 "+stamp(sync.lastSuccess) : "飞书尚未完成首次同步"}{sync?.paused ? " · 同步暂停" : ""}</span>
+          <button aria-label="刷新日历" disabled={sync?.syncing} onClick={()=>act(async()=>{const status=await api<SyncStatus>("/calendar/sync",{});setSync(status);bump(n=>n+1)})}>
             <RefreshCw size={14} />
           </button>
         </div>

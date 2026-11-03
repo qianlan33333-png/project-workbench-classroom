@@ -38,7 +38,9 @@ func TestPlannerLiveFeishuCalendar(t *testing.T) {
 			if err = os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err = exec.Command("cp", "-a", src, dst).Run(); err != nil {
+			// Shared authorization uses the same refresh lock and state. Never
+			// clone refresh tokens into a divergent test credential store.
+			if err = os.Symlink(src, dst); err != nil {
 				t.Fatal(err)
 			}
 		}

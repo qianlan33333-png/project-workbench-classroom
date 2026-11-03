@@ -15,25 +15,27 @@ import (
 )
 
 type CalendarEvent struct {
-	SourceHint  string `json:"-"`
-	ID          string `json:"id"`
-	Operation   string `json:"operation,omitempty"`
-	Version     int64  `json:"version"`
-	ProjectID   string `json:"projectId,omitempty"`
-	Title       string `json:"title"`
-	Description string `json:"description,omitempty"`
-	Start       int64  `json:"start"`
-	End         int64  `json:"end"`
-	AllDay      bool   `json:"allDay,omitempty"`
-	Destination string `json:"destination"`
-	RemoteID    string `json:"remoteId,omitempty"`
-	Link        string `json:"link,omitempty"`
-	Sync        string `json:"sync,omitempty"`
-	Error       string `json:"error,omitempty"`
-	Pending     string `json:"pending,omitempty"`
-	Deleted     bool   `json:"deleted,omitempty"`
-	RemoteHash  string `json:"remoteHash,omitempty"`
-	BeforeHash  string `json:"beforeHash,omitempty"`
+	RemoteSource string `json:"remoteSource,omitempty"`
+	LocalWriteAt int64  `json:"localWriteAt,omitempty"`
+	SourceHint   string `json:"-"`
+	ID           string `json:"id"`
+	Operation    string `json:"operation,omitempty"`
+	Version      int64  `json:"version"`
+	ProjectID    string `json:"projectId,omitempty"`
+	Title        string `json:"title"`
+	Description  string `json:"description,omitempty"`
+	Start        int64  `json:"start"`
+	End          int64  `json:"end"`
+	AllDay       bool   `json:"allDay,omitempty"`
+	Destination  string `json:"destination"`
+	RemoteID     string `json:"remoteId,omitempty"`
+	Link         string `json:"link,omitempty"`
+	Sync         string `json:"sync,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Pending      string `json:"pending,omitempty"`
+	Deleted      bool   `json:"deleted,omitempty"`
+	RemoteHash   string `json:"remoteHash,omitempty"`
+	BeforeHash   string `json:"beforeHash,omitempty"`
 }
 type CalendarItem struct {
 	CalendarEvent
@@ -45,8 +47,9 @@ type CalendarItem struct {
 	OperationKey string `json:"operationKey,omitempty"`
 }
 type CalendarView struct {
-	Items         []CalendarItem `json:"items"`
-	ProviderError string         `json:"providerError,omitempty"`
+	Items         []CalendarItem     `json:"items"`
+	ProviderError string             `json:"providerError,omitempty"`
+	Sync          CalendarSyncStatus `json:"sync"`
 }
 type larkTime struct {
 	Date      string
@@ -62,6 +65,7 @@ type larkEvent struct {
 	End         larkTime `json:"end_time"`
 	Link        string   `json:"app_link"`
 	Status      string
+	Recurrence  string
 }
 
 var shanghaiCalendarZone, _ = time.LoadLocation("Asia/Shanghai")
@@ -103,6 +107,7 @@ func (h *Harness) calendarCommand(ctx context.Context, t CLITool, args []string)
 	cmd := exec.CommandContext(ctx, h.Config.Podman, argv...)
 	cmd.WaitDelay = 2 * time.Second
 	var output, diagnostic limitedOutput
+	output.maxBytes = 8 << 20
 	cmd.Stdout = &output
 	cmd.Stderr = &diagnostic
 	err = cmd.Run()
@@ -112,64 +117,65 @@ func (h *Harness) calendarCommand(ctx context.Context, t CLITool, args []string)
 	if err != nil && diagnostic.b.Len() > 0 {
 		err = fmt.Errorf("隔离飞书调用失败: %s", safeRuntimeError(diagnostic.b.String()))
 	}
+	if !json.Valid(output.b.Bytes()) && json.Valid(diagnostic.b.Bytes()) {
+		return diagnostic.b.Bytes(), err
+	}
 	return output.b.Bytes(), err
 }
 func remoteHash(v CalendarEvent) string {
 	return digest([]byte(encode([]any{v.Title, v.Description, v.Start / 1000, v.End / 1000, v.AllDay, v.Deleted})))
 }
 func (s *Store) calendarCLI(ctx context.Context, result any, args ...string) error {
+	return s.calendarCall(ctx, result, append([]string{"calendar", "events"}, args...)...)
+}
+func (s *Store) calendarCall(ctx context.Context, result any, args ...string) error {
 	t, e := s.CLITool("lark")
 	if e != nil || !t.Enabled || !t.Installed {
 		return calendarRejected{errors.New("飞书 CLI 未启用或未安装")}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 18*time.Second)
 	defer cancel()
-	argv := append([]string{"calendar", "events"}, args...)
-	argv = append(argv, "--as", "user", "--format", "json")
 	if s.calendarRunner == nil {
 		return calendarRejected{errors.New("日历隔离执行器不可用")}
 	}
-	data, e := s.calendarRunner(ctx, t, argv)
+	data, e := s.calendarRunner(ctx, t, append(args, "--as", "user", "--format", "json"))
 	var reply struct {
 		OK    bool
 		Data  json.RawMessage
-		Error struct{ Message string }
+		Error struct {
+			Message, Type, Subtype string
+			Code                   json.RawMessage
+		}
 	}
-	_ = json.Unmarshal(data, &reply)
-	if e != nil || !reply.OK {
+	decodeErr := json.Unmarshal(data, &reply)
+	if e != nil || !reply.OK || decodeErr != nil {
 		if ctx.Err() != nil {
-			return errors.New("飞书回执超时，请核对后重试")
+			return errors.New("飞书请求超时，下次同步会重试；已有日程仍保留")
 		}
 		if reply.Error.Message != "" {
-			return calendarRejected{errors.New(safeRuntimeError(reply.Error.Message))}
+			rawMessage := strings.ToLower(reply.Error.Message)
+			invalid := strings.Contains(rawMessage, "sync_token") || strings.Contains(rawMessage, "sync token") || strings.Contains(rawMessage, "page_token") || strings.Contains(rawMessage, "page token")
+			msg := safeRuntimeError(reply.Error.Message)
+			auth := !invalid && (reply.Error.Type == "authentication" || strings.Contains(reply.Error.Subtype, "token"))
+			if auth {
+				msg = "飞书用户授权已失效，请重新登录；已同步日程仍可查看"
+			}
+			if invalid {
+				msg = "飞书增量同步游标已失效"
+			}
+			return calendarAPIError{message: msg, auth: auth, invalidCursor: invalid}
 		}
-		return errors.New("飞书请求失败，请检查授权及日历编辑权限")
+		if e != nil {
+			return fmt.Errorf("飞书调用失败: %s", safeRuntimeError(e.Error()))
+		}
+		return errors.New("飞书返回格式异常；已同步日程仍保留")
 	}
-	if result != nil && len(reply.Data) > 0 {
+	if result != nil {
 		return json.Unmarshal(reply.Data, result)
 	}
 	return nil
 }
-func (s *Store) remoteEvents(ctx context.Context, lo, hi int64) ([]CalendarEvent, error) {
-	var result []CalendarEvent
-	for start := lo; start < hi; {
-		end := min(hi, start+7*24*3600000)
-		var page struct{ Items []larkEvent }
-		e := s.calendarCLI(ctx, &page, "instance_view", "--calendar-id", s.calendarID(), "--start-time", strconv.FormatInt(start/1000, 10), "--end-time", strconv.FormatInt((end+999)/1000, 10))
-		if e != nil {
-			return nil, e
-		}
-		for _, r := range page.Items {
-			v := r.event()
-			v.RemoteHash = remoteHash(v)
-			if !v.Deleted {
-				result = append(result, v)
-			}
-		}
-		start = end
-	}
-	return result, nil
-}
+
 func (s *Store) calendarRecord(id string) (CalendarEvent, error) {
 	return getJSON[CalendarEvent](s.DB, "SELECT data FROM calendar_events WHERE id=?", id)
 }
@@ -218,6 +224,15 @@ func (s *Store) changeEvent(ctx context.Context, intent string, v CalendarEvent,
 		if e != nil {
 			return CalendarEvent{}, e
 		}
+		if old.RemoteSource != "" {
+			status, err := s.CalendarSyncStatus()
+			if err != nil {
+				return old, err
+			}
+			if status.Source != "" && old.RemoteSource != status.Source {
+				return old, errors.New("此日程属于另一飞书账号，请切回原账号后操作")
+			}
+		}
 		if scope != "" && old.ProjectID != scope {
 			return CalendarEvent{}, ErrNotFound
 		}
@@ -236,6 +251,9 @@ func (s *Store) changeEvent(ctx context.Context, intent string, v CalendarEvent,
 			actual.ID, actual.ProjectID, actual.Operation, actual.Destination = old.ID, old.ProjectID, old.Operation, old.Destination
 			actual.Version = old.Version + 1
 			actual.RemoteHash = remoteHash(actual)
+			actual.LocalWriteAt = now()
+			actual.RemoteSource = old.RemoteSource
+			s.RequestCalendarSync()
 			return actual, s.storeEvent(ctx, actual)
 		}
 		if intent == "reconcile" {
@@ -275,7 +293,11 @@ func (s *Store) changeEvent(ctx context.Context, intent string, v CalendarEvent,
 					return old, err
 				}
 				actual := observed.Event.event()
-				if remoteHash(actual) != remoteHash(old) {
+				baseline := remoteHash(old)
+				if v.RemoteHash != "" {
+					baseline = v.RemoteHash
+				}
+				if remoteHash(actual) != baseline {
 					return old, ErrConflict
 				}
 				v.BeforeHash = remoteHash(actual)
@@ -318,6 +340,13 @@ func (s *Store) changeEvent(ctx context.Context, intent string, v CalendarEvent,
 		v.Sync = "ready"
 		return v, s.storeEvent(ctx, v)
 	}
+	v.LocalWriteAt = now()
+	status, err := s.CalendarSyncStatus()
+	if err != nil {
+		return v, err
+	}
+	v.RemoteSource = status.Source
+	defer s.RequestCalendarSync()
 	// Commit the desired state before crossing the network; a process crash leaves a recoverable intent.
 	v.Pending = intent
 	v.Sync = "pending"
@@ -380,106 +409,62 @@ func (s *Store) changeEvent(ctx context.Context, intent string, v CalendarEvent,
 	return v, s.storeEvent(context.Background(), v)
 }
 func (s *Store) calendarView(ctx context.Context, lo, hi int64, scope string, remote bool) (CalendarView, error) {
-	s.calendarMu.Lock()
-	defer s.calendarMu.Unlock()
-	view := CalendarView{Items: []CalendarItem{}}
 	if lo <= 0 || hi <= lo || hi-lo > 45*24*3600000 {
-		return view, errors.New("时间窗口须在 45 天以内")
+		return CalendarView{}, errors.New("时间窗口须在45天以内")
 	}
-	events, e := listJSON[CalendarEvent](s.DB, "SELECT data FROM calendar_events WHERE (?='' OR json_extract(data,'$.projectId')=?) AND json_extract(data,'$.start')<? AND json_extract(data,'$.end')>?", scope, scope, hi, lo)
+	if remote {
+		_ = s.SyncCalendar(ctx, true)
+	}
+	status, err := s.CalendarSyncStatus()
+	if err != nil {
+		return CalendarView{}, err
+	}
+	view := CalendarView{Items: []CalendarItem{}, Sync: status, ProviderError: status.Error}
+	if lo <= 0 || hi <= lo || hi-lo > 45*24*3600000 {
+		return view, errors.New("时间窗口须在45天以内")
+	}
+	byRemote, known, e := s.cachedCalendarEvents(ctx, status.Source, lo, hi)
 	if e != nil {
 		return view, e
 	}
-	byRemote := map[string]CalendarEvent{}
-	byID := map[string]CalendarEvent{}
+	events, e := listJSON[CalendarEvent](s.DB, "SELECT data FROM calendar_events WHERE (?='' OR json_extract(data,'$.projectId')=?) AND (coalesce(json_extract(data,'$.remoteId'),'')<>'' OR (json_extract(data,'$.start')<? AND json_extract(data,'$.end')>?))", scope, scope, hi, lo)
+	if e != nil {
+		return view, e
+	}
 	for _, v := range events {
+		if v.RemoteSource != "" && status.Source != "" && v.RemoteSource != status.Source {
+			continue
+		}
 		if v.RemoteID != "" {
-			byRemote[v.RemoteID] = v
-		}
-		if !v.Deleted {
-			byID[v.ID] = v
-		}
-	}
-	if remote {
-		rs, err := s.remoteEvents(ctx, lo, hi)
-		if err != nil {
-			view.ProviderError = err.Error()
-		} else {
-			found := map[string]bool{}
-			for _, v := range rs {
-				found[v.RemoteID] = true
-			}
-			for _, local := range byRemote {
-				if local.Sync != "ready" || found[local.RemoteID] {
-					continue
-				}
-				var obj struct{ Event larkEvent }
-				if err := s.calendarCLI(ctx, &obj, "get", "--calendar-id", s.calendarID(), "--event-id", local.RemoteID); err != nil {
-					view.ProviderError = err.Error()
-					continue
-				}
-				v := obj.Event.event()
-				v.ID, v.ProjectID, v.Operation, v.Destination = local.ID, local.ProjectID, local.Operation, local.Destination
-				v.Version = local.Version + 1
-				v.RemoteHash = remoteHash(v)
-				if err := s.storeEvent(ctx, v); err != nil {
-					return view, err
-				}
-				delete(byID, local.ID)
-				if !v.Deleted {
-					byID[v.ID] = v
-				}
-			}
-			for _, v := range rs {
-				local, ok := byRemote[v.RemoteID]
-				if !ok {
-					if pending, exists := byID[v.SourceHint]; exists && pending.Pending == "create" {
-						continue
-					}
-				}
-				if ok {
-					if local.Deleted || local.Pending != "" {
-						continue
-					}
-					v.SourceHint = ""
-					v.ID = local.ID
-					v.Version = local.Version
-					v.ProjectID = local.ProjectID
-					v.Operation = local.Operation
-					v.Destination = local.Destination
-					if v != local {
-						v.Version++
-						res, err := s.DB.ExecContext(ctx, "UPDATE calendar_events SET data=? WHERE id=? AND data=?", encode(v), local.ID, encode(local))
-						if err != nil {
-							return view, err
-						}
-						n, err := res.RowsAffected()
-						if err != nil {
-							return view, err
-						}
-						if n == 0 {
-							latest, err := s.calendarRecord(local.ID)
-							if err != nil {
-								return view, err
-							}
-							if latest.Deleted {
-								continue
-							}
-							v = latest
+			// Raw source data is authoritative once synced, except a pending or
+			// later local write that the snapshot could not have observed.
+			base, _ := splitEventID(v.RemoteID)
+			if known[v.RemoteID] || known[base+"_0"] {
+				if v.Pending == "" && v.LocalWriteAt <= status.SnapshotAt {
+					if actual, ok := byRemote[v.RemoteID]; ok {
+						actual.ID, actual.ProjectID, actual.Operation, actual.Destination = v.ID, v.ProjectID, v.Operation, v.Destination
+						actual.Version = v.Version
+						if scope != "" {
+							view.Items = append(view.Items, CalendarItem{CalendarEvent: actual, Kind: "event"})
+							delete(byRemote, v.RemoteID)
+						} else {
+							byRemote[v.RemoteID] = actual
 						}
 					}
-				} else if scope != "" {
 					continue
-				} else {
-					v.ID = "fs:" + v.RemoteID
 				}
-				byID[v.ID] = v
 			}
+			delete(byRemote, v.RemoteID)
 		}
-	}
-	for _, v := range byID {
-		if v.Start < hi && v.End > lo {
+		if !v.Deleted && v.Start < hi && v.End > lo {
 			view.Items = append(view.Items, CalendarItem{CalendarEvent: v, Kind: "event"})
+		}
+	}
+	if scope == "" {
+		for _, v := range byRemote {
+			if !v.Deleted && v.Start < hi && v.End > lo {
+				view.Items = append(view.Items, CalendarItem{CalendarEvent: v, Kind: "event"})
+			}
 		}
 	}
 	ts, e := s.Tasks(scope)
