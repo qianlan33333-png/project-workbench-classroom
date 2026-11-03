@@ -89,7 +89,7 @@ const plannerTools=[
       notifySource: z.boolean().default(false),
     },
   ],
- ["query_calendar","按起止 Unix 毫秒查询日程、待办和 AI 实例。remote=true 包含飞书。项目入口仅返回所属资料。",{start:z.number().int(),end:z.number().int(),remote:z.boolean().optional(),projectId:z.string().optional()}],
+ ["query_calendar","按起止 Unix 毫秒读取云端日程缓存、待办和 AI 实例，默认已包含同步的飞书日程。日常查询省略remote；仅用户明确要求立即同步时传remote=true。项目入口仅返回所属资料。",{start:z.number().int(),end:z.number().int(),remote:z.boolean().optional(),projectId:z.string().optional()}],
  ["change_calendar","根据明确请求创建、修改、取消或核对日程。创建需指定目的地，编辑传回所查完整事件和 version。起止为 Unix 毫秒，end 不含。",{action:z.enum(["create","edit","delete","reconcile"]),projectId:z.string().optional(),event:z.object({id:z.string().optional(),version:z.number().int().optional(),title:z.string().optional(),description:z.string().optional(),start:z.number().int().optional(),end:z.number().int().optional(),allDay:z.boolean().optional(),destination:z.enum(["cloud","feishu","both"]).optional(),operation:z.string().optional()})}],
  ["update_occurrence","按 query_calendar 的 original 与 version 改这一次，传 at 或 skip。",timeChange],
  ["update_series","从 original 起使用新 cron，保留历史；影响例外时先核对。",timeChange],
