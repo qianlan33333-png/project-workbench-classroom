@@ -1,7 +1,11 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Overlay, useNarrow } from "./surface-ui";
 import { positionPopover } from "./popover-position";
 import {
-  Sun, CalendarDays, ListChecks,
+  Sun,
+  CalendarDays,
+  ListChecks,
+  Bell,
   Folder,
   Library,
   Settings,
@@ -17,6 +21,8 @@ export function NavigationRail({
   collapsed,
   toggle,
   mobileOpen,
+  closeMobile,
+  unread,
   page,
   projects,
   projectId,
@@ -28,6 +34,8 @@ export function NavigationRail({
   collapsed: boolean;
   toggle: () => void;
   mobileOpen: boolean;
+  closeMobile: () => void;
+  unread: number;
   page: string;
   projects: Project[];
   projectId: string;
@@ -36,6 +44,7 @@ export function NavigationRail({
   newProject: () => void;
   logout: () => void;
 }) {
+  const narrow = useNarrow();
   const [projectTip, setProjectTip] = useState<{
     id: string;
     anchor: HTMLButtonElement;
@@ -50,14 +59,19 @@ export function NavigationRail({
     }
     if (!tip.current.matches(":popover-open")) tip.current.showPopover();
     positionPopover(tip.current, projectTip.anchor, {
-      side: "right", gap: 8, maxWidth: 320,
+      side: "right",
+      gap: 8,
+      maxWidth: 320,
     });
   });
   useEffect(() => {
     if (!projectTip) return;
     const close = () => setProjectTip(null);
     const scroll = (event: Event) => {
-      if (event.target instanceof Node && event.target.contains(projectTip.anchor))
+      if (
+        event.target instanceof Node &&
+        event.target.contains(projectTip.anchor)
+      )
         close();
     };
     document.addEventListener("scroll", scroll, true);
@@ -71,9 +85,9 @@ export function NavigationRail({
       window.visualViewport?.removeEventListener("scroll", close);
     };
   }, [projectTip]);
-  return (
+  const rail = (
     <aside
-      className={`rail ${collapsed ? "collapsed" : "expanded"} ${mobileOpen ? "open" : ""}`}
+      className={`rail ${collapsed && !narrow ? "collapsed" : "expanded"} ${mobileOpen ? "open" : ""}`}
       aria-label="全局导航"
     >
       <div className="rail-brand">
@@ -83,9 +97,7 @@ export function NavigationRail({
           aria-label="项目工作台首页"
         >
           <span className="brand-mark">工</span>
-          <span className="brand-copy">
-            项目工作台<small>让工作持续发生</small>
-          </span>
+          <span className="brand-copy">项目工作台</span>
         </button>
         <button
           className="rail-toggle icon"
@@ -108,7 +120,6 @@ export function NavigationRail({
           { id: "tasks", text: "任务", Icon: ListChecks },
           { id: "projects", text: "项目", Icon: Folder },
           { id: "experts", text: "专家库", Icon: Library },
-
         ].map(({ id, text, Icon }) => (
           <button
             key={id}
@@ -117,7 +128,9 @@ export function NavigationRail({
               (
                 id === "projects"
                   ? page.startsWith("project")
-                  : page.startsWith(id)
+                  : id === "experts"
+                    ? page.startsWith("expert")
+                    : page.startsWith(id)
               )
                 ? "active"
                 : ""
@@ -129,42 +142,45 @@ export function NavigationRail({
           </button>
         ))}
       </nav>
-      <div className="rail-title">
-        <span>工作区</span>
-        <button title="新建项目" aria-label="新建项目" onClick={newProject}>
-          <Plus size={17} />
-        </button>
-      </div>
-      <div className="project-links">
-        {projects
-          .filter((p) => !p.archived)
-          .map((p) => (
-            <button
-              key={p.id}
-              title={p.name}
-              aria-label={p.name}
-              onFocus={(e) => {
-                setProjectTip({ id: p.id, anchor: e.currentTarget });
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setProjectTip(null);
+      <details className="rail-projects">
+        <summary>最近项目</summary>
+        <div className="rail-title">
+          <span>工作区</span>
+          <button title="新建项目" aria-label="新建项目" onClick={newProject}>
+            <Plus size={17} />
+          </button>
+        </div>
+        <div className="project-links">
+          {projects
+            .filter((p) => !p.archived)
+            .map((p) => (
+              <button
+                key={p.id}
+                title={p.name}
+                aria-label={p.name}
+                onFocus={(e) => {
+                  setProjectTip({ id: p.id, anchor: e.currentTarget });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setProjectTip(null);
+                  }
+                }}
+                onBlur={() => setProjectTip(null)}
+                aria-current={
+                  page === "project" && p.id === projectId ? "page" : undefined
                 }
-              }}
-              onBlur={() => setProjectTip(null)}
-              aria-current={
-                page === "project" && p.id === projectId ? "page" : undefined
-              }
-              className={
-                page === "project" && p.id === projectId ? "chosen" : ""
-              }
-              onClick={() => openProject(p)}
-            >
-              <span>{p.name}</span>
-            </button>
-          ))}
-      </div>
+                className={
+                  page === "project" && p.id === projectId ? "chosen" : ""
+                }
+                onClick={() => openProject(p)}
+              >
+                <span>{p.name}</span>
+              </button>
+            ))}
+        </div>
+      </details>
       {projectTip && tipName && (
         <div
           ref={tip}
@@ -176,45 +192,69 @@ export function NavigationRail({
         </div>
       )}
       <div className="rail-bottom">
-        <button aria-label="设置" title="设置" className={page==="settings"?"active":""} onClick={()=>navigate("settings")}><Settings size={18}/><span>设置</span></button>
+        <button
+          className={`notice-bell ${page === "notices" ? "active" : ""}`}
+          aria-label={`站内信，${unread}条未读`}
+          title="站内信"
+          onClick={() => navigate("notices")}
+        >
+          <Bell size={18} />
+          <span>站内信</span>
+          {unread > 0 && <b>{unread}</b>}
+        </button>
+        <button
+          aria-label="设置"
+          title="设置"
+          className={page === "settings" ? "active" : ""}
+          onClick={() => navigate("settings")}
+        >
+          <Settings size={18} />
+          <span>设置</span>
+        </button>
         <button aria-label="退出登录" title="退出登录" onClick={logout}>
           <LogOut size={17} />
-          <span className="compact-label">退出</span>
+          <span>退出</span>
         </button>
       </div>
     </aside>
+  );
+  return narrow ? (
+    <Overlay
+      open={mobileOpen}
+      title="导航"
+      close={closeMobile}
+      mode="drawer"
+      className="mobile-nav-panel"
+    >
+      {rail}
+    </Overlay>
+  ) : (
+    rail
   );
 }
 export function ProjectSidebar({
   children,
   open,
   close,
+  title = "资料",
 }: {
   children: React.ReactNode;
   open: boolean;
   close: () => void;
+  title?: string;
 }) {
+  const narrow = useNarrow(1099);
   return (
-    <>
-      <button
-        className={`project-shade ${open ? "visible" : ""}`}
-        aria-label="关闭项目侧栏"
-        onClick={close}
-      />
-      <aside
-        className={`project-panel ${open ? "open" : ""}`}
-        aria-label="项目侧栏"
-      >
-        <button
-          className="mobile-only drawer-close icon"
-          onClick={close}
-          aria-label="关闭项目侧栏"
-        >
-          <X size={18} />
-        </button>
-        {children}
-      </aside>
-    </>
+    <Overlay
+      open={open}
+      title={title}
+      close={close}
+      mode="drawer"
+      modal={narrow}
+      className="project-panel"
+    >
+      <div className="project-panel-body">{children}</div>
+    </Overlay>
   );
 }
 export function ConversationPane({ children }: { children: React.ReactNode }) {
@@ -240,12 +280,7 @@ export function InspectorPane({
   useEffect(() => {
     const parent = pane.current?.parentElement;
     if (!parent) return;
-    const update = () =>
-      setAvailable(
-        parent.clientWidth -
-          (parent.querySelector(".project-panel")?.getBoundingClientRect()
-            .width || 0),
-      );
+    const update = () => setAvailable(parent.clientWidth);
     const observer = new ResizeObserver(update);
     observer.observe(parent);
     const sidebar = parent.querySelector(".project-panel");
@@ -308,7 +343,8 @@ export function InspectorPane({
         }}
       />
       <button className="inspector-back" onClick={close}>
-        ← 返回对话
+        <X size={16} />
+        关闭文档
       </button>
       {children}
     </section>

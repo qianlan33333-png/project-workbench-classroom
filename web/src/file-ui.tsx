@@ -1,3 +1,4 @@
+import { Overlay } from "./surface-ui";
 import React, { useEffect, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
@@ -244,47 +245,48 @@ export function useUnsavedChanges(dirty: boolean, save: () => Promise<void>) {
           setPrompt(true);
         });
   const dialog = prompt ? (
-    <div className="modal-backdrop" role="presentation">
-      <section
-        className="modal unsaved-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-label="未保存的修改"
-      >
-        <h2>保留这次修改？</h2>
-        <p>当前内容尚未保存，请选择如何处理。</p>
-        {error && (
-          <p role="alert" className="error">
-            {error}
-          </p>
-        )}
-        <div className="dialog-actions">
-          <button disabled={saving} onClick={() => finish(false)}>
-            取消
-          </button>
-          <button disabled={saving} onClick={() => finish(true)}>
-            放弃修改
-          </button>
-          <button
-            className="primary"
-            disabled={saving}
-            onClick={async () => {
-              setSaving(true);
-              try {
-                await save();
-                finish(true);
-              } catch (e) {
-                setError((e as Error).message);
-              } finally {
-                setSaving(false);
-              }
-            }}
-          >
-            {saving ? "保存中…" : "保存并继续"}
-          </button>
-        </div>
-      </section>
-    </div>
+    <Overlay
+      title="未保存的修改"
+      alert
+      close={() => {
+        if (!saving) finish(false);
+      }}
+      busy={saving}
+      className="modal unsaved-dialog"
+    >
+      {" "}
+      <p>当前内容尚未保存，请选择如何处理。</p>
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      <div className="dialog-actions">
+        <button disabled={saving} onClick={() => finish(false)}>
+          取消
+        </button>
+        <button disabled={saving} onClick={() => finish(true)}>
+          放弃修改
+        </button>
+        <button
+          className="primary"
+          disabled={saving}
+          onClick={async () => {
+            setSaving(true);
+            try {
+              await save();
+              finish(true);
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setSaving(false);
+            }
+          }}
+        >
+          {saving ? "保存中…" : "保存并继续"}
+        </button>
+      </div>
+    </Overlay>
   ) : null;
   return { guard, dialog };
 }

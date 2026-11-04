@@ -223,7 +223,7 @@ export function CapabilityComposer({
         placeholder={
           personal
             ? "发消息，或添加文件"
-            : "描述任务，输入 / 选择 CLI、Skill 或 MCP…"
+            : "继续提问，或补充资料…"
         }
         value={value}
         onPaste={onPaste}

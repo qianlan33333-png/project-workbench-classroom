@@ -1,3 +1,4 @@
+import { useSurfaceGuard } from "./surface-ui";
 import { useEffect, useState } from "react";
 import { api, type Session } from "./api";
 export function RecycleBin({ notify }: { notify: (s: string) => void }) {
@@ -87,6 +88,7 @@ export function GlobalTools({ notify }: { notify: (s: string) => void }) {
     const t = setInterval(load, 2500);
     return () => clearInterval(t);
   }, []);
+  useSurfaceGuard(!!draft, "放弃尚未保存的 CLI 配置？");
   const start = async (id: string, action: string) => {
     try {
       const job = await api(`/cli-tools/${id}/${action}`, {});
@@ -126,10 +128,7 @@ export function GlobalTools({ notify }: { notify: (s: string) => void }) {
           添加 CLI
         </button>
       </h3>
-      <p>
-        安装和登录一次，所有项目均可调用。CLI 与 MCP
-        的业务输出仍保存在当前项目。
-      </p>
+      <p>全局启用后，所有项目可调用。</p>
       {error && <p role="alert">{error}</p>}
       {draft && (
         <div className="tool-form">

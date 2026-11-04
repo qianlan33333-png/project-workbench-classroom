@@ -36,8 +36,8 @@ export function ActionMenu({
   const [open, setOpen] = useState(false);
   const items = () =>
     Array.from(
-      menu.current?.querySelectorAll<HTMLButtonElement>(
-        'button[role="menuitem"]:not(:disabled)',
+      menu.current?.querySelectorAll<HTMLElement>(
+        'button[role="menuitem"]:not(:disabled),a[role="menuitem"][href]',
       ) ?? [],
     );
   const close = () => {
@@ -152,9 +152,11 @@ export function ActionMenu({
           });
         }}
         onClickCapture={(event) => {
-          const button = (event.target as Element).closest("button");
+          const item = (event.target as Element).closest<HTMLElement>(
+            'button[role="menuitem"],a[role="menuitem"]',
+          );
           // Close before the existing action opens a dialog or starts a request.
-          if (button && !button.disabled) close();
+          if (item && !item.matches(":disabled")) close();
         }}
         onKeyDown={(event) => {
           if (event.key === "Escape" || event.key === "Tab") {
@@ -169,7 +171,7 @@ export function ActionMenu({
           const enabled = items();
           if (!enabled.length) return;
           const current = enabled.indexOf(
-            document.activeElement as HTMLButtonElement,
+            document.activeElement as HTMLElement,
           );
           let next: number;
           if (event.key === "ArrowDown") next = (current + 1) % enabled.length;

@@ -1,7 +1,10 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  Bell,Folder,
+  Bell,
+  Folder,
+  MoreHorizontal,
+  SlidersHorizontal,
   Plus,
   ArrowUp,
   Settings,
@@ -26,6 +29,16 @@ import {
   Pencil,
   Pin,
 } from "lucide-react";
+import {
+  PageHeader,
+  Overlay,
+  EmptyState,
+  plainPreview,
+  confirmSurfaceNavigation,
+  useSurfaceGuard,
+  useNarrow,
+} from "./surface-ui";
+import { ActionMenu } from "./action-menu";
 import { zipSync } from "fflate";
 import {
   api,
@@ -51,16 +64,22 @@ import { RichText, FileContent, useUnsavedChanges } from "./file-ui";
 import { ProjectFiles } from "./project-files";
 import { ExpertDetail } from "./expert-detail";
 import { useMessageSubmissions } from "./message-submissions";
-import { mergeRuns, mergeSessions, mergeEvents, initialSessionTitle } from "./chat-state";
+import {
+  mergeRuns,
+  mergeSessions,
+  mergeEvents,
+  initialSessionTitle,
+} from "./chat-state";
 import { RecycleBin, GlobalTools } from "./lifecycle-ui";
 import { SessionMenu } from "./session-menu";
 import { CapabilityComposer, CapabilityBadges } from "./capability-composer";
 import { Today, TasksPanel, ContextSettings, type PreparedTask } from "./today";
 import { GatewayProjectSettings, GatewayResume } from "./gateway-project";
 import "./style.css";
-import {CalendarPage,personal} from "./planner";
-import {TaskCenter,NoticePage} from "./planner-tasks";
+import { CalendarPage, personal } from "./planner";
+import { TaskCenter, NoticePage } from "./planner-tasks";
 import "./planner.css";
+import "./suite.css";
 
 type Field = {
   key: string;
@@ -87,7 +106,9 @@ function App() {
         ? "expert-detail"
         : initialLocation.get("project")
           ? "project"
-          : ["today","tasks","calendar","notices","settings"].includes(initialLocation.get("page")||"")
+          : ["today", "tasks", "calendar", "notices", "settings"].includes(
+                initialLocation.get("page") || "",
+              )
             ? initialLocation.get("page")!
             : "projects",
     ),
@@ -102,12 +123,71 @@ function App() {
     [files, setFiles] = useState<FileEntry[]>([]),
     [events, setEvents] = useState<WorkEvent[]>([]),
     [interactions, setInteractions] = useState<any[]>([]);
-  const historyGuard = useRef<()=>Promise<boolean>>(async()=>true);
-  const [pageParams,setPageParams]=useState(initialLocation),[unread,setUnread]=useState(0);
-  const badge=useCallback(()=>{void api("/notices/count").then(v=>setUnread(v.unread)).catch(()=>{})},[]);
-  useEffect(()=>{if(!auth)return;badge();const timer=setInterval(badge,10000);return()=>clearInterval(timer)},[auth,badge]);
-  useEffect(()=>{const pop=async()=>{if(!(await historyGuard.current())){history.forward();return}const q=new URLSearchParams(location.hash.slice(1));setPageParams(q);const p=q.get("page");if(p&&["tasks","notices","calendar","today","settings"].includes(p))setPage(p);else if(q.has("project")){setProjectId(q.get("project")||"");setSessionId(q.get("session")||"");setPage("project")}else if(q.has("expert")){setExpertId(q.get("expert")||"");setPage("expert-detail")}else setPage("projects")};window.addEventListener("hashchange",pop);window.addEventListener("popstate",pop);return()=>{window.removeEventListener("hashchange",pop);window.removeEventListener("popstate",pop)}},[]);
-  const plannerNav=(name:string,params:Record<string,string>={})=>{const q=new URLSearchParams({page:name,...params});history.pushState(null,"","#"+q);setPageParams(q);setPage(name);setMobileNav(false)};
+  const historyGuard = useRef<() => Promise<boolean>>(async () => true);
+  const renderedLocation = useRef(location.href);
+  const [pageParams, setPageParams] = useState(initialLocation),
+    [unread, setUnread] = useState(0);
+  const badge = useCallback(() => {
+    void api("/notices/count")
+      .then((v) => setUnread(v.unread))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!auth) return;
+    badge();
+    const timer = setInterval(badge, 10000);
+    return () => clearInterval(timer);
+  }, [auth, badge]);
+  useEffect(() => {
+    const pop = async () => {
+      if (location.href === renderedLocation.current) return;
+      if (!(await historyGuard.current())) {
+        history.forward();
+        return;
+      }
+      const q = new URLSearchParams(location.hash.slice(1));
+      setPageParams(q);
+      const p = q.get("page");
+      if (
+        p &&
+        ["tasks", "notices", "calendar", "today", "settings"].includes(p)
+      )
+        setPage(p);
+      else if (q.has("project")) {
+        setProjectId(q.get("project") || "");
+        setSessionId(q.get("session") || "");
+        setPage("project");
+      } else if (q.has("expert")) {
+        setExpertId(q.get("expert") || "");
+        setPage("expert-detail");
+      } else setPage("projects");
+    };
+    window.addEventListener("popstate", pop);
+    return () => {
+      window.removeEventListener("popstate", pop);
+    };
+  }, []);
+  const plannerNav = (
+    name: string,
+    params: Record<string, string> = {},
+    guarded = true,
+  ) => {
+    void (async () => {
+      try {
+        if (guarded && !(await historyGuard.current())) return;
+        const q = new URLSearchParams({ page: name, ...params });
+        history.pushState(null, "", "#" + q);
+        setPageParams(q);
+        setPage(name);
+        setMobileNav(false);
+      } catch (e) {
+        notify((e as Error).message);
+      }
+    })();
+  };
+  const expertDirectoryInput = useRef<HTMLInputElement>(null),
+    expertZipInput = useRef<HTMLInputElement>(null);
+  const [expertSearch, setExpertSearch] = useState("");
   const [toast, setToast] = useState(""),
     [dialog, setDialog] = useState<Dialog | null>(null),
     [busy, setBusy] = useState(false),
@@ -124,7 +204,7 @@ function App() {
     [preview, setPreview] = useState(false),
     [tab, setTab] = useState("sessions"),
     [railCollapsed, setRailCollapsed] = useState(
-      () => localStorage.getItem("pwb.railCollapsed") !== "false",
+      () => localStorage.getItem("pwb.railCollapsed") === "true",
     ),
     [projectPanelOpen, setProjectPanelOpen] = useState(false),
     [mobileNav, setMobileNav] = useState(false),
@@ -395,15 +475,18 @@ function App() {
           }).toString()
         : page === "expert-detail"
           ? new URLSearchParams({ expert: expertId }).toString()
-          : ["tasks","notices","calendar","today","settings"].includes(page)
-            ? (pageParams.get("page")===page?pageParams.toString():"page="+page)
+          : ["tasks", "notices", "calendar", "today", "settings"].includes(page)
+            ? pageParams.get("page") === page
+              ? pageParams.toString()
+              : "page=" + page
             : "";
     history.replaceState(
       null,
       "",
       location.pathname + location.search + (hash ? "#" + hash : ""),
     );
-  }, [page, projectId, sessionId, expertId,pageParams]);
+    renderedLocation.current = location.href;
+  }, [page, projectId, sessionId, expertId, pageParams]);
   const saveDocument = async () => {
     if (!filePath || content === saved) return;
     if (locked) throw new Error("任务正在写入，请等待任务结束或停止后再保存。");
@@ -421,17 +504,25 @@ function App() {
     !!filePath && content !== saved,
     saveDocument,
   );
-  const canLeave = async () =>
-    page === "expert-detail"
+  const canLeave = async () => {
+    if (!(await confirmSurfaceNavigation())) return false;
+    return page === "expert-detail"
       ? await (expertGuard.current?.() ?? Promise.resolve(true))
       : await documentGuard();
-  historyGuard.current = async()=>{if(!(await canLeave()))return false;await flushTaskDraft();return true};
+  };
+  historyGuard.current = async () => {
+    if (!(await canLeave())) return false;
+    await flushTaskDraft();
+    return true;
+  };
   const navigate = async (next: string) => {
     if (!(await canLeave())) return;
     fileRequest.current++;
     await flushTaskDraft();
     composerDrafts.current.set(sessionRef.current, composerCurrent.current);
-    if(["tasks","notices","calendar","today","settings"].includes(next))plannerNav(next);else setPage(next);
+    if (["tasks", "notices", "calendar", "today", "settings"].includes(next))
+      plannerNav(next, {}, false);
+    else setPage(next);
     setMobileNav(false);
     if (next !== "project") {
       setFilePath("");
@@ -450,7 +541,11 @@ function App() {
     setContent("");
     setSaved("");
   };
-  const openProject = async (p: Project, targetSession?: string, initialTab: "tasks" | "sessions"="sessions") => {
+  const openProject = async (
+    p: Project,
+    targetSession?: string,
+    initialTab: "tasks" | "sessions" = "sessions",
+  ) => {
     if (!(await canLeave())) return;
     await flushTaskDraft();
     setReferences([]);
@@ -474,7 +569,7 @@ function App() {
     setSaved("");
     setPage("project");
     setTab(initialTab);
-    setProjectPanelOpen(initialTab === "tasks" && window.innerWidth < 768);
+    setProjectPanelOpen(initialTab === "tasks");
     setMobileNav(false);
   };
   const closeDocument = async () => {
@@ -485,6 +580,17 @@ function App() {
     setSaved("");
     setDetailView(null);
     setRunDetails("");
+  };
+  const openContextPanel = async (next: string) => {
+    if (!(await canLeave())) return;
+    fileRequest.current++;
+    setFilePath("");
+    setContent("");
+    setSaved("");
+    setDetailView(null);
+    setRunDetails("");
+    setTab(next);
+    setProjectPanelOpen(true);
   };
   const openFile = async (path: string) => {
     if (!(await documentGuard())) return;
@@ -560,7 +666,7 @@ function App() {
   const newProject = () =>
     setDialog({
       title: "新建项目",
-      description: "从一个空白工作区开始，资料和对话都留在这里。",
+
       fields: [
         { key: "name", label: "项目名称", required: true },
         {
@@ -708,7 +814,7 @@ function App() {
   };
   const send = () => {
     if (
-      !text.trim() ||
+      (!text.trim() && !attachments.length && !references.length) ||
       !sessionId ||
       session?.lifecycle ||
       busy ||
@@ -808,7 +914,9 @@ function App() {
       ),
     });
   };
-  const openLinkedSettings = useRef(new URLSearchParams(location.search).get("settings") === "auto-reply");
+  const openLinkedSettings = useRef(
+    new URLSearchParams(location.search).get("settings") === "auto-reply",
+  );
   const configureProject = (showGateway = false) =>
     project &&
     setDialog({
@@ -816,7 +924,11 @@ function App() {
       content: (
         <>
           <ProjectMetadata project={project} onSave={refresh} notify={notify} />
-          <GatewayProjectSettings project={project} experts={experts} expanded={showGateway} />
+          <GatewayProjectSettings
+            project={project}
+            experts={experts}
+            expanded={showGateway}
+          />
           <ContextSettings
             project={project}
             notify={notify}
@@ -826,7 +938,12 @@ function App() {
       ),
     });
   useEffect(() => {
-    if (auth && project && openLinkedSettings.current && project.id === initialLocation.get("project")) {
+    if (
+      auth &&
+      project &&
+      openLinkedSettings.current &&
+      project.id === initialLocation.get("project")
+    ) {
       openLinkedSettings.current = false;
       configureProject(true);
     }
@@ -872,22 +989,37 @@ function App() {
       .catch(() => {});
   }, [projectId, sessionId]);
   const beginTask = async (d: PreparedTask) => {
-    if(d.task.projectId===personal){
-      let existing:{text:string,taskId?:string}={text:localStorage.getItem("pwb.personalDraft")||""};
-      try {existing=JSON.parse(localStorage.getItem("pwb.personalComposer")||"null")||existing}catch{}
-      const draft=existing.text;
-      let next=d.text;
-      if(draft.trim()){
-        if(existing.taskId && existing.taskId!==d.task.id){
-          if(!window.confirm("已有另一条待办草稿。替换为本次待办？取消将保留原草稿。"))return;
-        }else{
-          if(!window.confirm("今天已有草稿。将待办追加到草稿末尾？"))return;
-          next=draft+"\n\n"+d.text;
+    if (d.task.projectId === personal) {
+      let existing: { text: string; taskId?: string } = {
+        text: localStorage.getItem("pwb.personalDraft") || "",
+      };
+      try {
+        existing =
+          JSON.parse(localStorage.getItem("pwb.personalComposer") || "null") ||
+          existing;
+      } catch {}
+      const draft = existing.text;
+      let next = d.text;
+      if (draft.trim()) {
+        if (existing.taskId && existing.taskId !== d.task.id) {
+          if (
+            !window.confirm(
+              "已有另一条待办草稿。替换为本次待办？取消将保留原草稿。",
+            )
+          )
+            return;
+        } else {
+          if (!window.confirm("今天已有草稿。将待办追加到草稿末尾？")) return;
+          next = draft + "\n\n" + d.text;
         }
       }
-      localStorage.setItem("pwb.personalDraft",next);
-      localStorage.setItem("pwb.personalComposer",JSON.stringify({text:next,taskId:d.task.id}));
-      await navigate("today");return;
+      localStorage.setItem("pwb.personalDraft", next);
+      localStorage.setItem(
+        "pwb.personalComposer",
+        JSON.stringify({ text: next, taskId: d.task.id }),
+      );
+      await navigate("today");
+      return;
     }
     const p = projects.find((p) => p.id === d.task.projectId);
     if (!p) return;
@@ -945,7 +1077,9 @@ function App() {
       </>
     );
   return (
-    <div className={`app ${page === "today" ? "today-app" : ""}`}>
+    <div
+      className={`app suite-app ${page === "today" ? "today-app" : ""} ${page === "project" ? "project-app" : ""}`}
+    >
       <NavigationRail
         collapsed={railCollapsed}
         toggle={() => {
@@ -954,6 +1088,8 @@ function App() {
           localStorage.setItem("pwb.railCollapsed", String(next));
         }}
         mobileOpen={mobileNav}
+        closeMobile={() => setMobileNav(false)}
+        unread={unread}
         page={page}
         projects={projects}
         projectId={projectId}
@@ -972,10 +1108,7 @@ function App() {
         }
       />
       <main>
-        <header
-          className="topbar"
-
-        >
+        <header className="topbar">
           <button
             className="mobile-only icon"
             aria-label="打开导航"
@@ -983,59 +1116,71 @@ function App() {
           >
             <Menu size={20} />
           </button>
-          <div className="crumb">
-            工作台 <ChevronRight size={14} />
-            <span>
-              {page === "project"
-                ? project?.name
-                : page === "today"
-                  ? "今天"
-                  : page === "projects"
-                    ? "项目"
-                    : page.startsWith("expert")
-                      ? "专家库"
-                      : ({tasks:"任务",calendar:"日历",notices:"站内信"} as Record<string,string>)[page]||"设置"}
-            </span>
-          </div>
-          <button className="notice-bell" aria-label={"站内信，"+unread+"条未读"} onClick={()=>void navigate("notices")}><Bell size={17}/>{unread>0&&<b>{unread}</b>}</button>
-          <span className="top-status">
-            {runs.some((r) => ["running", "waiting"].includes(r.state)) ? (
-              <>
-                <span className="pulse" />
-                任务进行中
-              </>
-            ) : (
-              <>
-                <span className="online-dot" />
-                已连接
-              </>
-            )}
-          </span>
         </header>
-        {page==="calendar"&&<CalendarPage projects={projects} notify={notify} openProject={id=>{const p=projects.find(v=>v.id===id);if(p){history.pushState(null,"","#project="+encodeURIComponent(id));void openProject(p)}}} openTask={id=>plannerNav("tasks",{task:id})} openRule={id=>plannerNav("tasks",{tab:"ai",rule:id})}/>}
-        {page==="tasks"&&<TaskCenter key={pageParams.toString()} projects={projects} experts={experts} begin={beginTask} notify={notify} parameters={pageParams}/>}
-        {page==="notices"&&<NoticePage failure={pageParams.get("failure")||""} select={id=>plannerNav("notices",id?{failure:id}:{})} openRule={id=>plannerNav("tasks",{tab:"ai",rule:id})} notify={notify} refreshBadge={badge}/>}
+        {page === "calendar" && (
+          <CalendarPage
+            projects={projects}
+            notify={notify}
+            openProject={(id) => {
+              const p = projects.find((v) => v.id === id);
+              if (p) {
+                history.pushState(
+                  null,
+                  "",
+                  "#project=" + encodeURIComponent(id),
+                );
+                void openProject(p);
+              }
+            }}
+            openTask={(id) => plannerNav("tasks", { task: id })}
+            openRule={(id) => plannerNav("tasks", { tab: "ai", rule: id })}
+          />
+        )}
+        {page === "tasks" && (
+          <TaskCenter
+            key={pageParams.toString()}
+            projects={projects}
+            experts={experts}
+            begin={beginTask}
+            notify={notify}
+            parameters={pageParams}
+          />
+        )}
+        {page === "notices" && (
+          <NoticePage
+            failure={pageParams.get("failure") || ""}
+            select={(id) => plannerNav("notices", id ? { failure: id } : {})}
+            openRule={(id) => plannerNav("tasks", { tab: "ai", rule: id })}
+            notify={notify}
+            refreshBadge={badge}
+          />
+        )}
         {page === "today" && (
           <Today
             projects={projects}
-            openTasks={(id)=>{if(id===personal){plannerNav("tasks",{scope:personal});return};const p=projects.find(v=>v.id===id);if(p)act(()=>openProject(p,undefined,"tasks"))}}
+            openTasks={(id) => {
+              if (id === personal) {
+                plannerNav("tasks", { scope: personal });
+                return;
+              }
+              const p = projects.find((v) => v.id === id);
+              if (p) act(() => openProject(p, undefined, "tasks"));
+            }}
             notify={notify}
             openNavigation={() => setMobileNav(true)}
           />
         )}
         {page === "projects" && (
           <div className="home page">
-            <div className="page-heading">
-              <div>
-                <span className="eyebrow">WORKSPACE</span>
-                <h1>项目</h1>
-                <p>把资料、对话和成果留在同一个地方。</p>
-              </div>
-              <button className="primary" onClick={newProject}>
-                <Plus size={17} />
-                新建项目
-              </button>
-            </div>
+            <PageHeader
+              title="项目"
+              actions={
+                <button className="primary" onClick={newProject}>
+                  <Plus size={17} />
+                  新建项目
+                </button>
+              }
+            />
             {inbox.length > 0 && (
               <section className="inbox">
                 <h3>
@@ -1050,29 +1195,44 @@ function App() {
                       <p>{m.incoming.text}</p>
                       <span>{m.question || "正在判断归属…"}</span>
                     </div>
-                    {["wechat","feishu"].includes(m.incoming.source) ?
-                      <button disabled={m.state==="unrouted"} onClick={()=>act(async()=>{await api(`/messages/${m.id}/resolve`,{});await refresh();await navigate("today")})}>{m.state==="unrouted"?"正在转到今天…":"转到今天并回复"}</button> :
-                    <select
-                      aria-label="为消息选择项目"
-                      value=""
-                      onChange={(e) =>
-                        act(async () => {
-                          await api(`/messages/${m.id}/resolve`, {
-                            sessionId: e.target.value,
-                          });
-                          await refresh();
-                        })
-                      }
-                    >
-                      <option value="">选择项目</option>
-                      {projects
-                        .filter((p) => !p.archived)
-                        .map((p) => (
-                          <option key={p.id} value={p.defaultSessionId}>
-                            {p.name}
-                          </option>
-                        ))}
-                    </select>}
+                    {["wechat", "feishu"].includes(m.incoming.source) ? (
+                      <button
+                        disabled={m.state === "unrouted"}
+                        onClick={() =>
+                          act(async () => {
+                            await api(`/messages/${m.id}/resolve`, {});
+                            await refresh();
+                            await navigate("today");
+                          })
+                        }
+                      >
+                        {m.state === "unrouted"
+                          ? "正在转到今天…"
+                          : "转到今天并回复"}
+                      </button>
+                    ) : (
+                      <select
+                        aria-label="为消息选择项目"
+                        value=""
+                        onChange={(e) =>
+                          act(async () => {
+                            await api(`/messages/${m.id}/resolve`, {
+                              sessionId: e.target.value,
+                            });
+                            await refresh();
+                          })
+                        }
+                      >
+                        <option value="">选择项目</option>
+                        {projects
+                          .filter((p) => !p.archived)
+                          .map((p) => (
+                            <option key={p.id} value={p.defaultSessionId}>
+                              {p.name}
+                            </option>
+                          ))}
+                      </select>
+                    )}
                   </div>
                 ))}
               </section>
@@ -1083,16 +1243,11 @@ function App() {
                   <Folder size={34} />
                 </div>
                 <h2>从你的第一个项目开始</h2>
-                <p>
-                  新建一个空白项目，或把现有 Obsidian 资料带进来。
-                  <br />
-                  通用助手已经准备好，无需安装专家。
-                </p>
+
                 <button className="primary" onClick={newProject}>
                   <Plus size={16} />
                   新建项目
                 </button>
-                <small>创建后可导入目录或 ZIP，保留原有结构。</small>
               </div>
             ) : (
               <div className="project-grid">
@@ -1104,24 +1259,14 @@ function App() {
                       key={p.id}
                       onClick={() => openProject(p)}
                     >
-                      <span className={`project-avatar color-${i % 4}`}>
-                        {p.name.slice(0, 1)}
-                      </span>
+                      <Folder className="project-row-icon" size={19} />
                       <h2>
                         {p.name}
                         <ChevronRight size={17} />
                       </h2>
-                      <p>{p.description || "还没有项目说明"}</p>
-                      <div>
-                        <span>{p.expertIds?.length ?? 0} 位专家</span>
-                        <span>打开工作区 →</span>
-                      </div>
+                      <p>{plainPreview(p.description) || ""}</p>
                     </button>
                   ))}
-                <button className="project-card new-card" onClick={newProject}>
-                  <Plus size={24} />
-                  <span>新建项目</span>
-                </button>
               </div>
             )}
             {runs.length > 0 && (
@@ -1132,6 +1277,10 @@ function App() {
                     key={r.id}
                     className="recent-row"
                     onClick={() => {
+                      if (r.projectId === "personal-assistant") {
+                        void navigate("today");
+                        return;
+                      }
                       const p = projects.find((p) => p.id === r.projectId);
                       if (p) {
                         void openProject(p, r.sessionId);
@@ -1142,8 +1291,9 @@ function App() {
                     <div>
                       <strong>{r.text}</strong>
                       <small>
-                        {projects.find((p) => p.id === r.projectId)?.name} ·{" "}
-                        {stamp(r.createdAt)}
+                        {projects.find((p) => p.id === r.projectId)?.name ||
+                          "今天"}{" "}
+                        · {stamp(r.createdAt)}
                       </small>
                     </div>
                     <State state={r.state} />
@@ -1180,24 +1330,14 @@ function App() {
           </div>
         )}
         {page === "project" && project && (
-          <div className="workspace">
+          <div
+            className={`workspace ${projectPanelOpen ? "context-open" : ""}`}
+          >
             <ProjectSidebar
               open={projectPanelOpen}
+              title={tab === "sessions" ? "对话记录" : "资料"}
               close={() => setProjectPanelOpen(false)}
             >
-              <div className="project-title">
-                <span className="project-avatar small-avatar">
-                  {project.name.slice(0, 1)}
-                </span>
-                <strong>{project.name}</strong>
-                <button
-                  className="icon"
-                  title="项目设置"
-                  onClick={() => configureProject()}
-                >
-                  <Settings size={16} />
-                </button>
-              </div>
               <div className="panel-tabs">
                 <button
                   className={tab === "sessions" ? "selected" : ""}
@@ -1390,7 +1530,15 @@ function App() {
                 />
               )}
               {tab === "schedules" && (
-                <button className="panel-action" onClick={()=>plannerNav("tasks",{tab:"ai",scope:project.id})}><Clock size={15}/>管理本项目的 AI 任务</button>
+                <button
+                  className="panel-action"
+                  onClick={() =>
+                    plannerNav("tasks", { tab: "ai", scope: project.id })
+                  }
+                >
+                  <Clock size={15} />
+                  管理本项目的 AI 任务
+                </button>
               )}
               <div className="project-panel-footer">
                 <button
@@ -1446,102 +1594,103 @@ function App() {
             </ProjectSidebar>
             <ConversationPane>
               <header className="chat-header">
-                <button
-                  className="mobile-only icon"
-                  aria-label="打开项目侧栏"
-                  onClick={() => setProjectPanelOpen(true)}
-                >
-                  <Menu size={18} />
-                </button>
-                <div>
-                  <span className="assistant-icon">✦</span>
-                  <div>
-                    <select
-                      aria-label="当前对话"
-                      value={sessionId}
-                      onChange={(e) => switchSession(e.target.value)}
-                    >
-                      {!visibleSessions.some((s) => s.id === sessionId) && (
-                        <option value={sessionId}>新对话</option>
-                      )}
-                      {visibleSessions.map((ss) => (
-                        <option key={ss.id} value={ss.id}>
-                          {ss.title}
-                        </option>
-                      ))}
-                    </select>
-                    <small>
-                      {session?.draft
-                        ? "发送第一条消息后自动命名"
-                        : session?.lifecycle === "archiving"
-                          ? "正在提炼归档，可在对话菜单停止"
-                          : "项目内持久对话 · 跨端继续"}
-                    </small>
-                  </div>
-                </div>
-                <div>
-                  {session && !session.draft && <GatewayResume key={session.id} id={session.id} notify={notify} />}
-                  <button
-                    className="icon"
-                    title="重命名对话"
-                    aria-label="重命名对话"
-                    disabled={!session || session.draft}
-                    onClick={() => renameSession()}
-                  >
-                    <Pencil size={16} />
-                  </button>
+                <div className="project-chat-location">
+                  <strong>{project.name}</strong>
+                  <span className="location-divider">/</span>
                   <select
-                    aria-label="当前专家"
-                    value={
-                      session?.expertId || project.defaultExpertId || "general"
-                    }
-                    onChange={(e) =>
-                      act(async () => {
-                        const ss = await api<Session>(
-                          `/sessions/${sessionId}`,
-                          {
-                            expertId:
-                              e.target.value ===
-                              (project.defaultExpertId || "general")
-                                ? ""
-                                : e.target.value,
-                          },
-                          "PUT",
-                        );
-                        setSessions((old) => mergeSessions(old, [ss]));
-                      })
-                    }
+                    aria-label="当前对话"
+                    value={sessionId}
+                    onChange={(e) => void switchSession(e.target.value)}
                   >
-                    <option value="general">通用助手</option>
-                    {experts
-                      .filter((e) => project.expertIds?.includes(e.id))
-                      .map((e) => (
-                        <option key={e.id} value={e.id}>
-                          {e.name}
-                        </option>
-                      ))}
+                    {!visibleSessions.some((s) => s.id === sessionId) && (
+                      <option value={sessionId}>新对话</option>
+                    )}
+                    {visibleSessions.map((ss) => (
+                      <option key={ss.id} value={ss.id}>
+                        {ss.title}
+                      </option>
+                    ))}
                   </select>
                   <button
-                    className="icon"
-                    title="另开对话"
-                    disabled={creatingSession}
-                    onClick={newSession}
+                    className="history-trigger"
+                    title="对话记录"
+                    onClick={() => void openContextPanel("sessions")}
                   >
-                    <Plus size={18} />
+                    <History size={14} />
+                    对话记录
                   </button>
+                </div>
+                <div className="project-context-tools">
+                  {session && !session.draft && (
+                    <GatewayResume
+                      key={session.id}
+                      id={session.id}
+                      notify={notify}
+                    />
+                  )}
+                  <button
+                    aria-label="打开资料"
+                    aria-expanded={projectPanelOpen && tab === "files"}
+                    onClick={() => void openContextPanel("files")}
+                  >
+                    <FileText size={16} />
+                    <span>资料</span>
+                  </button>
+                  <button
+                    aria-label="打开项目事项"
+                    aria-expanded={
+                      projectPanelOpen && ["tasks", "schedules"].includes(tab)
+                    }
+                    onClick={() => void openContextPanel("tasks")}
+                  >
+                    <SlidersHorizontal size={16} />
+                    <span>项目事项</span>
+                  </button>
+                  <ActionMenu
+                    label="项目操作"
+                    context={project.id + ":" + sessionId}
+                    triggerContent={<MoreHorizontal size={19} />}
+                    triggerClassName="icon"
+                    panelClassName="suite-action-menu"
+                  >
+                    <button
+                      role="menuitem"
+                      tabIndex={-1}
+                      onClick={() => configureProject()}
+                    >
+                      项目设置
+                    </button>
+                    <button
+                      role="menuitem"
+                      tabIndex={-1}
+                      disabled={!session || session.draft}
+                      onClick={() => renameSession()}
+                    >
+                      重命名对话
+                    </button>
+                    <button
+                      role="menuitem"
+                      tabIndex={-1}
+                      disabled={creatingSession}
+                      onClick={newSession}
+                    >
+                      另开对话
+                    </button>
+                    <button
+                      role="menuitem"
+                      tabIndex={-1}
+                      onClick={() => void openContextPanel("schedules")}
+                    >
+                      定时任务
+                    </button>
+                  </ActionMenu>
                 </div>
               </header>
               <div className="chat-scroll">
                 {sessionRuns.length === 0 &&
                   pendingSubmissions.length === 0 && (
                     <div className="chat-welcome">
-                      <span>✦</span>
-                      <h2>一起推进这个项目</h2>
-                      <p>
-                        我会按需阅读项目资料、使用专家方法，
-                        <br />
-                        并把重要结果保存下来。
-                      </p>
+                      <h2>想从哪里开始？</h2>
                       <div>
                         <button
                           onClick={() =>
@@ -1586,13 +1735,16 @@ function App() {
                   >
                     <div className="user-message">
                       <span>
-                        {labels[r.source]} · {stamp(r.createdAt)}
+                        {r.source !== "web" ? labels[r.source] + " · " : ""}
+                        {stamp(r.createdAt)}
                       </span>
                       <p>{r.text}</p>
                       <CapabilityBadges values={r.capabilities || []} />
                     </div>
                     <div className="assistant-message">
-                      <div className="assistant-line">
+                      <div
+                        className={`assistant-line ${r.state === "completed" ? "completed-line" : ""}`}
+                      >
                         <span className="assistant-icon">✦</span>
                         <strong>
                           {r.expertName ||
@@ -1616,31 +1768,38 @@ function App() {
                           </button>
                         )}
                       </div>
-                      <button
-                        className="activity-summary"
-                        onClick={() =>
-                          act(async () => {
-                            if (!(await documentGuard())) return;
-                            setFilePath("");
-                            setContent("");
-                            setSaved("");
-                            setDetailView(null);
-                            setRunDetails(r.id);
-                          })
-                        }
-                      >
-                        <Terminal size={14} />
-                        执行过程 ·{" "}
-                        {
-                          activity.filter(
-                            (e) =>
-                              e.runId === r.id &&
-                              e.type === "harness.tool/call",
-                          ).length
-                        }{" "}
-                        次工具调用
-                        <ChevronRight size={13} />
-                      </button>
+                      {(r.state !== "completed" ||
+                        !r.result ||
+                        activity.some(
+                          (e) =>
+                            e.runId === r.id && e.type === "harness.tool/call",
+                        )) && (
+                        <button
+                          className="activity-summary"
+                          onClick={() =>
+                            act(async () => {
+                              if (!(await documentGuard())) return;
+                              setFilePath("");
+                              setContent("");
+                              setSaved("");
+                              setDetailView(null);
+                              setRunDetails(r.id);
+                            })
+                          }
+                        >
+                          <Terminal size={14} />
+                          执行过程 ·{" "}
+                          {
+                            activity.filter(
+                              (e) =>
+                                e.runId === r.id &&
+                                e.type === "harness.tool/call",
+                            ).length
+                          }{" "}
+                          次工具调用
+                          <ChevronRight size={13} />
+                        </button>
+                      )}
                       {r.result && (
                         <RichText
                           text={r.result}
@@ -1780,39 +1939,40 @@ function App() {
                 <div ref={chatEnd} />
               </div>
               <div className="composer-wrap">
-                {references.length > 0 && (
-                  <div className="attachment-chips">
-                    {references.map((r, i) => (
-                      <button
-                        key={i}
-                        onClick={() =>
-                          setReferences(references.filter((_, n) => n !== i))
-                        }
-                      >
-                        引用 {projects.find((p) => p.id === r.projectId)?.name}/
-                        {r.path}
-                        <X size={12} />
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {attachments.length > 0 && (
-                  <div className="attachment-chips">
-                    {attachments.map((p) => (
-                      <button
-                        key={p}
-                        onClick={() =>
-                          setAttachments((a) => a.filter((x) => x !== p))
-                        }
-                      >
-                        <Paperclip size={12} />
-                        {p}
-                        <X size={12} />
-                      </button>
-                    ))}
-                  </div>
-                )}
                 <div className="composer">
+                  {references.length > 0 && (
+                    <div className="attachment-chips">
+                      {references.map((r, i) => (
+                        <button
+                          key={i}
+                          onClick={() =>
+                            setReferences(references.filter((_, n) => n !== i))
+                          }
+                        >
+                          引用{" "}
+                          {projects.find((p) => p.id === r.projectId)?.name}/
+                          {r.path}
+                          <X size={12} />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {attachments.length > 0 && (
+                    <div className="attachment-chips">
+                      {attachments.map((p) => (
+                        <button
+                          key={p}
+                          onClick={() =>
+                            setAttachments((a) => a.filter((x) => x !== p))
+                          }
+                        >
+                          <Paperclip size={12} />
+                          {p.split("/").at(-1)}
+                          <X size={12} />
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <CapabilityComposer
                     projectId={projectId}
                     sessionId={sessionId}
@@ -1823,10 +1983,44 @@ function App() {
                     send={send}
                   />
                   <div className="composer-actions">
+                    <select
+                      aria-label="当前专家"
+                      value={
+                        session?.expertId ||
+                        project.defaultExpertId ||
+                        "general"
+                      }
+                      onChange={(e) =>
+                        act(async () => {
+                          const ss = await api<Session>(
+                            `/sessions/${sessionId}`,
+                            {
+                              expertId:
+                                e.target.value ===
+                                (project.defaultExpertId || "general")
+                                  ? ""
+                                  : e.target.value,
+                            },
+                            "PUT",
+                          );
+                          setSessions((old) => mergeSessions(old, [ss]));
+                        })
+                      }
+                    >
+                      <option value="general">通用助手</option>
+                      {experts
+                        .filter((e) => project.expertIds?.includes(e.id))
+                        .map((e) => (
+                          <option key={e.id} value={e.id}>
+                            {e.name}
+                          </option>
+                        ))}
+                    </select>
                     <label title={locked ? "任务结束后可添加文件" : "添加附件"}>
                       <Paperclip size={18} />
                       <input
                         type="file"
+                        aria-label="添加项目附件"
                         disabled={locked || busy}
                         onChange={(e) => {
                           importFiles(e.target.files);
@@ -1873,24 +2067,22 @@ function App() {
                     >
                       <FileText size={16} />
                     </button>
-                    <span>
-                      {locked
-                        ? "新指令将按顺序继续执行"
-                        : "Enter 发送 · Shift + Enter 换行"}
-                    </span>
                     <button
                       className="send"
                       aria-label="发送"
-                      disabled={!text.trim() || busy || submissions.sending}
+                      disabled={
+                        (!text.trim() &&
+                          !attachments.length &&
+                          !references.length) ||
+                        busy ||
+                        submissions.sending
+                      }
                       onClick={send}
                     >
                       <ArrowUp size={18} />
                     </button>
                   </div>
                 </div>
-                <small className="composer-note">
-                  当前范围：{project.name} · 对话历史由助手持续维护
-                </small>
               </div>
             </ConversationPane>
             {(filePath || detailView || runDetails) && (
@@ -2043,151 +2235,200 @@ function App() {
             )}
           </div>
         )}
-        {page === "experts" && (
-          <div className="page">
-            <div className="page-heading">
-              <div>
-                <span className="eyebrow">CAPABILITIES</span>
-                <h1>专家库</h1>
-                <p>方法可以复用，项目经验留在各自项目。</p>
-              </div>
-              <button
-                className="primary"
-                onClick={() =>
-                  setDialog({
-                    title: "创建专家",
-                    fields: [
-                      { key: "name", label: "名称", required: true },
-                      { key: "description", label: "能力简介", required: true },
-                      {
-                        key: "instructions",
-                        label: "方法与工作准则",
-                        type: "textarea",
-                        required: true,
-                      },
-                    ],
-                    action: async (v) => {
-                      await api("/experts", v);
-                      await refresh();
-                    },
-                  })
+        {(page === "experts" || page === "expert-detail") && (
+          <div
+            className={`expert-library ${page === "expert-detail" ? "has-detail" : ""}`}
+          >
+            <section
+              className="expert-library-index page"
+              aria-label="专家列表"
+            >
+              <PageHeader
+                title="专家库"
+                actions={
+                  <>
+                    <ActionMenu
+                      label="导入专家"
+                      context={page}
+                      triggerContent={
+                        <>
+                          导入
+                          <ChevronDown size={14} />
+                        </>
+                      }
+                      triggerClassName="expert-import-trigger"
+                      panelClassName="suite-action-menu"
+                    >
+                      <button
+                        role="menuitem"
+                        tabIndex={-1}
+                        onClick={() => expertDirectoryInput.current?.click()}
+                      >
+                        选择目录
+                      </button>
+                      <button
+                        role="menuitem"
+                        tabIndex={-1}
+                        onClick={() => expertZipInput.current?.click()}
+                      >
+                        ZIP 文件
+                      </button>
+                      <button
+                        role="menuitem"
+                        tabIndex={-1}
+                        onClick={() =>
+                          setDialog({
+                            title: "从 Git 导入专家",
+                            fields: [
+                              {
+                                key: "url",
+                                label: "HTTPS 仓库地址",
+                                required: true,
+                              },
+                              {
+                                key: "commit",
+                                label: "固定提交（40 位 SHA）",
+                                required: true,
+                              },
+                              {
+                                key: "subdir",
+                                label: "能力包目录",
+                                hint: "SKILL.md 所在的相对目录",
+                              },
+                            ],
+                            action: async (v) => {
+                              await api("/experts/git", v);
+                              await refresh();
+                            },
+                          })
+                        }
+                      >
+                        Git 仓库
+                      </button>
+                    </ActionMenu>
+                    <button
+                      className="primary"
+                      onClick={() =>
+                        setDialog({
+                          title: "创建专家",
+                          fields: [
+                            { key: "name", label: "名称", required: true },
+                            {
+                              key: "description",
+                              label: "能力简介",
+                              required: true,
+                            },
+                            {
+                              key: "instructions",
+                              label: "方法与工作准则",
+                              type: "textarea",
+                              required: true,
+                            },
+                          ],
+                          action: async (v) => {
+                            await api("/experts", v);
+                            await refresh();
+                          },
+                        })
+                      }
+                    >
+                      <Plus size={17} />
+                      创建专家
+                    </button>
+                  </>
                 }
-              >
-                <Plus size={17} />
-                创建专家
-              </button>
-            </div>
-            <div className="import-bar">
-              <span>导入已有能力包</span>
-              <label className="button">
-                <Upload size={15} />
-                选择目录
-                <input
-                  type="file"
-                  multiple
-                  {...({ webkitdirectory: "" } as any)}
-                  onChange={(e) => {
-                    importFiles(e.target.files, false, true);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
-              <label className="button">
-                ZIP 文件
-                <input
-                  type="file"
-                  accept=".zip"
-                  onChange={(e) => {
-                    importFiles(e.target.files, false, true);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
-              <button
-                onClick={() =>
-                  setDialog({
-                    title: "从 Git 导入专家",
-                    fields: [
-                      { key: "url", label: "HTTPS 仓库地址", required: true },
-                      {
-                        key: "commit",
-                        label: "固定提交（40 位 SHA）",
-                        required: true,
-                      },
-                      {
-                        key: "subdir",
-                        label: "能力包目录",
-                        hint: "SKILL.md 所在的相对目录",
-                      },
-                    ],
-                    action: async (v) => {
-                      await api("/experts/git", v);
-                      await refresh();
-                    },
-                  })
-                }
-              >
-                Git 提交
-              </button>
-              <small>目录需包含 SKILL.md</small>
-            </div>
-            <div className="expert-grid">
-              {experts.map((e) => (
-                <button
-                  key={e.id}
-                  className="expert-card"
-                  onClick={() => {
-                    void openExpert(e.id);
-                  }}
-                >
-                  <span className="expert-avatar">
-                    <Library size={24} />
-                  </span>
-                  <h2>{e.name}</h2>
-                  <p>{e.description}</p>
-                  <div>
-                    <small>版本 {e.digest.slice(0, 10)}</small>
-                    <span>
-                      查看与编辑 <ChevronRight size={14} />
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
-            {!experts.length && (
-              <div className="empty-workspace shorter">
-                <Library size={34} />
-                <h2>沉淀你的通用方法</h2>
-                <p>
-                  专家可在多个项目使用。
-                  <br />
-                  没有安装专家，也可以使用通用助手。
-                </p>
+              />
+              <input
+                ref={expertDirectoryInput}
+                hidden
+                type="file"
+                multiple
+                {...({ webkitdirectory: "" } as any)}
+                aria-label="导入专家目录"
+                onChange={(e) => {
+                  void importFiles(e.target.files, false, true);
+                  e.target.value = "";
+                }}
+              />
+              <input
+                ref={expertZipInput}
+                hidden
+                type="file"
+                accept=".zip"
+                aria-label="导入专家ZIP"
+                onChange={(e) => {
+                  void importFiles(e.target.files, false, true);
+                  e.target.value = "";
+                }}
+              />
+              <input
+                className="expert-search"
+                type="search"
+                aria-label="搜索专家"
+                placeholder="搜索专家"
+                value={expertSearch}
+                onChange={(e) => setExpertSearch(e.target.value)}
+              />
+              <div className="expert-grid">
+                {experts
+                  .filter((e) =>
+                    (e.name + e.description)
+                      .toLocaleLowerCase()
+                      .includes(expertSearch.toLocaleLowerCase()),
+                  )
+                  .map((e) => (
+                    <button
+                      key={e.id}
+                      aria-current={
+                        page === "expert-detail" && expertId === e.id
+                          ? "true"
+                          : undefined
+                      }
+                      className="expert-card"
+                      onClick={() => void openExpert(e.id)}
+                    >
+                      <Library size={19} />
+                      <div>
+                        <h2>{e.name}</h2>
+                        <p>{plainPreview(e.description, 120)}</p>
+                      </div>
+                      <ChevronRight size={17} />
+                    </button>
+                  ))}
               </div>
+              {!experts.length && (
+                <EmptyState>暂无专家。可以创建或导入。</EmptyState>
+              )}
+              {!!experts.length &&
+                !experts.some((e) =>
+                  (e.name + e.description)
+                    .toLocaleLowerCase()
+                    .includes(expertSearch.toLocaleLowerCase()),
+                ) && <EmptyState>没有找到匹配的专家。</EmptyState>}
+            </section>
+            {page === "expert-detail" && expertId && (
+              <ExpertDetail
+                key={expertId}
+                id={expertId}
+                projects={projects}
+                refresh={refresh}
+                notify={notify}
+                onBack={() => {
+                  void navigate("experts");
+                }}
+                onOpenProject={(p) => {
+                  void openProject(p);
+                }}
+                onCopy={(id) => {
+                  fileRequest.current++;
+                  setExpertId(id);
+                }}
+                onGuard={(guard) => {
+                  expertGuard.current = guard;
+                }}
+              />
             )}
           </div>
-        )}
-        {page === "expert-detail" && expertId && (
-          <ExpertDetail
-            key={expertId}
-            id={expertId}
-            projects={projects}
-            refresh={refresh}
-            notify={notify}
-            onBack={() => {
-              void navigate("experts");
-            }}
-            onOpenProject={(p) => {
-              void openProject(p);
-            }}
-            onCopy={(id) => {
-              fileRequest.current++;
-              setExpertId(id);
-            }}
-            onGuard={(guard) => {
-              expertGuard.current = guard;
-            }}
-          />
         )}
         {page === "settings" && (
           <SettingsPage act={act} setDialog={setDialog} notify={notify} />
@@ -2231,7 +2472,6 @@ function Login({
         <p>你的项目、方法和每一步进展。</p>
         <div className="orbit orbit-one" />
         <div className="orbit orbit-two" />
-        <small>PERSONAL CLOUD WORKSPACE</small>
       </div>
       <form
         onSubmit={async (e) => {
@@ -2342,101 +2582,98 @@ function Modal({
       ),
     );
   }, [dialog]);
+  const base = Object.fromEntries(
+    (dialog.fields ?? []).map((f) => [f.key, f.value ?? ""]),
+  );
+  const fieldGuard = useSurfaceGuard(
+    !busy && JSON.stringify(values) !== JSON.stringify(base),
+  );
+  const dismiss = async () => {
+    if (busy) return;
+    if (dialog.content ? await confirmSurfaceNavigation() : fieldGuard())
+      close();
+  };
   return (
-    <div
-      className="modal-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !busy) close();
-      }}
+    <Overlay
+      title={dialog.title}
+      close={() => void dismiss()}
+      busy={busy}
+      className={`modal ${dialog.content ? "wide" : ""}`}
     >
-      <div
-        className={`modal ${dialog.content ? "wide" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label={dialog.title}
-      >
-        <header>
-          <h2>{dialog.title}</h2>
-          <button
-            className="icon"
-            disabled={busy}
-            onClick={close}
-            aria-label="关闭"
-          >
-            <X size={19} />
-          </button>
-        </header>
-        {dialog.description && (
-          <p className="modal-description">{dialog.description}</p>
-        )}
-        {dialog.content ?? (
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              setBusy(true);
-              try {
-                await dialog.action?.(values);
-                close();
-              } catch (e) {
-                notify((e as Error).message);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {dialog.fields?.map((f, i) => (
-              <label key={f.key}>
-                {f.label}
-                {f.options ? (
-                  <select
-                    required={f.required}
-                    value={values[f.key] ?? ""}
-                    onChange={(e) =>
-                      setValues({ ...values, [f.key]: e.target.value })
-                    }
-                  >
-                    <option value="">请选择</option>
-                    {f.options.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                ) : f.type === "textarea" ? (
-                  <textarea
-                    rows={5}
-                    required={f.required}
-                    value={values[f.key] ?? ""}
-                    onChange={(e) =>
-                      setValues({ ...values, [f.key]: e.target.value })
-                    }
-                  />
-                ) : (
-                  <input
-                    autoFocus={i === 0}
-                    required={f.required}
-                    type={f.type ?? "text"}
-                    value={values[f.key] ?? ""}
-                    onChange={(e) =>
-                      setValues({ ...values, [f.key]: e.target.value })
-                    }
-                  />
-                )}{" "}
-                {f.hint && <small>{f.hint}</small>}
-              </label>
-            ))}
-            <footer>
-              <button type="button" disabled={busy} onClick={close}>
-                取消
-              </button>
-              <button className="primary" disabled={busy}>
-                {busy ? "正在处理…" : (dialog.confirm ?? "保存")}
-              </button>
-            </footer>
-          </form>
-        )}
-      </div>
-    </div>
+      {dialog.description && (
+        <p className="modal-description">{dialog.description}</p>
+      )}
+      {dialog.content ?? (
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            try {
+              await dialog.action?.(values);
+              close();
+            } catch (e) {
+              notify((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {dialog.fields?.map((f, i) => (
+            <label key={f.key}>
+              {f.label}
+              {f.options ? (
+                <select
+                  required={f.required}
+                  value={values[f.key] ?? ""}
+                  onChange={(e) =>
+                    setValues({ ...values, [f.key]: e.target.value })
+                  }
+                >
+                  <option value="">请选择</option>
+                  {f.options.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              ) : f.type === "textarea" ? (
+                <textarea
+                  rows={5}
+                  required={f.required}
+                  value={values[f.key] ?? ""}
+                  onChange={(e) =>
+                    setValues({ ...values, [f.key]: e.target.value })
+                  }
+                />
+              ) : (
+                <input
+                  data-autofocus={i === 0}
+                  required={f.required}
+                  type={f.type ?? "text"}
+                  value={values[f.key] ?? ""}
+                  onChange={(e) =>
+                    setValues({ ...values, [f.key]: e.target.value })
+                  }
+                />
+              )}{" "}
+              {f.hint && <small>{f.hint}</small>}
+            </label>
+          ))}
+          <footer>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void dismiss()}
+            >
+              取消
+            </button>
+            <button className="primary" disabled={busy}>
+              {busy ? "正在处理…" : (dialog.confirm ?? "保存")}
+            </button>
+          </footer>
+        </form>
+      )}
+    </Overlay>
   );
 }
 function Question({
@@ -2574,6 +2811,7 @@ function ProjectCapabilities({
   onSave: (p: Project) => Promise<void>;
 }) {
   const [p, setP] = useState(project);
+  useSurfaceGuard(JSON.stringify(p) !== JSON.stringify(project));
   return (
     <div className="capabilities">
       <h3>专家方法</h3>
@@ -2618,6 +2856,11 @@ function SettingsPage({
     [connections, setConnections] = useState<any[]>([]),
     [deliveries, setDeliveries] = useState<any[]>([]),
     [plugins, setPlugins] = useState<any[]>([]);
+  const [focus, setFocus] = useState<
+    "channels" | "mcp" | "cli" | "account" | null
+  >(null);
+  const [connectionId, setConnectionId] = useState("");
+  const narrow = useNarrow(1099);
   const load = async () => {
     const [s, c, d, p] = await Promise.all([
       api("/settings"),
@@ -2634,259 +2877,376 @@ function SettingsPage({
     act(load);
   }, []);
   return (
-    <div className="page settings-page">
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow">PREFERENCES</span>
-          <h1>设置</h1>
-          <p>连接你的入口，配置项目需要的能力。</p>
-        </div>
-      </div>
-      <section className="settings-section">
-        <h3>执行核心</h3>
-        <div className="setting-row">
-          <div>
-            <strong>DeepSeek Harness</strong>
-            <p>{settings.model || "尚未配置"} · 同一个执行核心服务所有入口</p>
-          </div>
-          <span className="state state-completed">
-            {settings.runtimeMode || "未配置"}
-          </span>
-        </div>
-        <div className="setting-row">
-          <div>
-            <strong>全工作台并发上限</strong>
-            <p>个人助手、项目任务和客服应答共享名额。同一客户的消息按顺序处理，同一项目一次只运行一个写入任务。</p>
-          </div>
-          <span>{settings.maxConcurrentRuns}</span>
-        </div>
-        {settings.browserUrl && (
-          <div className="setting-row">
-            <div>
-              <strong>浏览器接管</strong>
-              <p>登录或验证时，打开当前执行环境的浏览器。</p>
-            </div>
-            <a
-              className="button"
-              href={settings.browserUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              打开 <ExternalLink size={14} />
-            </a>
-          </div>
-        )}
-      </section>
-      <section className="settings-section">
-        <h3>
-          微信与飞书{" "}
-          <button
-            onClick={() =>
-              setDialog({
-                title: "绑定本人私聊",
-                fields: [
-                  {
-                    key: "kind",
-                    label: "类型",
-                    value: "wechat",
-                    hint: "wechat 或 feishu",
-                    required: true,
-                  },
-                  { key: "label", label: "连接名称", required: true },
-                  {
-                    key: "ownerId",
-                    label: "本人渠道账号 ID",
-                    hint: "飞书可留空，启用后通过一次性绑定码确认本人。",
-                  },
-                  {
-                    key: "secrets",
-                    label: "渠道配置（JSON）",
-                    type: "textarea",
-                    value: "{}",
-                    hint: "飞书：appId、appSecret；微信：baseUrl、token、accountId",
-                  },
-                ],
-                action: async (v) => {
-                  await api("/connections", {
-                    connection: {
-                      kind: v.kind,
-                      label: v.label,
-                      ownerId: v.ownerId,
-                      enabled: false,
+    <div className={`page settings-page ${focus ? "with-detail" : ""}`}>
+      <PageHeader title="设置" />
+      <div className="settings-main">
+        <section className="settings-section connections-overview">
+          <header>
+            <h2>连接与工具</h2>{" "}
+            <button
+              onClick={() =>
+                setDialog({
+                  title: "绑定本人私聊",
+                  fields: [
+                    {
+                      key: "kind",
+                      label: "类型",
+                      value: "wechat",
+                      hint: "wechat 或 feishu",
+                      required: true,
                     },
-                    secrets: JSON.parse(v.secrets),
-                  });
-                  await load();
-                },
-              })
-            }
-          >
-            <Plus size={15} />
-            添加连接
-          </button>
-        </h3>
-        <p>每个入口独立记住当前对话。回复只发回本次请求的来源。</p>
-        {connections.map((c) => (
-          <div className="setting-row" key={c.id}>
-            <div>
+                    { key: "label", label: "连接名称", required: true },
+                    {
+                      key: "ownerId",
+                      label: "本人渠道账号 ID",
+                      hint: "飞书可留空，启用后通过一次性绑定码确认本人。",
+                    },
+                    {
+                      key: "secrets",
+                      label: "渠道配置（JSON）",
+                      type: "textarea",
+                      value: "{}",
+                      hint: "飞书：appId、appSecret；微信：baseUrl、token、accountId",
+                    },
+                  ],
+                  action: async (v) => {
+                    await api("/connections", {
+                      connection: {
+                        kind: v.kind,
+                        label: v.label,
+                        ownerId: v.ownerId,
+                        enabled: false,
+                      },
+                      secrets: JSON.parse(v.secrets),
+                    });
+                    await load();
+                  },
+                })
+              }
+            >
+              <Plus size={15} />
+              添加连接
+            </button>
+          </header>
+          {connections.map((c) => (
+            <button
+              key={c.id}
+              className="settings-entry"
+              aria-expanded={focus === "channels" && connectionId === c.id}
+              onClick={() => {
+                setConnectionId(c.id);
+                setFocus("channels");
+              }}
+            >
+              <MessageSquare size={18} />
               <strong>{c.label || labels[c.kind]}</strong>
-              {c.ownerId.startsWith("pairing:") && (
-                <p>
-                  启用后，在飞书私聊机器人发送：
-                  <code>绑定 {c.ownerId.slice(8)}</code>
-                </p>
-              )}
-              <p>
-                {c.status} ·{" "}
-                {c.lastHeartbeat
-                  ? `最近连接 ${stamp(c.lastHeartbeat)}`
-                  : "尚未连接"}
-              </p>
-            </div>
-            <button
-              onClick={() =>
-                act(async () => {
-                  await api("/connections", {
-                    connection: { ...c, enabled: !c.enabled },
-                  });
-                  await load();
-                })
-              }
-            >
-              {c.enabled ? "停用" : "启用"}
+              <span>
+                {!c.enabled
+                  ? "已停用"
+                  : (
+                      {
+                        connected: "已连接",
+                        disconnected: "未连接",
+                        connecting: "连接中",
+                        error: "连接异常",
+                      } as Record<string, string>
+                    )[c.status] || c.status}
+              </span>
+              <ChevronRight size={16} />
             </button>
-          </div>
-        ))}
-        {!connections.length && (
-          <p className="empty-text">尚未绑定渠道。网页助手可直接使用。</p>
-        )}
-      </section>
-      <section className="settings-section">
-        <h3>
-          MCP 插件{" "}
+          ))}
+          {!connections.length && (
+            <p className="empty-text">暂无微信或飞书连接。</p>
+          )}
           <button
-            onClick={() =>
-              setDialog({
-                title: "添加 MCP 插件",
-                fields: [
-                  { key: "name", label: "插件名称", required: true },
-                  { key: "description", label: "用途说明" },
-                  {
-                    key: "transport",
-                    label: "传输方式",
-                    value: "http",
-                    hint: "http 或 stdio",
-                  },
-                  { key: "url", label: "HTTPS 地址（http）" },
-                  { key: "command", label: "容器内命令（stdio）" },
-                  { key: "args", label: "命令参数（JSON 数组）", value: "[]" },
-                  {
-                    key: "headers",
-                    label: "请求头（JSON，独立保存）",
-                    type: "textarea",
-                    value: "{}",
-                  },
-                ],
-                action: async (v) => {
-                  await api("/plugins", {
-                    ...v,
-                    args: JSON.parse(v.args),
-                    headers: JSON.parse(v.headers),
-                  });
-                  await load();
-                },
-              })
-            }
+            className="settings-entry"
+            aria-expanded={focus === "mcp"}
+            onClick={() => setFocus("mcp")}
           >
-            <Plus size={15} />
-            添加插件
+            <Library size={18} />
+            <strong>MCP</strong>
+            <span>
+              {plugins.filter((p) => p.enabled !== false).length} 个全局启用
+            </span>
+            <ChevronRight size={16} />
           </button>
-        </h3>
-        <p>全局启用的 MCP 可供所有项目调用。</p>
-        {plugins.map((p) => (
-          <div key={p.id} className="setting-row">
-            <div>
-              <strong>{p.name}</strong>
-              <p>
-                {p.description || p.transport}
-                {p.hasSecrets ? " · 已配置凭证" : ""}
-                {p.enabled === false ? " · 已停用" : " · 全局启用"}
-              </p>
-            </div>
-            <button
-              onClick={() =>
-                act(async () => {
-                  await api("/plugins", { ...p, enabled: p.enabled === false });
-                  await load();
-                })
-              }
-            >
-              {p.enabled === false ? "启用" : "停用"}
-            </button>
-            <button
-              onClick={() =>
-                act(async () => {
-                  await api(`/plugins/${p.id}`, undefined, "DELETE");
-                  await load();
-                })
-              }
-            >
-              移除
-            </button>
-          </div>
-        ))}
-      </section>
-      <GlobalTools notify={notify} />
-      <RecycleBin notify={notify} />
-      <section className="settings-section">
-        <h3>发送回执</h3>
-        {deliveries.length ? (
-          deliveries.slice(0, 15).map((d) => (
-            <div key={d.id} className="setting-row">
+          <button
+            className="settings-entry"
+            aria-expanded={focus === "cli"}
+            onClick={() => setFocus("cli")}
+          >
+            <Terminal size={18} />
+            <strong>CLI</strong>
+            <span>管理</span>
+            <ChevronRight size={16} />
+          </button>
+          {settings.browserUrl && (
+            <div className="setting-row">
               <div>
-                <strong>{d.text.slice(0, 75)}</strong>
+                <strong>浏览器接管</strong>
+                <p>登录或验证时，打开当前执行环境的浏览器。</p>
+              </div>
+              <a
+                className="button"
+                href={settings.browserUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                打开 <ExternalLink size={14} />
+              </a>
+            </div>
+          )}
+        </section>
+        <button
+          className="settings-entry"
+          aria-expanded={focus === "account"}
+          onClick={() => setFocus("account")}
+        >
+          <Settings size={18} />
+          <strong>账号</strong>
+          <ChevronRight size={16} />
+        </button>
+        <details className="settings-advanced">
+          <summary>
+            <SlidersHorizontal size={18} />
+            高级
+          </summary>
+          <section className="settings-section">
+            <h3>运行状态</h3>
+            <div className="setting-row">
+              <div>
+                <strong>DeepSeek Harness</strong>
                 <p>
-                  {stamp(d.createdAt)} {d.error}
+                  {settings.model || "尚未配置"} · 同一个执行核心服务所有入口
                 </p>
               </div>
-              <State state={d.state} />
+              <span className="state state-completed">
+                {settings.runtimeMode || "未配置"}
+              </span>
             </div>
-          ))
-        ) : (
-          <p className="empty-text">尚无渠道发送记录。</p>
-        )}
-      </section>
-      <section className="settings-section">
-        <h3>账号</h3>
-        <div className="setting-row">
-          <div>
-            <strong>工作台密码</strong>
-            <p>用于网页登录。</p>
-          </div>
-          <button
-            onClick={() =>
-              setDialog({
-                title: "修改密码",
-                fields: [
-                  {
-                    key: "password",
-                    label: "新密码",
-                    type: "password",
-                    required: true,
-                    hint: "至少 8 个字符",
+            <div className="setting-row">
+              <div>
+                <strong>全工作台并发上限</strong>
+                <p>
+                  个人助手、项目任务和客服应答共享名额。同一客户的消息按顺序处理，同一项目一次只运行一个写入任务。
+                </p>
+              </div>
+              <span>{settings.maxConcurrentRuns}</span>
+            </div>
+          </section>
+          <section className="settings-section">
+            <h3>发送回执</h3>
+            {deliveries.length ? (
+              deliveries.slice(0, 15).map((d) => (
+                <div key={d.id} className="setting-row">
+                  <div>
+                    <strong>{d.text.slice(0, 75)}</strong>
+                    <p>
+                      {stamp(d.createdAt)} {d.error}
+                    </p>
+                  </div>
+                  <State state={d.state} />
+                </div>
+              ))
+            ) : (
+              <p className="empty-text">尚无渠道发送记录。</p>
+            )}
+          </section>
+          <RecycleBin notify={notify} />
+        </details>
+      </div>
+      <Overlay
+        open={focus === "channels"}
+        title={
+          connections.find((c) => c.id === connectionId)?.label || "连接详情"
+        }
+        close={() => setFocus(null)}
+        mode="drawer"
+        modal={narrow}
+        className="settings-detail"
+      >
+        <p className="muted">接续本人个人对话，回复发回本次消息来源。</p>
+        {connections
+          .filter((c) => c.id === connectionId)
+          .map((c) => (
+            <div className="setting-row" key={c.id}>
+              <div>
+                <strong>{c.label || labels[c.kind]}</strong>
+                {c.ownerId.startsWith("pairing:") && (
+                  <p>
+                    启用后，在飞书私聊机器人发送：
+                    <code>绑定 {c.ownerId.slice(8)}</code>
+                  </p>
+                )}
+                <p>
+                  {(
+                    {
+                      connected: "已连接",
+                      disconnected: "未连接",
+                      connecting: "连接中",
+                      error: "连接异常",
+                    } as Record<string, string>
+                  )[c.status] || c.status}{" "}
+                  ·{" "}
+                  {c.lastHeartbeat
+                    ? `最近连接 ${stamp(c.lastHeartbeat)}`
+                    : "尚未连接"}
+                </p>
+              </div>
+              <button
+                onClick={() =>
+                  act(async () => {
+                    await api("/connections", {
+                      connection: { ...c, enabled: !c.enabled },
+                    });
+                    await load();
+                  })
+                }
+              >
+                {c.enabled ? "停用" : "启用"}
+              </button>
+            </div>
+          ))}
+      </Overlay>
+      <Overlay
+        open={focus === "mcp"}
+        title="MCP 插件"
+        close={() => setFocus(null)}
+        mode="drawer"
+        modal={narrow}
+        className="settings-detail"
+      >
+        <section className="settings-section">
+          <div className="surface-inline-actions">
+            <button
+              onClick={() =>
+                setDialog({
+                  title: "添加 MCP 插件",
+                  fields: [
+                    { key: "name", label: "插件名称", required: true },
+                    { key: "description", label: "用途说明" },
+                    {
+                      key: "transport",
+                      label: "传输方式",
+                      value: "http",
+                      hint: "http 或 stdio",
+                    },
+                    { key: "url", label: "HTTPS 地址（http）" },
+                    { key: "command", label: "容器内命令（stdio）" },
+                    {
+                      key: "args",
+                      label: "命令参数（JSON 数组）",
+                      value: "[]",
+                    },
+                    {
+                      key: "headers",
+                      label: "请求头（JSON，独立保存）",
+                      type: "textarea",
+                      value: "{}",
+                    },
+                  ],
+                  action: async (v) => {
+                    await api("/plugins", {
+                      ...v,
+                      args: JSON.parse(v.args),
+                      headers: JSON.parse(v.headers),
+                    });
+                    await load();
                   },
-                ],
-                action: async (v) => {
-                  await api("/settings/password", v);
-                  notify("密码已更新");
-                },
-              })
-            }
-          >
-            修改密码
-          </button>
-        </div>
-      </section>
+                })
+              }
+            >
+              <Plus size={15} />
+              添加插件
+            </button>
+          </div>
+          <p>全局启用的 MCP 可供所有项目调用。</p>
+          {plugins.map((p) => (
+            <div key={p.id} className="setting-row">
+              <div>
+                <strong>{p.name}</strong>
+                <p>
+                  {p.description || p.transport}
+                  {p.hasSecrets ? " · 已配置凭证" : ""}
+                  {p.enabled === false ? " · 已停用" : " · 全局启用"}
+                </p>
+              </div>
+              <button
+                onClick={() =>
+                  act(async () => {
+                    await api("/plugins", {
+                      ...p,
+                      enabled: p.enabled === false,
+                    });
+                    await load();
+                  })
+                }
+              >
+                {p.enabled === false ? "启用" : "停用"}
+              </button>
+              <button
+                onClick={() =>
+                  act(async () => {
+                    await api(`/plugins/${p.id}`, undefined, "DELETE");
+                    await load();
+                  })
+                }
+              >
+                移除
+              </button>
+            </div>
+          ))}
+        </section>
+      </Overlay>
+      <Overlay
+        open={focus === "cli"}
+        title="CLI 工具"
+        close={() => setFocus(null)}
+        mode="drawer"
+        modal={narrow}
+        className="settings-detail"
+      >
+        <GlobalTools notify={notify} />
+      </Overlay>
+      <Overlay
+        open={focus === "account"}
+        title="账号"
+        close={() => setFocus(null)}
+        mode="drawer"
+        modal={narrow}
+        className="settings-detail"
+      >
+        <section className="settings-section">
+          <div className="setting-row">
+            <div>
+              <strong>工作台密码</strong>
+              <p>用于网页登录。</p>
+            </div>
+            <button
+              onClick={() =>
+                setDialog({
+                  title: "修改密码",
+                  fields: [
+                    {
+                      key: "password",
+                      label: "新密码",
+                      type: "password",
+                      required: true,
+                      hint: "至少 8 个字符",
+                    },
+                  ],
+                  action: async (v) => {
+                    await api("/settings/password", v);
+                    notify("密码已更新");
+                  },
+                })
+              }
+            >
+              修改密码
+            </button>
+          </div>
+        </section>
+      </Overlay>
     </div>
   );
 }
@@ -2904,6 +3264,11 @@ function ProjectMetadata({
 }) {
   const [name, setName] = useState(project.name),
     [aliases, setAliases] = useState((project.aliases || []).join("，"));
+  const [savedFields, setSavedFields] = useState({
+    name: project.name,
+    aliases: (project.aliases || []).join("，"),
+  });
+  useSurfaceGuard(name !== savedFields.name || aliases !== savedFields.aliases);
   return (
     <div className="project-metadata">
       <label>
@@ -2928,6 +3293,7 @@ function ProjectMetadata({
               },
               "PATCH",
             );
+            setSavedFields({ name, aliases });
             await onSave();
             notify("名称与别名已保存");
           } catch (e: any) {

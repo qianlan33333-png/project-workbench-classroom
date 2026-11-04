@@ -1,3 +1,4 @@
+import { PageHeader, Overlay, useNarrow, useSurfaceGuard } from "./surface-ui";
 import React, { useState, useEffect } from "react";
 import { Bot, Plus, Clock, X, Mail } from "lucide-react";
 import {
@@ -126,21 +127,23 @@ export function TaskCenter({
   return (
     <section className="planner-screen">
       <div className="planner-main">
-        <header className="planner-title">
-          <div>
-            <small>工作台</small>
-            <h1>任务</h1>
-          </div>
-          {tab === "ai" && (
-            <button
-              className="primary"
-              onClick={() => setEdit(blank(filter || personal))}
-            >
-              <Plus size={16} />
-              新建 AI 任务
-            </button>
-          )}
-        </header>
+        <PageHeader
+          title="任务"
+          actions={
+            <>
+              {" "}
+              {tab === "ai" && (
+                <button
+                  className="primary"
+                  onClick={() => setEdit(blank(filter || personal))}
+                >
+                  <Plus size={16} />
+                  新建 AI 任务
+                </button>
+              )}
+            </>
+          }
+        />
         <div className="task-toolbar">
           <div className="plan-segment">
             {[
@@ -421,6 +424,8 @@ function RuleForm({
     [targets, setTargets] = useState<any[]>([]),
     [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState("");
+  const narrow = useNarrow(1099);
+  const guard = useSurfaceGuard(JSON.stringify(v) !== JSON.stringify(initial));
   useEffect(() => {
     let live = true;
     const timer = setTimeout(() => {
@@ -478,13 +483,16 @@ function RuleForm({
     }
   };
   return (
-    <aside className="plan-detail">
-      <header>
-        <b>{v.id ? "编辑 AI 任务" : "新建 AI 任务"}</b>
-        <button aria-label="关闭详情" onClick={close}>
-          <X size={16} />
-        </button>
-      </header>
+    <Overlay
+      title={v.id ? "编辑 AI 任务" : "新建 AI 任务"}
+      close={() => {
+        if (!busy && guard()) close();
+      }}
+      busy={busy}
+      mode="drawer"
+      modal={narrow}
+      className="plan-detail"
+    >
       <label>
         任务名称
         <input
@@ -645,7 +653,14 @@ function RuleForm({
             结果
             <select
               value={v.output || ""}
-              onChange={(e) => field({ output: e.target.value, ...(e.target.value === "project_context" ? {sessionId:"", ...(!v.id ? {enabled:false} : {})} : {}) })}
+              onChange={(e) =>
+                field({
+                  output: e.target.value,
+                  ...(e.target.value === "project_context"
+                    ? { sessionId: "", ...(!v.id ? { enabled: false } : {}) }
+                    : {}),
+                })
+              }
             >
               <option value="">对话结果</option>
               <option value="project_context">整理项目说明</option>
@@ -712,7 +727,7 @@ function RuleForm({
           </button>
         )}
       </footer>
-    </aside>
+    </Overlay>
   );
 }
 export function NoticePage({
@@ -733,6 +748,7 @@ export function NoticePage({
     [checked, setChecked] = useState(false),
     [busy, setBusy] = useState(false),
     [trace, setTrace] = useState("");
+  const narrow = useNarrow(1099);
   const load = async () => {
     setList(await api("/notices"));
     refreshBadge();
@@ -760,28 +776,31 @@ export function NoticePage({
   return (
     <section className="planner-screen">
       <div className="planner-main">
-        <header className="planner-title">
-          <div>
-            <small>工作台</small>
-            <h1>站内信</h1>
-          </div>
-          {list.length > 0 && (
-            <button
-              onClick={async () => {
-                try {
-                  await api("/notices/clear", {
-                    through: Math.max(...list.map((n) => n.created)),
-                  });
-                  await load();
-                } catch (e) {
-                  notify((e as Error).message);
-                }
-              }}
-            >
-              清空
-            </button>
-          )}
-        </header>
+        <PageHeader
+          title="站内信"
+          actions={
+            <>
+              {" "}
+              {list.length > 0 && (
+                <button
+                  onClick={async () => {
+                    try {
+                      await api("/notices/clear", {
+                        through: Math.max(...list.map((n) => n.created)),
+                      });
+                      await load();
+                    } catch (e) {
+                      notify((e as Error).message);
+                    }
+                  }}
+                >
+                  清空
+                </button>
+              )}{" "}
+            </>
+          }
+        />
+
         <div className="planner-list">
           {list.length === 0 && (
             <p className="planner-empty">
@@ -814,13 +833,13 @@ export function NoticePage({
         </div>
       </div>
       {f && (
-        <aside className="plan-detail">
-          <header>
-            <b>执行详情</b>
-            <button onClick={() => select("")}>
-              <X size={16} />
-            </button>
-          </header>
+        <Overlay
+          title="执行详情"
+          close={() => select("")}
+          mode="drawer"
+          modal={narrow}
+          className="plan-detail"
+        >
           <h2>{f.name}</h2>
           <p>{stamp(f.at)} · 失败</p>
           <RichText text={f.detail || "未获得完成回执"} />
@@ -884,7 +903,7 @@ export function NoticePage({
               按当前配置重跑
             </button>
           )}
-        </aside>
+        </Overlay>
       )}
     </section>
   );

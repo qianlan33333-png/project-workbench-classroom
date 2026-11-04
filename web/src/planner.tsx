@@ -1,3 +1,4 @@
+import { Overlay, PageHeader, useNarrow, useSurfaceGuard } from "./surface-ui";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Bell,
@@ -31,7 +32,13 @@ const instant = (s: string) =>
   Date.parse(s + (s.length === 10 ? "T00:00" : "") + ":00+08:00");
 const weekStart = (n: number) => n - new Date(n + offset).getUTCDay() * day;
 const weekDays = ["日", "一", "二", "三", "四", "五", "六"];
-type SyncStatus = {lastSuccess:number;lastAttempt:number;syncing:boolean;paused:boolean;error?:string};
+type SyncStatus = {
+  lastSuccess: number;
+  lastAttempt: number;
+  syncing: boolean;
+  paused: boolean;
+  error?: string;
+};
 type Item = {
   id: string;
   kind: string;
@@ -82,14 +89,17 @@ function Frame({
   close: () => void;
   children: React.ReactNode;
 }) {
+  const narrow = useNarrow(1099);
   return (
-    <aside className="plan-detail" aria-label={title}>
-      <header>
-        <b>{title}</b>
-        <Close close={close} />
-      </header>
+    <Overlay
+      title={title}
+      close={close}
+      mode="drawer"
+      modal={narrow}
+      className="plan-detail"
+    >
       {children}
-    </aside>
+    </Overlay>
   );
 }
 function useAction(notify: (s: string) => void) {
@@ -130,6 +140,7 @@ function EventEditor({
   const [v, set] = useState({ ...item }),
     [key] = useState(() => crypto.randomUUID()),
     { act, busy } = useAction(notify);
+  const guard = useSurfaceGuard(JSON.stringify(v) !== JSON.stringify(item));
   const field = (s: Partial<Item>) => set((o) => ({ ...o, ...s }));
   const commit = (action: string) =>
     act(async () => {
@@ -145,7 +156,12 @@ function EventEditor({
       }
     });
   return (
-    <Frame title={v.id ? "日程详情" : "新建日程"} close={close}>
+    <Frame
+      title={v.id ? "日程详情" : "新建日程"}
+      close={() => {
+        if (!busy && guard()) close();
+      }}
+    >
       <label>
         日程名称
         <input
@@ -255,7 +271,17 @@ function EventEditor({
         >
           {v.pending ? "核对飞书操作" : "保存日程"}
         </button>
-        {v.pending && v.id && <button disabled={busy} onClick={()=>window.confirm("采用飞书上的当前日程并结束本次待核对操作？")&&commit("accept_remote")}>采用飞书现状</button>}
+        {v.pending && v.id && (
+          <button
+            disabled={busy}
+            onClick={() =>
+              window.confirm("采用飞书上的当前日程并结束本次待核对操作？") &&
+              commit("accept_remote")
+            }
+          >
+            采用飞书现状
+          </button>
+        )}
         {v.id && !v.pending && (
           <button
             disabled={busy}
@@ -291,7 +317,7 @@ export function CalendarPage({
     [items, setItems] = useState<Item[]>([]),
     [detail, setDetail] = useState<Item | null>(null),
     [warning, setWarning] = useState(""),
-    [sync, setSync] = useState<SyncStatus|null>(null),
+    [sync, setSync] = useState<SyncStatus | null>(null),
     [rev, bump] = useState(0),
     [loading, setLoading] = useState(false),
     [editAt, setEditAt] = useState(""),
@@ -326,8 +352,15 @@ export function CalendarPage({
     let latestRequest = 0;
     const read = async () => {
       const request = ++latestRequest;
-      const local = await api<{ items: Item[]; providerError?: string; sync: SyncStatus }>(
-        "/calendar?start=" + lo + "&end=" + hi, undefined, undefined, abort.signal,
+      const local = await api<{
+        items: Item[];
+        providerError?: string;
+        sync: SyncStatus;
+      }>(
+        "/calendar?start=" + lo + "&end=" + hi,
+        undefined,
+        undefined,
+        abort.signal,
       );
       if (!ok || request !== latestRequest) return;
       setItems(local.items);
@@ -337,7 +370,7 @@ export function CalendarPage({
     void read()
       .catch((e) => ok && setWarning(e.message))
       .finally(() => ok && setLoading(false));
-    const timer=setInterval(()=>void read().catch(()=>{}),5000);
+    const timer = setInterval(() => void read().catch(() => {}), 5000);
     return () => {
       clearInterval(timer);
       ok = false;
@@ -472,16 +505,15 @@ export function CalendarPage({
   return (
     <section className="planner-screen">
       <div className="planner-main">
-        <header className="planner-title">
-          <div>
-            <small>时间安排</small>
-            <h1>日历</h1>
-          </div>
-          <button className="primary" onClick={() => add()}>
-            <Plus size={15} />
-            新建日程
-          </button>
-        </header>
+        <PageHeader
+          title="日历"
+          actions={
+            <button className="primary" onClick={() => add()}>
+              <Plus size={15} />
+              新建日程
+            </button>
+          }
+        />
         <div className="cal-controls">
           <button onClick={() => setSelected(date(Date.now()))}>今天</button>
           <button aria-label="上一期" onClick={() => step(-1)}>
@@ -519,9 +551,27 @@ export function CalendarPage({
             </button>
           ))}
           <small>{loading ? "读取中…" : warning || "北京时间 GMT+8"}</small>
-          <span role="status" className="cal-sync-state">{sync?.syncing ? "飞书同步中 · 已有日程仍可查看" : sync?.lastSuccess ? "飞书上次同步 "+stamp(sync.lastSuccess) : "飞书尚未完成首次同步"}{sync?.paused ? " · 同步暂停" : ""}</span>
-          <button aria-label="刷新日历" disabled={sync?.syncing} onClick={()=>act(async()=>{const status=await api<SyncStatus>("/calendar/sync",{});setSync(status);bump(n=>n+1)})}>
+          <span role="status" className="cal-sync-state">
+            {sync?.syncing
+              ? "飞书同步中 · 已有日程仍可查看"
+              : sync?.lastSuccess
+                ? "飞书上次同步 " + stamp(sync.lastSuccess)
+                : "飞书尚未完成首次同步"}
+            {sync?.paused ? " · 同步暂停" : ""}
+          </span>
+          <button
+            aria-label="同步飞书日历"
+            disabled={sync?.syncing}
+            onClick={() =>
+              act(async () => {
+                const status = await api<SyncStatus>("/calendar/sync", {});
+                setSync(status);
+                bump((n) => n + 1);
+              })
+            }
+          >
             <RefreshCw size={14} />
+            同步飞书日历
           </button>
         </div>
         <div

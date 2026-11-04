@@ -2,6 +2,8 @@ import { ActionMenu } from "./action-menu";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
+  ChevronRight,
+  MoreHorizontal,
   Plus,
   Upload,
   Download,
@@ -20,6 +22,7 @@ import {
   type Project,
 } from "./api";
 import {
+  RichText,
   FileTree,
   FileContent,
   useUnsavedChanges,
@@ -55,7 +58,7 @@ export function ExpertDetail({
     [saved, setSaved] = useState(""),
     [directory, setDirectory] = useState(""),
     [preview, setPreview] = useState(false),
-    [mode, setMode] = useState("files"),
+    [mode, setMode] = useState("overview"),
     [versions, setVersions] = useState<Expert[]>([]),
     [version, setVersion] = useState(""),
     [name, setName] = useState(""),
@@ -263,7 +266,7 @@ export function ExpertDetail({
   const expert = detail.expert,
     readOnly = !!version && version !== expert.digest;
   return (
-    <div className="expert-detail">
+    <div className={`expert-detail mode-${mode}`}>
       <header className="expert-heading">
         <div>
           <button onClick={onBack}>
@@ -271,11 +274,7 @@ export function ExpertDetail({
             专家库
           </button>
           <h1>{expert.name}</h1>
-          <p>{expert.description}</p>
-          <small>
-            更新于 {stamp(expert.updatedAt || expert.createdAt || 0)} · 版本{" "}
-            {expert.digest.slice(0, 10)}
-          </small>
+          {mode !== "overview" && <p>{expert.description}</p>}
         </div>
         <div className="expert-actions">
           <button
@@ -286,59 +285,77 @@ export function ExpertDetail({
             <Save size={15} />
             保存
           </button>
-          <button onClick={() => work(() => changeMode("usage"))}>
-            添加到项目
-          </button>
           <button
-            disabled={busy}
             onClick={() =>
-              work(async () => {
-                if (!(await guard())) return;
-                const e = await api<Expert>(`/experts/${id}/copy`, {});
-                await refresh();
-                onCopy(e.id);
-              })
+              work(() => changeMode(mode === "overview" ? "metadata" : "usage"))
             }
           >
-            <Copy size={15} />
-            复制
+            {mode === "overview" ? "编辑信息" : "添加到项目"}
           </button>
-          <a
-            className="button"
-            href={endpoint(
-              `/experts/${id}/export${version ? `?digest=${version}` : ""}`,
-            )}
+          <ActionMenu
+            label="专家操作"
+            context={id + ":" + mode + ":" + version}
+            triggerContent={<MoreHorizontal size={19} />}
+            triggerClassName="icon"
+            panelClassName="suite-action-menu"
           >
-            <Download size={15} />
-            导出
-          </a>
-          <button
-            className="danger"
-            disabled={busy}
-            onClick={() =>
-              work(async () => {
-                if (!(await guard())) return;
-                const d = await fetchDetail();
-                if (
-                  !window.confirm(
-                    `删除「${d.expert.name}」？将从 ${d.usage.projects.length} 个项目移除，并暂停 ${d.usage.schedules.length} 个定时任务。已经提交的任务、项目笔记和历史成果保留。`,
+            <button
+              role="menuitem"
+              tabIndex={-1}
+              disabled={busy}
+              onClick={() =>
+                work(async () => {
+                  if (!(await guard())) return;
+                  const e = await api<Expert>(`/experts/${id}/copy`, {});
+                  await refresh();
+                  onCopy(e.id);
+                })
+              }
+            >
+              <Copy size={15} />
+              复制
+            </button>
+            <a
+              role="menuitem"
+              tabIndex={-1}
+              className="button"
+              href={endpoint(
+                `/experts/${id}/export${version ? `?digest=${version}` : ""}`,
+              )}
+            >
+              <Download size={15} />
+              导出
+            </a>
+            <button
+              role="menuitem"
+              tabIndex={-1}
+              className="danger"
+              disabled={busy}
+              onClick={() =>
+                work(async () => {
+                  if (!(await guard())) return;
+                  const d = await fetchDetail();
+                  if (
+                    !window.confirm(
+                      `删除「${d.expert.name}」？将从 ${d.usage.projects.length} 个项目移除，并暂停 ${d.usage.schedules.length} 个定时任务。已经提交的任务、项目笔记和历史成果保留。`,
+                    )
                   )
-                )
-                  return;
-                await api(
-                  `/experts/${id}`,
-                  { baseDigest: d.expert.digest },
-                  "DELETE",
-                );
-                await refresh();
-                onGuard(null);
-                onBack();
-              })
-            }
-          >
-            <Trash2 size={15} />
-            删除
-          </button>
+                    return;
+                  await api(
+                    `/experts/${id}`,
+                    { baseDigest: d.expert.digest },
+                    "DELETE",
+                  );
+                  await refresh();
+                  onGuard(null);
+                  onBack();
+                })
+              }
+            >
+              <Trash2 size={15} />
+              删除
+            </button>
+          </ActionMenu>
         </div>
       </header>
       {error && (
@@ -351,10 +368,11 @@ export function ExpertDetail({
         <aside className="expert-sidebar">
           <nav className="expert-tabs">
             {[
-              ["files", "能力文件"],
-              ["metadata", "基本信息"],
-              ["usage", "使用情况"],
-              ["versions", "版本记录"],
+              ["overview", "说明"],
+              ["files", "文件"],
+              ["metadata", "编辑信息"],
+              ["usage", "使用范围"],
+              ["versions", "版本"],
             ].map(([value, label]) => (
               <button
                 disabled={busy}
@@ -487,6 +505,37 @@ export function ExpertDetail({
           />
         </aside>
         <section className="expert-content">
+          {mode === "overview" && (
+            <div className="expert-overview">
+              <div className="expert-overview-description">
+                <strong>说明</strong>
+                <RichText text={expert.description} />
+              </div>
+              <div className="expert-overview-row">
+                <strong>文件</strong>
+                <button onClick={() => work(() => changeMode("files"))}>
+                  {files.filter((f) => !f.directory).length} 个文件
+                  <ChevronRight size={15} />
+                </button>
+              </div>
+              <div className="expert-overview-row">
+                <strong>使用范围</strong>
+                <button onClick={() => work(() => changeMode("usage"))}>
+                  {detail.usage.projects.length} 个项目 ·{" "}
+                  {detail.usage.schedules.length} 项定时任务
+                  <ChevronRight size={15} />
+                </button>
+              </div>
+              <div className="expert-overview-row">
+                <strong>版本</strong>
+                <button onClick={() => work(() => changeMode("versions"))}>
+                  查看版本记录
+                  <ChevronRight size={15} />
+                </button>
+              </div>
+            </div>
+          )}
+
           {form && (
             <form
               className="inline-create"
@@ -652,10 +701,6 @@ export function ExpertDetail({
                   onChange={(e) => setDescription(e.target.value)}
                 />
               </label>
-              <p>
-                内部标识：{expert.skillName}。通用方法在 SKILL.md
-                中编辑，项目经验保存在各自项目。
-              </p>
               <button className="primary" disabled={!dirty || busy || readOnly}>
                 保存信息
               </button>

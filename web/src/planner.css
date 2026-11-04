@@ -87,8 +87,8 @@
 }
 .plan-segment [aria-pressed="true"],
 .cal-filters [aria-pressed="true"] {
-  background: #e7eddf;
-  color: #355333;
+  background: #e8e8e8;
+  color: #171717;
   font-weight: 600;
 }
 .cal-filters {
@@ -128,7 +128,7 @@
   position: sticky;
   top: 0;
   z-index: 3;
-  background: #fafbf9;
+  background: #fafafa;
   text-align: center;
   padding: 9px 2px;
   font-size: 12px;
@@ -226,7 +226,7 @@
   font-size: 12px;
   color: #777;
   text-align: center;
-  background: #fafbf9;
+  background: #fafafa;
 }
 .month-grid .cal-item {
   width: 100%;
@@ -237,11 +237,11 @@
   display: none;
 }
 .is-today {
-  background: #f2f5ef;
+  background: #f7f7f7;
 }
 .date-num {
   padding: 0 4px;
-  color: #46614b;
+  color: #171717;
 }
 .plan-detail {
   width: clamp(295px, 30vw, 450px);
@@ -250,7 +250,7 @@
   border-left: 1px solid var(--line);
   padding: 20px;
   overflow: auto;
-  background: #fcfdfb;
+  background: #fafafa;
 }
 .plan-detail header,
 .plan-detail footer {
@@ -338,7 +338,7 @@
 }
 .history-box {
   padding: 14px;
-  background: #f6f8f3;
+  background: #f7f7f7;
 }
 .history-box details {
   margin: 8px 0;
@@ -373,7 +373,7 @@
     top: 0;
     bottom: 0;
     z-index: 12;
-    box-shadow: -8px 0 36px #23321a14;
+    box-shadow: -8px 0 36px #17171714;
   }
   .planner-screen {
     position: relative;
