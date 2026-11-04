@@ -66,6 +66,10 @@ func TestFollowupDecisionResumeExactlyOnceAndCancel(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	in.Run.State = "completed"
+	if e = s.saveRun(in.Run); e != nil {
+		t.Fatal(e)
+	}
 	s.dispatchDecisions()
 	s.dispatchDecisions()
 	f, _ = s.Followup(f.ID)
@@ -120,6 +124,10 @@ func TestFollowupDueOnceSurvivesStoreAndBounds(t *testing.T) {
 	q.At = now() + 120000
 	f, e := s.SaveFollowup(in, q)
 	if e != nil {
+		t.Fatal(e)
+	}
+	in.Run.State = "completed"
+	if e = s.saveRun(in.Run); e != nil {
 		t.Fatal(e)
 	}
 	// Reopen against the same durable data without rebuilding in-memory tasks.
@@ -397,6 +405,11 @@ func TestFollowupCancellationRacesDueDispatch(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	in.Run.State = "completed"
+	if e = s.saveRun(in.Run); e != nil {
+		t.Fatal(e)
+	}
+	f, _ = s.Followup(f.ID)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	errs := make(chan error, 2)
@@ -648,5 +661,70 @@ func TestFollowupContextResetReleasesStaleDecision(t *testing.T) {
 	}
 	if _, e = s.ResumeFollowup(f.ID, f.Version); e != nil {
 		t.Fatal("stale decision trapped followup", e)
+	}
+}
+
+func TestFollowupFastAnswerWaitsForOriginalOutcome(t *testing.T) {
+	for _, outcome := range []string{"completed", "failed"} {
+		t.Run(outcome, func(t *testing.T) {
+			s := testStore(t)
+			in := followupInput(t, s)
+			q := followupRequest()
+			q.Action = "ask"
+			q.Decision = followupDecision()
+			f, e := s.SaveFollowup(in, q)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = s.AnswerDecision(f.DecisionID, 1, "A", ""); e != nil {
+				t.Fatal(e)
+			}
+			s.dispatchDecisions()
+			current, _ := s.Followup(f.ID)
+			if current.LastRunID != in.Run.ID {
+				t.Fatal("answer replaced active round")
+			}
+			in.Run.State = outcome
+			if e = s.saveRun(in.Run); e != nil {
+				t.Fatal(e)
+			}
+			s.dispatchDecisions()
+			current, _ = s.Followup(f.ID)
+			if outcome == "completed" && current.LastRunID == in.Run.ID {
+				t.Fatal("answer not recovered after cleanup")
+			}
+			if outcome == "failed" && (current.LastRunID != in.Run.ID || current.State != "needs_review") {
+				t.Fatal("failed round resumed automatically", current)
+			}
+		})
+	}
+}
+func TestFollowupDueWaitDoesNotConsumeOccurrence(t *testing.T) {
+	s := testStore(t)
+	in := followupInput(t, s)
+	q := followupRequest()
+	q.Action = "review"
+	q.At = now() + 120000
+	f, e := s.SaveFollowup(in, q)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = s.FireSchedules(time.UnixMilli(q.At + 1)); !errors.Is(e, ErrLocked) {
+		t.Fatal(e)
+	}
+	sc, _ := s.Schedule(f.ScheduleID)
+	if !sc.Enabled || sc.NextAt != q.At {
+		t.Fatal("active round consumed due occurrence", sc)
+	}
+	in.Run.State = "completed"
+	if e = s.saveRun(in.Run); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.FireSchedules(time.UnixMilli(q.At + 1)); e != nil {
+		t.Fatal(e)
+	}
+	f, _ = s.Followup(f.ID)
+	if f.LastRunID == in.Run.ID || f.ReviewCount != 1 {
+		t.Fatal(f)
 	}
 }

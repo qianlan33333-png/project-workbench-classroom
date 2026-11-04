@@ -287,6 +287,17 @@ func (s *Store) SaveFollowup(in RuntimeInput, q FollowupChange) (Followup, error
 
 func stringVersion(v int64) string { return strconv.FormatInt(v, 10) }
 
+func followupRunSettled(tx *sql.Tx, f Followup) error {
+	var active int
+	if e := tx.QueryRow("SELECT count(*) FROM runs WHERE id=? AND state IN ('queued','running','waiting','stopping')", f.LastRunID).Scan(&active); e != nil {
+		return e
+	}
+	if active != 0 {
+		return ErrLocked
+	}
+	return nil
+}
+
 func (s *Store) enqueueFollowupTx(tx *sql.Tx, f *Followup, text string) (Run, error) {
 	var valid int
 	if e := tx.QueryRow("SELECT count(*) FROM sessions WHERE id=? AND project_id=? AND coalesce(data->>'$.recycledAt',0)=0 AND coalesce(data->>'$.lifecycle','')=''", f.SessionID, personalProjectID).Scan(&valid); e != nil {
@@ -435,6 +446,11 @@ func (s *Store) dispatchFollowupDecision(d PersonalDecision) error {
 		}
 		if f.State != "waiting_decision" || f.DecisionID != d.ID {
 			return ErrConflict
+		}
+		// A fast answer must not replace the active round before cleanup and
+		// its final outcome have been persisted. The dispatch loop retries.
+		if e = followupRunSettled(tx, f); e != nil {
+			return e
 		}
 		f.Version++
 		if _, e = s.enqueueFollowupTx(tx, &f, "本人已回答原事项的问题。回答仅适用本次范围，先重新核实事实，再继续剩余步骤。\n回答资料："+encode(d)); e != nil {

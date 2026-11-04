@@ -205,8 +205,73 @@ def prepare_gateway_worker(path):
                            BEGIN SELECT RAISE(ABORT,'gateway worker version required'); END""")
 
 
+def prepare_followup_worker(path):
+    """Old workers cannot enforce the dedicated read-only run scope."""
+    marker = path / 'followup-protocol'
+    supported = marker.is_file() and marker.read_text().strip() == '1'
+    db_path = DATA / 'workbench.sqlite'
+    if not db_path.exists():
+        return
+    with closing(sqlite3.connect(f'{db_path.as_uri()}?mode=rw', uri=True, timeout=30)) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='personal_followups'").fetchone():
+            return
+        guards = ('runs_insert', 'runs_update', 'schedules_insert', 'schedules_update', 'decisions_update')
+        if supported:
+            for guard in guards:
+                db.execute('DROP TRIGGER IF EXISTS rollback_guard_followup_' + guard)
+            return
+        for execute, unit, name in ((run, ('systemctl',), 'project-workbench'),
+                                    (as_user, ('systemctl', '--user'), 'project-workbench-runtime')):
+            status = execute(*unit, 'show', name, '-p', 'ActiveState', '--value', capture=True, check=False)
+            if status.returncode not in (0, 4) or status.stdout.strip() != 'inactive':
+                raise RuntimeError(f'Cannot fence followup work while {name} is not confirmed stopped')
+        active = "state IN ('queued','running','waiting','stopping')"
+        scoped = "coalesce(json_extract(data,'$.followupId'),'')<>''"
+        names = {'pw-' + row[0] for row in db.execute(f'SELECT id FROM runs WHERE {active} AND {scoped}')}
+        if names:
+            label = hashlib.sha256(str(DATA).encode()).hexdigest()[:16]
+            containers = as_user('podman', 'ps', '--all', '--no-trunc', '--filter',
+                                 'label=project-workbench-root=' + label,
+                                 '--format', '{{.ID}} {{.Names}}', capture=True)
+            for line in containers.stdout.splitlines():
+                container, name = line.split()
+                if name in names:
+                    as_user('podman', 'rm', '--force', '--ignore', container)
+        reason = '回滚版本不支持持续跟进，恢复安全版本后请人工核对并继续'
+        at = time.time_ns() // 1_000_000
+        db.execute(f'DELETE FROM project_locks WHERE run_id IN (SELECT id FROM runs WHERE {active} AND {scoped})')
+        db.execute(f"UPDATE inbox SET state='handled',data=json_set(data,'$.state','handled') WHERE id IN (SELECT message_id FROM runs WHERE {active} AND {scoped})")
+        db.execute(f"UPDATE runs SET state='interrupted',data=json_set(data,'$.state','interrupted','$.error',?,'$.finishedAt',?) WHERE {active} AND {scoped}", (reason, at))
+        db.execute(f"UPDATE schedules SET enabled=0,data=json_set(data,'$.enabled',json('false'),'$.pausedReason',?) WHERE {scoped}", (reason,))
+        db.execute(f"UPDATE personal_decisions SET data=json_set(data,'$.state','stale') WHERE {scoped} AND json_extract(data,'$.state') IN ('pending','answered') AND coalesce(json_extract(data,'$.dispatched'),0)=0")
+        db.execute("""UPDATE personal_followups SET state='needs_review',next_at=0,
+                      data=json_set(data,'$.state','needs_review','$.nextAt',0,'$.completionRun','',
+                                    '$.error',?,'$.version',json_extract(data,'$.version')+1,'$.updatedAt',?)
+                      WHERE state NOT IN ('completed','cancelled','needs_review')""", (reason, at))
+        for state, target in (('pending', 'cancelled'), ('sending', 'unknown')):
+            db.execute(f"""UPDATE deliveries SET state=?,data=json_set(data,'$.state',?,'$.error',?)
+                          WHERE state=? AND json_extract(data,'$.kind')='notification'
+                          AND json_extract(data,'$.runId') IN (SELECT id FROM runs WHERE {scoped})""", (target, target, reason, state))
+        for table, operations in (('runs', ('INSERT', 'UPDATE')), ('schedules', ('INSERT', 'UPDATE'))):
+            for operation in operations:
+                name = table + '_' + operation.lower()
+                condition = "coalesce(json_extract(NEW.data,'$.followupId'),'')<>''"
+                if operation == 'UPDATE':
+                    condition += " OR coalesce(json_extract(OLD.data,'$.followupId'),'')<>''"
+                live = "NEW.state IN ('queued','running','waiting','stopping')" if table == 'runs' else 'NEW.enabled=1'
+                db.execute(f"""CREATE TRIGGER IF NOT EXISTS rollback_guard_followup_{name} BEFORE {operation} ON {table}
+                               WHEN ({condition}) AND {live}
+                               BEGIN SELECT RAISE(ABORT,'followup worker version required'); END""")
+        db.execute("""CREATE TRIGGER IF NOT EXISTS rollback_guard_followup_decisions_update BEFORE UPDATE ON personal_decisions
+                      WHEN coalesce(json_extract(OLD.data,'$.followupId'),'')<>''
+                      AND json_extract(NEW.data,'$.state') IN ('pending','answered')
+                      BEGIN SELECT RAISE(ABORT,'followup worker version required'); END""")
+
+
 def start(path, channels=True):
     prepare_gateway_worker(path)
+    prepare_followup_worker(path)
     point('current', path)
     set_runtime(path)
     run('systemctl', 'start', 'project-workbench')

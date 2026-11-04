@@ -368,6 +368,9 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 			if followup.State != "scheduled" || followup.ScheduleID != schedule.ID || followup.ReviewCount >= 3 {
 				return ErrConflict
 			}
+			if e = followupRunSettled(tx, followup); e != nil {
+				return e
+			}
 			if receipt.Outcome != "" {
 				followup.State = "needs_review"
 				followup.Error = receipt.Detail
