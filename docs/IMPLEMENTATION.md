@@ -6,7 +6,7 @@
 
 个人网页上传复用原暂存/消息/物化链，增加本人来源与Session绑定；原业务项目只读边界不扩张。read_message_attachment通过固定有界解析器读取文本、DOCX/XLSX/PPTX、PDF文字与图片OCR；生产容器无网络/凭证/项目挂载，限CPU/内存/时间，停止收拢读取子进程并清理暂存。上传128MiB；单次解析32MiB、提取文本2MiB、PDF/PPTX最多50页；扫描PDF无文字时如实报错，OCR不是完整图像理解。macOS开发先运行scripts/build-macos-attachment-reader.sh，Linux使用镜像固定读取组件。
 
-源码review修复后复核，无剩余可操作问题；39项浏览器、6项实际文件/限量检查、Go竞争检测/vet、Web check/build和13项runtime通过。真实本机Harness两轮读取六种格式，另分别回放微信/飞书附件到原个人会话，无外部发送；实际生产Linux、安装包与渠道状态在切换前后另行核对。详见TODAY-WHITE-REVIEW.md、TODAY-WHITE-ACCEPTANCE.md及根design-qa.md。
+源码review修复后复核，无剩余可操作问题；39项浏览器、6项实际文件/限量检查、Go竞争检测/vet、Web check/build和13项runtime通过。真实本机Harness两轮读取六种格式，另分别回放微信/飞书附件到原个人会话，无外部发送；Linux实际Podman Harness四轮通过，按固定发布入口晋级cloud-20261104-31-today-white-eba379b；实际进程、公开资源、重启后微信/飞书心跳通过，1942个文件和21个会话映射保留，只留正式与上一成功两版。首次增量镜像用户覆盖问题已在切换前修复，应用代码包未变。详见TODAY-WHITE-REVIEW.md、TODAY-WHITE-ACCEPTANCE.md及根design-qa.md。
 
 
 ## 2026-11-04 今天页面精简

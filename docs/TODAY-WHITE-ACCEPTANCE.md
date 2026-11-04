@@ -18,4 +18,16 @@
 
 本地未入Git的运行收据在artifacts/today-white/：ui-report.json、go-race.log、go-vet.log、web-check.log、web-build.log、runtime-check.log、parser.log、attachments-go.log、real-harness.log和Product Design组合图。
 
-生产部署与Linux安装环境读回将在完成后补记；这些本地收据不能替代生产验收。
+## Linux与生产
+
+已发布 `cloud-20261104-31-today-white-eba379b`，应用/前端/runtime源提交 `eba379b57f2ccfa6185f8cb6c102424865a3d20b`，tree `2c1ed1ea0f9b271a7f21cc6e7c1fb25d8222471c`。上一成功版本为 `cloud-20261104-30-today-clean-024e6c6`。没有推送GitHub。
+
+首次Linux隔离验收因增量镜像配方的显式USER 0覆盖keep-id而无法访问测试目录，未切换生产。通过固定控制器恢复清理失败候选，移除该用户覆盖，应用代码包保持相同SHA256。修正后的镜像User与原镜像同为空，keep-id正常生效。
+
+实际Linux镜像 `eb217999fe8983ee9b600ef634916b4ecef770119ad6e823b230af884ceee45e`，按运行中的原镜像增量安装固定PDF/OCR依赖。真实Podman Harness四轮在115.63秒内完成六种格式及微信/飞书附件入站回放，24条附件相关MCP事件；业务正文不变、会话身份稳定。回放使用一次性Store，未启动平台发送器，不等同本次新增平台入站/送达。原渠道适配器字节保持不变，发布后验证两渠道新的连接心跳。
+
+通过原固定发布入口及同一把锁晋级。独立读回确认实际进程执行新二进制，安装manifest、公网HTML/JS/CSS与CLI下载摘要一致；1942个既有文件、21个Session/Harness映射和除RuntimeImage外的配置一致。服务均active，微信/飞书均connected且心跳晚于渠道重启。只有current/previous，临时发布状态、上传包和隔离数据已清退。
+
+本次组合包精确依赖为runtime-image和attachment-runtime.Containerfile，当前源代码存档为source-white.tar；white-manifest.json列出源tree和安装文件摘要。不会把增量组合包中的历史参考材料当成本次构建来源。
+
+本地收据：production-readback.json、linux-real-harness.log、production-deploy-fixed.log；首次环境失败记录为first-linux-harness-failed.log。生产保留white-production-acceptance.json及white-final-readback.json，不包含凭证。
