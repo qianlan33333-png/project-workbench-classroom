@@ -1,6 +1,29 @@
-# 今天持续跟进：本地验收
+# 今天持续跟进：验收与生产发布
 
 日期：2026-11-04。分支 `codex/today-followups`，基线 `ea51003`。流程与 PRD 先于开发保存并提交（`9d438ea`）。
+
+## 2026-11-04 生产结果
+
+已按“review → 修复 → 复核 → 真实 Harness/渠道 → 同包生产”执行。应用提交 `94f692ede3b54bcf9f9faae81978fe0678af1106`，tree `19c409361d00a50cd8cc51e65ee1c1a9ae6dc0e2`；文档记录提交可以晚于应用构建。没有推送 GitHub。
+
+审查修复两项 P1：原轮尚未收拢时提前派发；旧程序回滚不认识只读跟进范围。复核没有剩余可操作发现；详见 `TODAY-FOLLOWUPS-REVIEW.md`。修复后整仓 Go race（workbench 61.675s）、vet、Web check/build、13项 runtime 和6项发布回滚行为检查均通过，UI 沿用已验收的18项 Product Design 旅程（本次修复没有改前端）。
+
+真实验收分开记录：
+
+- 隔离 Store + 实际 Linux 二进制、Podman、Harness、真实模型：三轮142.25秒，实际等待到期，覆盖持久问题、回答后原会话续办、到期只读核实、依据结案、等待释放锁、正文原样，共8次真实工具调用。
+- 微信、飞书分别通过隔离 channel API + 真实模型，验证同一 Today 会话、持久问题/命令回答、重复消息去重、专用续办、只读正文及通知 outbox，共4轮。该部分入站是回放，未启动第二套平台消费者。
+- 用户分别发送约定测试消息，生产原消费者真实收到；两条均进入原 `personal-assistant` 会话，模型均回复“收到”，微信取得 accepted、飞书取得 sent。每个入站只对应一个 Run 和一条 answer 投递。
+- 新流程生成的最终跟进通知通过真实平台发送到原绑定本人私聊：微信 accepted，飞书 sent；采用实际 outbox 投递 ID 和确定回执，未自动重发。平台发送回执不等于已读证明。
+
+首次真实 Harness 验收因运行用户继承 `/home/ubuntu` 无进入权限而在容器清理失败，未计为通过。指定正确工作目录、清理唯一隔离容器后，按同一二进制重新完整通过；没有为通过而修改产品或省略清理。
+
+正式包为 `cloud-20261104-29-today-followups-94f692e`，上一成功版为 `cloud-20261103-28-calendar-sync`。候选归档 SHA256 `666d13924b370516099e86e9ef90a5ae1e8829641e94b315eaf4d98927cfa9f4`；实际运行二进制 SHA256 `3a5965b27a6f7448772567596ce44b620a40a59e0bbf8fd4dfd74270762d83f5`。继续复用已固定的运行镜像，本次 runtime JS 按目录只读挂载交付。
+
+在既有发布锁内准备新候选，复用 `/opt/project-workbench/deploy-today.sh` 和固定控制器，验收 hook 成功后提交 previous。固定控制器已原子更新回滚保护；新增表迁移前只保留一份 SQLite 一致性恢复点，程序回滚不恢复旧业务数据库。
+
+安装后再次独立读取实际进程 exe/cwd、候选 manifest、公开 HTML/JS/CSS 摘要和渠道重启后心跳。应用、渠道服务均 active，两个渠道 connected；原有1942个文件摘要、21个 Session/Harness 映射和业务配置保持一致。只保留 current/previous，`.deploying`、incoming、一次性预览数据/服务及上传辅助文件均已清理，发布锁已释放。
+
+证据保存在当前包 `followup-acceptance/`、`followup-production-acceptance.json`、`followup-final-readback.json`，以及本机不进 Git 的 `artifacts/today-followups/production/`。日志和真实回执不写入源码。
 
 ## 实现结果
 
@@ -39,10 +62,10 @@ PW_FOLLOWUP_PREVIEW="$PWD/artifacts/today-followups" go test ./internal/workbenc
 
 另一个终端运行 `node scripts/verify-today-followups.mjs`。脚本读取 `preview.json` 中的回环地址；每轮测试需要新夹具。写入该目录的 `stop` 文件可正常结束夹具，下一轮启动前移走该停止文件。预览使用真正的数据库和 HTTP API，但执行器是确定性测试替身，不调用模型或渠道。
 
-## 验证边界与交付
+## 本地阶段的验证边界（上线前记录）
 
-本轮没有部署、推送 GitHub、调用真实 Provider、发送真实消息或修改生产资料。模拟渠道证明应用内身份与发送队列行为，不等于平台回调、投递或用户可见性验收。
+最初本地开发阶段没有部署、推送 GitHub、调用真实 Provider、发送真实消息或修改生产资料；后续已按上方生产结果完成真实验收及上线。模拟渠道证明应用内身份与发送队列行为，不等于平台回调、投递或用户可见性验收。
 
 自动复查第一版核对工作台已有项目资料和日程缓存；没有泛化到 CRM/网站等第三方实时读取。缺少相应只读入口时应保留待核实，不能声称已验证外部状态。
 
-发布时后端、Web 和 runtime 必须同版本交付；安装后另做真实 Harness/渠道验收。旧版本不了解跟进专用权限，回滚前必须通过现有发布流程停用复查并收拢跟进 Run，不应让旧执行器消费这些自动任务。本次发布前 review 已在既有固定发布入口加入自动兼容保护，主动回滚和失败恢复均调用同一保护；不另建发布通道。恢复支持跟进的程序后仍需人工核实并继续，不重放旧定时。
+发布时后端、Web 和 runtime 必须同版本交付；实际 Harness/渠道和安装后读回已按上方结果完成。旧版本不了解跟进专用权限，回滚前必须通过现有发布流程停用复查并收拢跟进 Run，不应让旧执行器消费这些自动任务。本次发布前 review 已在既有固定发布入口加入自动兼容保护，主动回滚和失败恢复均调用同一保护；不另建发布通道。恢复支持跟进的程序后仍需人工核实并继续，不重放旧定时。
