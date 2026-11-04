@@ -69,3 +69,11 @@ PW_FOLLOWUP_PREVIEW="$PWD/artifacts/today-followups" go test ./internal/workbenc
 自动复查第一版核对工作台已有项目资料和日程缓存；没有泛化到 CRM/网站等第三方实时读取。缺少相应只读入口时应保留待核实，不能声称已验证外部状态。
 
 发布时后端、Web 和 runtime 必须同版本交付；实际 Harness/渠道和安装后读回已按上方结果完成。旧版本不了解跟进专用权限，回滚前必须通过现有发布流程停用复查并收拢跟进 Run，不应让旧执行器消费这些自动任务。本次发布前 review 已在既有固定发布入口加入自动兼容保护，主动回滚和失败恢复均调用同一保护；不另建发布通道。恢复支持跟进的程序后仍需人工核实并继续，不重放旧定时。
+
+## 后续前端精简发行
+
+2026-11-04，按用户截图删除重复标题与说明，前端`024e6c6`，正式包`cloud-20261104-30-today-clean-024e6c6`。后端、runtime及镜像字节与已验收`94f692e`相同，复用上方真实Harness/渠道收发证据；本轮未重复调用实际模型或外发消息。
+
+Product Design同状态视觉比较通过，桌面/手机对话可用高度增加约83/85px；既有18项交互、Web check/build、Go test/vet通过。先review删除范围与剩余样式，再核对构建产物。发现上一手工组合包漏带既有CLI静态下载文件，已按原stage-cli脚本补齐，没有改CLI功能。
+
+新组合包按固定入口发布并独立读回：公网HTML/JS/CSS及CLI文件摘要一致，实际运行程序与清理后的current相符，重启后两个渠道connected且有新心跳。原1942个文件摘要、21个会话映射与业务配置一致；previous为`cloud-20261104-29-today-followups-94f692e`，只留两版，无发布临时状态。发行摘要`8bed00a8bb9ed93b1c021c0e10b6071ac9d10bd021ee3926042a803adc13056c`，本机收据`artifacts/today-heading/production-readback.json`。
