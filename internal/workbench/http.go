@@ -268,6 +268,10 @@ func (a *API) Mount(r *gin.Engine) {
 	owner.DELETE("/schedules/:id", func(c *gin.Context) {
 		s.scheduleMu.Lock()
 		defer s.scheduleMu.Unlock()
+		if sc, e := s.Schedule(c.Param("id")); e == nil && sc.FollowupID != "" {
+			reply(c, nil, errors.New("持续跟进的复查请在今天管理"))
+			return
+		}
 		res, e := s.DB.Exec("DELETE FROM schedules WHERE id=? AND NOT EXISTS(SELECT 1 FROM runs WHERE json_extract(data,'$.scheduleId')=? AND state IN ('queued','running','waiting','stopping'))", c.Param("id"), c.Param("id"))
 		if e == nil {
 			n, _ := res.RowsAffected()

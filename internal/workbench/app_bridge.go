@@ -76,7 +76,7 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/global-mcp/") {
-			if model != nil {
+			if model != nil || in.Run.FollowupID != "" {
 				http.NotFound(w, r)
 				return
 			}
@@ -106,6 +106,10 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 		}
 		var value any
 		var err error
+		if in.Run.FollowupID != "" && (!h.Store.followupRunLive(in.Run) || !allowedFollowupTool(req.Tool)) {
+			http.Error(w, "持续跟进本轮只能核对资料及更新自身事项，或事项已失效", 403)
+			return
+		}
 		if req.Tool == "run_global_cli" && in.Project.ID == personalProjectID && !in.Routing {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(95 * time.Second))
 			value, err = h.runPersonalCLI(r.Context(), in, req.Args)
@@ -135,6 +139,9 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 }
 
 func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {
+	if in.Run.FollowupID != "" && (!s.followupRunLive(in.Run) || !allowedFollowupTool(tool)) {
+		return nil, errors.New("持续跟进本轮只读或事项已失效")
+	}
 	if _, e := s.gatewaySession(in.Session.ID); e == nil || in.Run.Source == gatewaySource {
 		var a struct {
 			Offset int    `json:"offset"`

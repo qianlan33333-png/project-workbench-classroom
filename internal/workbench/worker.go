@@ -135,6 +135,7 @@ func (w *Worker) Start(ctx context.Context) {
 		defer ticker.Stop()
 		for ctx.Err() == nil {
 			_ = w.Store.fireDueSchedules(ctx, time.Now())
+			w.Store.dispatchDecisions()
 			select {
 			case <-ctx.Done():
 				return
@@ -292,6 +293,12 @@ func (w *Worker) claimWithinBudget(budget int64) (Run, error) {
 				return nil
 			}
 		}
+		if r.FollowupID != "" && !s.followupRunLive(r) {
+			r.State = "cancelled"
+			r.FinishedAt = now()
+			_, err = tx.Exec("UPDATE runs SET state=?,data=? WHERE id=?", r.State, encode(r), r.ID)
+			return err
+		}
 		if h, ok := w.Executor.(*Harness); ok && h.Config.RuntimeMode == "podman" && r.Kind != "archive" {
 			// An older semantic entry that could not obtain capacity gets a
 			// chance at the last free slot. Expiry prevents a stranded reservation.
@@ -366,6 +373,9 @@ func (w *Worker) execute(parent context.Context, r Run) {
 	}
 	if err == nil {
 		err = ctx.Err()
+	}
+	if err == nil && !s.followupRunLive(r) {
+		err = errors.New("持续跟进已取消或不再属于本轮")
 	}
 	if err == nil {
 		err = s.MaterializeAttachments(&r)
@@ -540,8 +550,9 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		m.State = r.State
 		_ = s.saveMessage(m)
 		p, _ := s.Project(r.ProjectID)
-		_ = s.QueueReply(m, r.ID, r.SessionID, "answer", resultReply(p, r))
+		_ = s.QueueReply(m, r.ID, r.SessionID, "answer", s.followupReply(r, resultReply(p, r)))
 	}
+	_ = s.queueFollowupNotification(r)
 	if r.ScheduleID != "" {
 		sc, e := s.Schedule(r.ScheduleID)
 		if e == nil && sc.NotifyConnectionID != "" {
@@ -851,6 +862,9 @@ func (w *Worker) Stop(id string) error {
 	return w.Store.saveRun(r)
 }
 func (w *Worker) handleControl(m Message) (bool, error) {
+	if handled, e := w.handleFollowupControl(m); handled || e != nil {
+		return handled, e
+	}
 	text := strings.TrimSpace(m.Incoming.Text)
 	if !isChatChannel(m.Incoming.Source) || (text != "停止" && !strings.HasPrefix(text, "停止 #T")) {
 		return false, nil

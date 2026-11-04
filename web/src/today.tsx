@@ -16,6 +16,7 @@ import { MemoryPanel } from "./personal-understanding";
 import { PersonalRulesPanel } from "./personal-rules";
 import { RichText } from "./file-ui";
 import { useMessageSubmissions } from "./message-submissions";
+import { FollowupsPanel } from "./followups";
 export type Task = {
   id: string;
   projectId: string;
@@ -585,13 +586,15 @@ export function Today({
           <h2>个人助手</h2>
           <p>可查项目文件、对话和任务。微信、飞书与这里接续同一段对话。</p>
         </div>
+        {data && <FollowupsPanel items={data.followups || []} decisions={data.decisions || []} refresh={refresh}
+          renderDecision={(d) => <DecisionCard key={d.id} d={d} projects={projects} refresh={refresh} notify={notify} />} />}
         <div className="today-messages">
           {!data ? (
             <p>正在读取个人空间…</p>
           ) : (
             <>
               {data.channelNotes?.length > 0 && (
-                <details className="context-status"><summary>机器人通知与回执</summary>{data.channelNotes.map((n:any)=><article key={n.id}><small>{n.kind==="notification"?"任务通知":"停止回执"} · {stamp(n.createdAt)} · {({sent:"已送达",accepted:"平台已接受",failed:"发送失败",unknown:"送达待核对",pending:"待发送",sending:"发送中"} as Record<string,string>)[n.state] || n.state}</small><RichText text={n.text}/></article>)}</details>
+                <details className="context-status"><summary>机器人通知与回执</summary>{data.channelNotes.map((n:any)=><article key={n.id}><small>{n.kind==="notification"?"任务通知":"停止回执"} · {stamp(n.createdAt)} · {({sent:"已送达",accepted:"平台已接受",failed:"发送失败",unknown:"送达待核对",pending:"待发送",sending:"发送中",cancelled:"已取消"} as Record<string,string>)[n.state] || n.state}</small><RichText text={n.text}/></article>)}</details>
               )}
               {data.contextResetAt && (
                 <p className="context-status">
@@ -701,7 +704,7 @@ export function Today({
                       )}
                     </div>
                     {data.decisions
-                      ?.filter((d: any) => d.sourceRun === r.id)
+                      ?.filter((d: any) => d.sourceRun === r.id && !d.followupId)
                       .map((d: any) => (
                         <DecisionCard
                           key={d.id}

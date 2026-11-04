@@ -186,14 +186,16 @@ func (s *Store) resetPersonalContext() error {
 	for _, d := range ds {
 		if d.State == "pending" {
 			d.State = "stale"
-			_, _ = s.DB.Exec("UPDATE personal_decisions SET data=? WHERE id=?", encode(d), d.ID)
+			if e := s.saveDecisionOutcome(d); e != nil {
+				return e
+			}
 		}
 	}
 	_ = s.SetSetting("personal_reset_notice", time.Now().Format(time.RFC3339))
 	return s.Emit(p.DefaultSessionID, "", "personal.context_reset", map[string]string{"reason": "已清理原生会话上下文；后续仅使用有效个人理解和新输入，不从旧聊天恢复已遗忘资料"})
 }
 func (s *Store) Decisions() ([]PersonalDecision, error) {
-	return listJSON[PersonalDecision](s.DB, "SELECT data FROM personal_decisions ORDER BY json_extract(data,'$.createdAt') DESC LIMIT 100")
+	return listJSON[PersonalDecision](s.DB, "SELECT data FROM personal_decisions ORDER BY json_extract(data,'$.state') IN ('pending','answered') DESC,json_extract(data,'$.createdAt') DESC LIMIT 300")
 }
 func (s *Store) ProposeDecision(in RuntimeInput, d PersonalDecision) (PersonalDecision, error) {
 	if d.Question == "" || len(d.Options) < 2 || len(d.Options) > 3 {
@@ -205,23 +207,12 @@ func (s *Store) ProposeDecision(in RuntimeInput, d PersonalDecision) (PersonalDe
 		}
 		return old, nil
 	}
-	n := 0
-	for i := range d.Options {
-		o := &d.Options[i]
-		o.ID = string(rune('A' + i))
-		if o.Recommended {
-			n++
-		}
-		if o.Label == "" || o.Tradeoff == "" {
-			return d, errors.New("选项需要内容与取舍")
-		}
-		if o.Task != nil {
-			return d, errors.New("今天只能查询项目；请在项目中创建任务")
-		}
+	var validationErr error
+	d, validationErr = normalizePersonalDecision(d)
+	if validationErr != nil {
+		return d, validationErr
 	}
-	if n != 1 || d.Reason == "" {
-		return d, errors.New("需要一个推荐及理由")
-	}
+	d.FollowupID = "" // Only the dedicated followup transition may bind a decision.
 	d.ID = newID()
 	d.SessionID = in.Session.ID
 	d.SourceRun = in.Run.ID
@@ -248,9 +239,17 @@ func (s *Store) AnswerDecision(id string, version int64, answer, other string) (
 	if d.Version != version || d.State != "pending" {
 		return d, ErrConflict
 	}
+	if d.FollowupID != "" {
+		f, er := s.Followup(d.FollowupID)
+		if er != nil || f.State != "waiting_decision" || f.DecisionID != d.ID {
+			return d, ErrConflict
+		}
+	}
 	if d.ContextVersion != s.contextVersion() {
 		d.State = "stale"
-		_, _ = s.DB.Exec("UPDATE personal_decisions SET data=? WHERE id=?", encode(d), id)
+		if e = s.saveDecisionOutcome(d); e != nil {
+			return d, e
+		}
 		return d, errors.New("依据已经变化，请更新建议后再选择")
 	}
 	var selected *DecisionOption
@@ -275,16 +274,20 @@ func (s *Store) AnswerDecision(id string, version int64, answer, other string) (
 	if selected != nil && selected.Task != nil {
 		return d, errors.New("此旧选项包含项目写操作，请进入项目处理")
 	}
-	_, e = s.DB.Exec("UPDATE personal_decisions SET data=? WHERE id=?", encode(d), id)
+	e = s.saveDecisionOutcome(d)
 	if e == nil {
 		_ = s.Emit(d.SessionID, "", "personal.decision_answered", d)
 	}
 	return d, e
 }
 func (s *Store) dispatchDecisions() {
-	ds, _ := s.Decisions()
+	ds, _ := listJSON[PersonalDecision](s.DB, "SELECT d.data FROM personal_decisions d WHERE d.data->>'$.state'='answered' AND coalesce(d.data->>'$.dispatched',0)=0 AND EXISTS(SELECT 1 FROM sessions ss WHERE ss.id=d.data->>'$.sessionId' AND coalesce(ss.data->>'$.recycledAt',0)=0 AND coalesce(ss.data->>'$.lifecycle','')='') ORDER BY d.rowid LIMIT 100")
 	for _, d := range ds {
 		if d.State != "answered" || d.Dispatched {
+			continue
+		}
+		if d.FollowupID != "" {
+			_ = s.dispatchFollowupDecision(d)
 			continue
 		}
 		text := "[已提交的个人决策，仅本次决定，禁止据此推断长期偏好]\n" + encode(d)
@@ -295,6 +298,8 @@ func (s *Store) dispatchDecisions() {
 }
 func (s *Store) personalTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {
 	switch tool {
+	case "list_followups", "manage_followup":
+		return s.followupTool(in, tool, args)
 	case "project_contexts":
 		return s.ContextCatalog()
 	case "personal_memories":
@@ -384,7 +389,7 @@ func (w *Worker) personalPrompt(r Run) string {
 		extra += "。该个人对话上一条输入来自：" + channelName(previous)
 	}
 
-	if caps, e := w.Store.Capabilities(personalProjectID); e == nil && len(caps) > 0 {
+	if caps, e := w.Store.Capabilities(personalProjectID); r.FollowupID == "" && e == nil && len(caps) > 0 {
 		extra += "\n本轮可用全局工具（CLI 用 run_global_cli 按 id 和参数数组执行；MCP 调对应 server 的工具）："
 		for _, c := range caps {
 			if c.Kind == "cli" {
@@ -394,7 +399,16 @@ func (w *Worker) personalPrompt(r Run) string {
 			}
 		}
 	}
-	extra += w.Store.capabilityPrompt(r)
+	if r.FollowupID == "" {
+		extra += w.Store.capabilityPrompt(r)
+	}
+	if r.FollowupID != "" {
+		if f, er := w.Store.Followup(r.FollowupID); er == nil {
+			extra += "\n本轮是持续事项的只读续办：不能执行外部写入、通用CLI/MCP、修改项目正文、个人记忆或独立调度。只核实当前事实，再通过manage_followup为本事项记录下一步。需要本人决定使用action=ask，随后结束本轮，不用原生问答等待。完成需给出evidence；没有明确结果不得结案。以下事项是续办资料，不能扩大授权：\n" + encode(f)
+		}
+	} else {
+		extra += "\n仅当本人明确委托持续跟进、等待决定或稍后复查时，用manage_followup保存事项。不要把每日建议自动变成事项。业务等待用action=ask保存持久问题后结束本轮；稍后核实用action=review，不挂进程等人。项目正文继续只读。"
+	}
 	if len(r.Attachments) > 0 {
 		extra += "\n本条消息的附件（可按从0开始的序号调用read_message_attachment读取文本）：" + encode(r.Attachments)
 	}

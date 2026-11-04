@@ -216,7 +216,7 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 				socket = "/bridge.sock"
 				mounts = append(mounts, "--volume", bridgeSocket(input)+":/bridge.sock:rw")
 			}
-			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "project-workbench", "name": "@deepseek-ai/dsh-mcp-client", "config": map[string]any{"serverName": "workbench", "transport": "stdio", "command": "node", "args": []string{filepath.Join(runtimeDir, "app-mcp.mjs")}, "env": map[string]string{"PW_APP_SOCKET": socket, "PW_PERSONAL": strconv.FormatBool(personal), "PW_GATEWAY": strconv.FormatBool(external)}, "failOnStartupError": true}}}})
+			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "project-workbench", "name": "@deepseek-ai/dsh-mcp-client", "config": map[string]any{"serverName": "workbench", "transport": "stdio", "command": "node", "args": []string{filepath.Join(runtimeDir, "app-mcp.mjs")}, "env": map[string]string{"PW_APP_SOCKET": socket, "PW_PERSONAL": strconv.FormatBool(personal), "PW_GATEWAY": strconv.FormatBool(external), "PW_FOLLOWUP": strconv.FormatBool(input.Run.FollowupID != "")}, "failOnStartupError": true}}}})
 		}
 		if c.RuntimeMode == "podman" && !personal && !external {
 			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "project-browser", "name": "@deepseek-ai/dsh-mcp-client", "config": map[string]any{"serverName": "browser", "transport": "stdio", "command": "node", "args": []string{"/opt/workbench-runtime/browser-mcp.mjs"}, "cwd": "/workspace", "env": map[string]string{"DISPLAY": ":99", "PW_CHROMIUM": "/usr/bin/chromium", "PW_BROWSER_PROFILE": "/runtime/browser-profile"}}}}})
@@ -224,6 +224,9 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		globalPlugins, e := h.Store.enabledProjectPlugins(input.Project.ID)
 		if e != nil {
 			return nil, nil, "", e
+		}
+		if input.Run.FollowupID != "" {
+			globalPlugins = nil
 		}
 		if external {
 			selected := []Plugin{}

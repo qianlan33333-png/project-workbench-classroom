@@ -42,6 +42,14 @@ func (s *Store) saveSchedule(v Schedule, creationID string) (Schedule, error) {
 	return s.saveScheduleLocked(v, creationID, false)
 }
 func (s *Store) saveScheduleLocked(v Schedule, creationID string, explicitEnabled bool) (Schedule, error) {
+	if v.FollowupID != "" {
+		return v, errors.New("持续跟进的复查请在今天管理")
+	}
+	if v.ID != "" {
+		if old, e := s.Schedule(v.ID); e == nil && old.FollowupID != "" {
+			return v, errors.New("持续跟进的复查请在今天管理")
+		}
+	}
 	if v.Condition != "" && v.Condition != "changed" {
 		return v, errors.New("无法识别执行条件")
 	}
@@ -222,6 +230,9 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 		return receipt, ErrConflict
 	}
 	manual := operation != ""
+	if manual && schedule.FollowupID != "" {
+		return receipt, errors.New("请在今天继续这项跟进")
+	}
 	original := schedule.OriginalNext
 	if original == 0 {
 		original = schedule.NextAt
@@ -347,6 +358,26 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 		}
 	}
 	err = s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		var followup Followup
+		if schedule.FollowupID != "" {
+			var e error
+			followup, e = followupTx(tx, schedule.FollowupID)
+			if e != nil {
+				return e
+			}
+			if followup.State != "scheduled" || followup.ScheduleID != schedule.ID || followup.ReviewCount >= 3 {
+				return ErrConflict
+			}
+			if receipt.Outcome != "" {
+				followup.State = "needs_review"
+				followup.Error = receipt.Detail
+				followup.NextAt = 0
+				followup.Version++
+				if e = putFollowup(tx, &followup); e != nil {
+					return e
+				}
+			}
+		}
 		if receipt.Outcome == "skipped" && schedule.Output == "project_context" {
 			if e := restoreUnchangedBrief(tx, p.ID, fingerprint); e != nil {
 				return e
@@ -361,6 +392,7 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 			}
 			m := Message{ID: newID(), Incoming: Incoming{Source: "automation", EventID: schedule.ID + ":" + operation, SessionID: ss.ID, Text: schedule.Instruction, ExpertID: schedule.ExpertID}, State: "queued", SessionID: ss.ID, CreatedAt: now()}
 			r := Run{ID: newID(), ProjectID: p.ID, SessionID: ss.ID, MessageID: m.ID, State: "queued", Source: "automation", Text: schedule.Instruction, ExpertID: schedule.ExpertID, ScheduleID: schedule.ID, CreatedAt: now()}
+			r.FollowupID = schedule.FollowupID
 			r.ExpertVersions = versions
 			r.ConversationOutput = schedule.ConversationOutput
 			r.Capabilities = caps
@@ -402,6 +434,16 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 			if _, e := tx.Exec("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)", r.ID, p.ID, ss.ID, m.ID, r.State, 10, r.CreatedAt, encode(r)); e != nil {
 				return e
 			}
+			if r.FollowupID != "" {
+				followup.State = "queued"
+				followup.LastRunID = r.ID
+				followup.NextAt = 0
+				followup.ReviewCount++
+				followup.Version++
+				if e := putFollowup(tx, &followup); e != nil {
+					return e
+				}
+			}
 
 			if !manual {
 				if _, e := tx.Exec("INSERT INTO schedule_occurrences VALUES(?,?,?)", id, strings.TrimPrefix(operation, "cron:"), m.ID); e != nil {
@@ -430,6 +472,9 @@ func (s *Store) toggleSchedule(id string, enabled bool) (Schedule, []string, err
 	sc, e := s.Schedule(id)
 	if e != nil {
 		return sc, nil, e
+	}
+	if sc.FollowupID != "" {
+		return sc, nil, errors.New("持续跟进的复查请在今天管理")
 	}
 	if enabled {
 		p, e := s.Project(sc.ProjectID)

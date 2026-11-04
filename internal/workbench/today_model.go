@@ -87,6 +87,7 @@ type DecisionOption struct {
 	Task        *ProjectTask `json:"task,omitempty"`
 }
 type PersonalDecision struct {
+	FollowupID     string           `json:"followupId,omitempty"`
 	Dispatched     bool             `json:"dispatched,omitempty"`
 	ID             string           `json:"id"`
 	Question       string           `json:"question"`

@@ -10,6 +10,17 @@ import (
 func (a *API) mountToday(g *gin.RouterGroup) {
 	s := a.Store
 	a.mountPlanner(g)
+	g.GET("/personal/followups", func(c *gin.Context) { v, e := s.Followups(); reply(c, v, e) })
+	g.POST("/personal/followups/:id/continue", func(c *gin.Context) {
+		bind(c, func(v struct {
+			Version int64 `json:"version"`
+		}) (any, error) { return s.ResumeFollowup(c.Param("id"), v.Version) })
+	})
+	g.POST("/personal/followups/:id/cancel", func(c *gin.Context) {
+		bind(c, func(v struct {
+			Version int64 `json:"version"`
+		}) (any, error) { return s.CancelFollowup(c.Param("id"), v.Version) })
+	})
 	g.GET("/personal/understanding", func(c *gin.Context) { v, e := s.Understanding(); reply(c, v, e) })
 	g.POST("/personal/understanding/refresh", func(c *gin.Context) { reply(c, gin.H{"state": "pending"}, s.RequestUnderstanding()) })
 	g.GET("/personal/understanding/evidence", func(c *gin.Context) {
@@ -95,7 +106,12 @@ func (a *API) mountToday(g *gin.RouterGroup) {
 			return
 		}
 		notice, _ := s.Setting("personal_reset_notice")
-		reply(c, gin.H{"channelNotes": notes, "contextResetAt": notice, "sessionId": p.DefaultSessionID, "runs": rs, "decisions": ds, "daily": daily, "contexts": contexts}, e)
+		followups, err := s.Followups()
+		if err != nil {
+			reply(c, nil, err)
+			return
+		}
+		reply(c, gin.H{"followups": followups, "channelNotes": notes, "contextResetAt": notice, "sessionId": p.DefaultSessionID, "runs": rs, "decisions": ds, "daily": daily, "contexts": contexts}, e)
 	})
 	g.POST("/today/refresh", func(c *gin.Context) {
 		e := s.RequestToday()

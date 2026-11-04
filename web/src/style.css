@@ -3332,6 +3332,45 @@ label input[type="file"] {
 }
 
 /* Today keeps one conversation mounted while its arrangement panel changes. */
+.followup-panel { margin: 0 24px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); display: flex; flex-direction: column; flex-shrink: 1; min-height: 46px; min-width: 0; overflow: hidden; }
+.followup-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 11px 14px; background: transparent; border: 0; text-align: left; min-height: 44px; flex-shrink: 0; }
+.followup-toggle > span { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.followup-toggle strong { font-size: 13px; white-space: nowrap; }
+.followup-toggle small, .followup-detail > small, .followup-time { color: var(--muted); font-size: 12px; }
+.followup-toggle em { font-size: 12px; font-style: normal; color: var(--green); white-space: nowrap; }
+.followup-list { min-height: 0; max-height: min(42vh, 360px, max(32px, calc(100dvh - 470px))); overflow: auto; padding: 0 14px 10px; overscroll-behavior: contain; }
+.followup-item { border-top: 1px solid var(--line); padding: 4px 0; min-width: 0; }
+.followup-heading { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 42px; background: transparent; border: 0; padding: 6px 0; text-align: left; }
+.followup-heading > svg { flex-shrink: 0; color: var(--muted); }
+.followup-title { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.6; font-size: 13px; }
+.followup-state { flex-shrink: 0; font-size: 11px; border-radius: 5px; padding: 3px 7px; color: var(--muted); background: #f5f5f1; }
+.followup-state.state-waiting_decision, .followup-state.state-completed { color: var(--green); background: var(--green-soft); }
+.followup-state.state-needs_review { color: #8c6428; background: #faf4e8; }
+.followup-time { display: flex; align-items: center; gap: 5px; padding: 0 0 8px 22px; flex-wrap: wrap; }
+.followup-detail { padding: 4px 0 12px 22px; overflow-wrap: anywhere; }
+.followup-detail > p, .followup-detail .markdown { font-size: 13px; line-height: 1.8; margin: 5px 0 12px; }
+.followup-progress > summary { color: var(--muted); cursor: pointer; font-size: 12px; padding: 8px 0; }
+.followup-progress > small { color: var(--muted); font-size: 12px; }
+.followup-progress > p { font-size: 13px; line-height: 1.8; }
+.followup-detail .decision-card { padding: 16px; margin: 14px 0; }
+.followup-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.followup-actions button { min-height: 40px; font-size: 12px; }
+.followup-cancel { color: var(--muted); background: transparent; }
+.followup-confirm { width: 100%; padding: 10px 12px; background: #f7f7f4; border-radius: 8px; }
+.followup-confirm p { margin: 0 0 8px; font-size: 12px; line-height: 1.7; }
+.followup-confirm button { margin-right: 8px; }
+.followup-error { color: #8c6428; font-size: 12px; line-height: 1.7; }
+.followup-empty { color: var(--muted); font-size: 12px; line-height: 1.8; }
+.followup-history > summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 12px 0 8px; }
+@media (max-width: 767px) {
+  .followup-panel { margin: 0 12px 6px; }
+  .followup-toggle { padding: 10px; gap: 6px; }
+  .followup-toggle > span { gap: 6px; }
+  .followup-toggle > span:first-child { flex-wrap: wrap; }
+  .followup-toggle small { font-size: 11px; }
+  .followup-list { padding: 0 10px 8px; max-height: min(36vh, max(32px, calc(100dvh - 470px))); }
+  .followup-detail { padding-left: 0; }
+}
 .today-layout {
   display: flex;
   flex: 1;

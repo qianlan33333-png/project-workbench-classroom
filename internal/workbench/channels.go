@@ -85,6 +85,16 @@ func (s *Store) QueueReply(m Message, run, session, kind, text string) error {
 		key = run + ":" + kind
 	}
 	return s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if run != "" && kind == "notification" {
+			var state string
+			e := tx.QueryRow(`SELECT f.state FROM personal_followups f JOIN runs r ON r.data->>'$.followupId'=f.id WHERE r.id=?`, run).Scan(&state)
+			if e != nil && e != sql.ErrNoRows {
+				return e
+			}
+			if state == "cancelled" {
+				return nil
+			}
+		}
 		if session != "" {
 			var exists int
 			if e := tx.QueryRow("SELECT count(*) FROM sessions WHERE id=?", session).Scan(&exists); e != nil {

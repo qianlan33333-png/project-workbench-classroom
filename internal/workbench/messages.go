@@ -66,6 +66,9 @@ func (s *Store) saveRun(r Run) error {
 		if _, e := tx.Exec("UPDATE runs SET state=?,data=? WHERE id=?", r.State, encode(r), r.ID); e != nil {
 			return e
 		}
+		if e := finishFollowupsTx(tx, r); e != nil {
+			return e
+		}
 		if r.ScheduleID != "" {
 			_, e := tx.Exec("UPDATE schedule_checks SET outcome=?,detail=? WHERE schedule_id=? AND run_id=? AND outcome<>'active'", r.State, r.Error, r.ScheduleID, r.ID)
 			return e

@@ -124,6 +124,9 @@ func (s *Store) editTime(id, kind string, in TimeEdit) (Schedule, error) {
 	if e != nil {
 		return sc, e
 	}
+	if sc.FollowupID != "" {
+		return sc, errors.New("持续跟进的复查请在今天管理")
+	}
 	if sc.Version != in.Version {
 		return sc, ErrConflict
 	}

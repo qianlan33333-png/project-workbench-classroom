@@ -191,6 +191,9 @@ func (s *Store) plannerTool(ctx context.Context, in RuntimeInput, tool string, r
 	if e := json.Unmarshal(raw, &q); e != nil {
 		return nil, e
 	}
+	if in.Run.FollowupID != "" && (tool != "query_calendar" || q.Remote != nil && *q.Remote || !s.followupRunLive(in.Run)) {
+		return nil, errors.New("持续跟进只能读取已有日程缓存")
+	}
 	scope := in.Project.ID
 	if scope == personalProjectID {
 		scope = q.Project
@@ -240,6 +243,9 @@ func (s *Store) plannerTool(ctx context.Context, in RuntimeInput, tool string, r
 	return nil, errors.New("未知操作")
 }
 func (s *Store) deleteSchedule(id string) error {
+	if sc, e := s.Schedule(id); e == nil && sc.FollowupID != "" {
+		return errors.New("持续跟进的复查请在今天管理")
+	}
 	s.scheduleMu.Lock()
 	defer s.scheduleMu.Unlock()
 	res, e := s.DB.Exec("DELETE FROM schedules WHERE id=? AND NOT EXISTS(SELECT 1 FROM runs WHERE json_extract(data,'$.scheduleId')=? AND state IN ('queued','running','waiting','stopping'))", id, id)

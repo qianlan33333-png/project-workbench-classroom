@@ -95,6 +95,7 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
+	FollowupID           string            `json:"followupId,omitempty"`
 	hostSlot             *harnessSlot      // Process-only reservation; never persisted.
 	ConversationOutput   bool              `json:"conversationOutput,omitempty"`
 	ScheduledFor         int64             `json:"scheduledFor,omitempty"`
@@ -171,6 +172,7 @@ type Delivery struct {
 	CreatedAt      int64            `json:"createdAt"`
 }
 type Schedule struct {
+	FollowupID           string          `json:"followupId,omitempty"`
 	Version              int64           `json:"version,omitempty"`
 	OnceAt               int64           `json:"onceAt,omitempty"`
 	OriginalNext         int64           `json:"originalNext,omitempty"`

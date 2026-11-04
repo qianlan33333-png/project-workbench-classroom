@@ -56,6 +56,8 @@ const businessTools = [
 ];
 const sourceKinds=z.enum(["file","conversation","task"]);
 const personalTools = [
+ ["list_followups","读取今天已保存的持续跟进及其版本、状态和完成条件。",{}],
+ ["manage_followup","仅本人明确委托时保存持续跟进。创建提供固定key、title、goal、about；更新提供id和version。save记录进展，ask保存2–3项持久决策后结束本轮；review安排1分钟至30天内一次只读复查（at为Unix毫秒，每事项最多3次）；complete必须提供核实依据evidence，本轮成功结束才结案。不能修改项目正文，自动轮只能更新自身。",{id:z.string().optional(),version:z.number().int().optional(),key:z.string().optional(),title:z.string().optional(),goal:z.string().optional(),about:z.string().optional(),action:z.enum(["save","ask","review","complete"]),at:z.number().int().optional(),evidence:z.string().optional(),decision:z.object({question:z.string(),reason:z.string(),options:z.array(z.object({label:z.string(),tradeoff:z.string(),recommended:z.boolean()})).min(2).max(3)}).optional()}],
  ["run_global_cli","调用已安装和启用的全局 CLI，如飞书或 CRM。id 使用本轮目录中的工具 ID，args 是参数数组（不含命令名），可先查 --help。只在用户明确要求时执行外部写入。不绕过项目只读规则。exitCode 非零为失败。",{id:z.string().min(1),args:z.array(z.string()).max(256)}],
  ["project_contexts","仅读取各项目完整说明和72小时动态",{}],
  ["personal_memories","按关键词或依据ID限量查回准确个人事实与原话；不会返回完整记忆库。长原文用id和offset续读。",{query:z.string().optional(),id:z.string().optional(),paragraphId:z.string().optional(),offset:z.number().int().nonnegative().optional()}],
@@ -97,8 +99,12 @@ const plannerTools=[
 ];
 const gatewayTools=businessTools.filter(([name])=>name==="search_history"||name==="read_run").map(([name,description,schema])=>[name,description.replaceAll("当前项目", "当前客户会话"),schema]);
 gatewayTools.push(["read_paused_history","按运行编号分页读取该客户已记录的暂停历史，nextOffset=-1 表示结束。",{runId:z.string(),offset:z.number().int().nonnegative()}]);
-for(const [name,description,inputSchema] of (process.env.PW_GATEWAY==="true"?gatewayTools:[...(process.env.PW_PERSONAL==="true"?personalTools:businessTools),...plannerTools]))
-  server.registerTool(name, { description, inputSchema }, async (args) =>
+const followupNames=new Set(["project_contexts","personal_memories","find_project_sources","read_project_source","query_calendar","list_followups","manage_followup"]);
+const tools=process.env.PW_GATEWAY==="true"?gatewayTools:[...(process.env.PW_PERSONAL==="true"?personalTools:businessTools),...plannerTools];
+for(const [name,description,inputSchema] of (process.env.PW_FOLLOWUP==="true"?tools.filter(([name])=>followupNames.has(name)):tools)) {
+  const schema=process.env.PW_FOLLOWUP!=="true"?inputSchema:name==="query_calendar"?{...inputSchema,remote:z.literal(false).optional()}:name==="manage_followup"?{...inputSchema,id:z.string().min(1),version:z.number().int().min(1)}:inputSchema;
+  server.registerTool(name, { description, inputSchema:schema }, async (args) =>
     call(name, args),
   );
+}
 await server.connect(new StdioServerTransport());
