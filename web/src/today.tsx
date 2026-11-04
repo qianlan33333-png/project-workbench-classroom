@@ -582,10 +582,6 @@ export function Today({
             </button>
           </div>
         </header>
-        <div className="today-subheading">
-          <h2>个人助手</h2>
-          <p>可查项目文件、对话和任务。微信、飞书与这里接续同一段对话。</p>
-        </div>
         {data && <FollowupsPanel items={data.followups || []} decisions={data.decisions || []} refresh={refresh}
           renderDecision={(d) => <DecisionCard key={d.id} d={d} projects={projects} refresh={refresh} notify={notify} />} />}
         <div className="today-messages">
