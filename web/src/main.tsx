@@ -945,7 +945,7 @@ function App() {
       </>
     );
   return (
-    <div className="app">
+    <div className={`app ${page === "today" ? "today-app" : ""}`}>
       <NavigationRail
         collapsed={railCollapsed}
         toggle={() => {

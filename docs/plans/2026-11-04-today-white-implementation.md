@@ -44,7 +44,7 @@ Files: new `web/src/personalization.tsx` (统一dialog及焦点管理); modify `
 Files: new `web/src/personal-attachments.tsx`; modify `today.tsx`, `capability-composer.tsx`, `main.tsx`, `followups.tsx`, `style.css`。
 
 - Today不渲染大标题/日期/手动刷新/键盘提示；原全局导航在Today压缩，保留可访问的手机导航/通知入口。
-- 宽输入框1120px，正文840px；底部附件、个性化、已有安排，黑色发送按钮；上传/选择/拖入/粘贴、移除/失败重试，有附件可单独发送。
+- 宽输入框1200px，正文840px；底部附件、个性化、已有安排，黑色发送按钮；上传/选择/拖入/粘贴、移除/失败重试，有附件可单独发送。
 - 本地草稿保存已上传引用，失败发送沿用原消息提交与重试标识；未完成/失败上传时阻止误发送，返回设置后保留输入状态。
 - 已有安排默认关；跟进移至输入区附近的紧凑入口，空状态与历史仍可访问。
 - 纯白/浅灰/黑色token，去绿色用户气泡与常驻完成标签。仅改变该旅程和基础导航颜色，不重排其他业务页面。

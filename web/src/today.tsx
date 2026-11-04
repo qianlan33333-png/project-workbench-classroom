@@ -1,19 +1,19 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Menu,
-  Sun,
   PanelRightClose,
   PanelRightOpen,
   ArrowUp,
-  RefreshCw,
   X,
   Plus,
   Square,
+  SlidersHorizontal,
+  Paperclip,
 } from "lucide-react";
 import { api, labels, stamp, type Project, type Run, type Capability } from "./api";
 import { CapabilityComposer, CapabilityBadges } from "./capability-composer";
-import { MemoryPanel } from "./personal-understanding";
-import { PersonalRulesPanel } from "./personal-rules";
+import { Personalization } from "./personalization";
+import { usePersonalAttachments, PersonalAttachmentChips, attachmentName } from "./personal-attachments";
 import { RichText } from "./file-ui";
 import { useMessageSubmissions } from "./message-submissions";
 import { FollowupsPanel } from "./followups";
@@ -467,15 +467,15 @@ export function Today({
     [capabilities, setCapabilities] = useState<Capability[]>(() => {
       try { const v=JSON.parse(localStorage.getItem("pwb.personalDraftTools") || "[]"); return Array.isArray(v)?v:[]; } catch { return []; }
     }),
-    [arrangements, setArrangements] = useState(
-      () =>
-        window.innerWidth >= 1280 &&
-        localStorage.getItem("pwb.arrangements") !== "false",
-    ),
-    [memory, setMemory] = useState(false),
-    [rules, setRules] = useState(false),
+    [arrangements, setArrangements] = useState(false),
+    [personalization, setPersonalization] = useState(false),
     [busy, setBusy] = useState(false),
-    [refreshing, setRefreshing] = useState(false);
+    [dragging, setDragging] = useState(false);
+  const attachment = usePersonalAttachments(data?.sessionId || "", notify);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const personalizationTrigger = useRef<HTMLButtonElement>(null);
+  const attachmentBlocked = attachment.items.some(v => v.state !== "ready");
+  const canSend = !!data && !busy && !attachmentBlocked && (!!text.trim() || attachment.items.some(v => v.state === "ready"));
   const [draftTaskId,setDraftTaskId] = useState<string|undefined>(()=>{try{return JSON.parse(localStorage.getItem("pwb.personalComposer")||"null")?.taskId}catch{return undefined}});
   const editText=(value:string)=>{setText(value);if(!value.trim())setDraftTaskId(undefined)};
   const end = useRef<HTMLDivElement>(null);
@@ -507,13 +507,15 @@ export function Today({
     end.current?.scrollIntoView({ block: "end" });
   }, [runs.length, pending.length, data?.decisions?.length]);
   const send = async () => {
-    if (!text.trim() || !data || busy) return;
+    if (!canSend) return;
     const body = text;
+    const attached = attachment.items.map(v => v.path!);
     const taskId=draftTaskId;
     setDraftTaskId(undefined);
     sessionStorage.removeItem("today.taskId");
     setText("");
     setCapabilities([]);
+    attachment.clear();
     setBusy(true);
     try {
       await submissions.submit({
@@ -521,7 +523,7 @@ export function Today({
         sessionId: data.sessionId,
         text: body,taskId,
         capabilities,
-        attachments: [],
+        attachments: attached,
         references: [],
       });
       await refresh();
@@ -533,57 +535,10 @@ export function Today({
   };
   return (
     <div className={`today-layout ${arrangements ? "with-arrangements" : ""}`}>
-      <section className="today-main" aria-label="个人助手对话">
-        <header className="today-header">
-          <div>
-            <span className="eyebrow">
-              <Sun size={15} />{" "}
-              {new Intl.DateTimeFormat("zh-CN", {
-                month: "long",
-                day: "numeric",
-                weekday: "long",
-                timeZone: "Asia/Shanghai",
-              }).format(new Date())}
-            </span>
-            <h1>今天</h1><button className="mobile-only today-nav-button" aria-label="打开导航" onClick={openNavigation}><Menu size={18}/></button>
-          </div>
-          <div className="today-header-actions">
-            <button onClick={() => setRules(true)}>助手规则</button>
-            <button onClick={() => setMemory(true)}>你目前如何理解我</button>
-            <button
-              aria-label="更新今天"
-              disabled={refreshing}
-              onClick={async () => {
-                setRefreshing(true);
-                try {
-                  await api("/today/refresh", {});
-                  notify("已请求整理；用户任务优先，完成后会更新。");
-                } catch (e: any) {
-                  notify(e.message);
-                } finally {
-                  setRefreshing(false);
-                }
-              }}
-            >
-              <RefreshCw size={16} />
-            </button>
-            <button
-              aria-label={arrangements ? "收起已有安排" : "打开已有安排"}
-              onClick={() => {
-                setArrangements(!arrangements);
-                localStorage.setItem("pwb.arrangements", String(!arrangements));
-              }}
-            >
-              {arrangements ? (
-                <PanelRightClose size={18} />
-              ) : (
-                <PanelRightOpen size={18} />
-              )}
-            </button>
-          </div>
-        </header>
-        {data && <FollowupsPanel items={data.followups || []} decisions={data.decisions || []} refresh={refresh}
-          renderDecision={(d) => <DecisionCard key={d.id} d={d} projects={projects} refresh={refresh} notify={notify} />} />}
+      <section className="today-main" aria-label="个人助手对话" inert={personalization || undefined}
+        onDragOver={e => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); if (!busy) setDragging(true); } }}
+        onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false); }}
+        onDrop={e => { if (e.dataTransfer.files.length) { e.preventDefault(); setDragging(false); if (!busy) attachment.add(e.dataTransfer.files); } }}>
         <div className="today-messages">
           {!data ? (
             <p>正在读取个人空间…</p>
@@ -591,12 +546,6 @@ export function Today({
             <>
               {data.channelNotes?.length > 0 && (
                 <details className="context-status"><summary>机器人通知与回执</summary>{data.channelNotes.map((n:any)=><article key={n.id}><small>{n.kind==="notification"?"任务通知":"停止回执"} · {stamp(n.createdAt)} · {({sent:"已送达",accepted:"平台已接受",failed:"发送失败",unknown:"送达待核对",pending:"待发送",sending:"发送中",cancelled:"已取消"} as Record<string,string>)[n.state] || n.state}</small><RichText text={n.text}/></article>)}</details>
-              )}
-              {data.contextResetAt && (
-                <p className="context-status">
-                  原生上下文于 {new Date(data.contextResetAt).toLocaleString()}{" "}
-                  清理过已失效资料；此后的交流从有效个人理解和项目说明继续，可见历史仍保留。
-                </p>
               )}
               {data.daily?.text && (
                 <article className="daily-card">
@@ -643,22 +592,7 @@ export function Today({
                 </p>
               )}
               {!runs.length && !data.daily?.text && (
-                <div className="today-welcome">
-                  <span className="assistant-icon">✦</span>
-                  <h2>先关注真正值得的事</h2>
-                  <p>
-                    可以聊项目，也可以聊学习、方向，或最近的状态。
-                    <br />
-                    我会基于已有信息给出想法，和你一起做选择。
-                  </p>
-                  <button
-                    onClick={() =>
-                      setText("结合目前的情况，你建议我今天关注什么？")
-                    }
-                  >
-                    一起想想今天
-                  </button>
-                </div>
+                <div className="today-welcome"><h2>想聊些什么？</h2></div>
               )}
               {[...runs]
                 .sort((a, b) => a.createdAt - b.createdAt)
@@ -669,10 +603,11 @@ export function Today({
                       {r.text.startsWith("[已提交的个人决策")
                         ? "已提交本次选择"
                         : r.text}
+                      {!!r.attachments?.length && <div className="personal-message-files">{r.attachments.map(path => <span key={path}><Paperclip size={14}/>{attachmentName(path)}</span>)}</div>}
                       <CapabilityBadges values={r.capabilities || []}/>
                     </div>
                     <div className="personal-answer">
-                      <small>✦ 个人助手 · {labels[r.state] || r.state}</small>
+                      {r.state !== "completed" && <small className="personal-run-state">{labels[r.state] || r.state}</small>}
                       {r.result ? (
                         <RichText text={r.result} />
                       ) : (
@@ -714,7 +649,7 @@ export function Today({
                 ))}
               {pending.map((v) => (
                 <div key={v.input.eventId} className="personal-turn">
-                  <div className="personal-user">{v.input.text}<CapabilityBadges values={v.input.capabilities || []}/></div>
+                  <div className="personal-user">{v.input.text}{!!v.input.attachments?.length && <div className="personal-message-files">{v.input.attachments.map(path => <span key={path}><Paperclip size={14}/>{attachmentName(path)}</span>)}</div>}<CapabilityBadges values={v.input.capabilities || []}/></div>
                   <small>
                     {v.state === "sending"
                       ? "正在发送…"
@@ -735,20 +670,27 @@ export function Today({
             </>
           )}
         </div>
-        <div className="today-composer">
-          <CapabilityComposer personal projectId="personal-assistant" sessionId={data?.sessionId || ""} value={text}
-            onChange={editText} selected={capabilities} onSelected={setCapabilities} send={() => void send()}/>
-          <footer>
-            <small>Enter 发送 · Shift + Enter 换行</small>
-            <button
-              className="primary"
-              aria-label="发送个人消息"
-              disabled={busy || !text.trim() || !data}
-              onClick={send}
-            >
-              <ArrowUp size={20} />
-            </button>
-          </footer>
+        <div className="today-bottom">
+          {data && <FollowupsPanel compact items={data.followups || []} decisions={data.decisions || []} refresh={refresh}
+            renderDecision={(d) => <DecisionCard key={d.id} d={d} projects={projects} refresh={refresh} notify={notify} />} />}
+          <div className={`today-composer ${dragging ? "dragging" : ""}`}>
+            {dragging && <div className="personal-drop-label" role="status">松开添加文件</div>}
+            {!!attachment.items.length && <PersonalAttachmentChips items={attachment.items} remove={attachment.remove} retry={attachment.retry}/>}
+            <CapabilityComposer personal projectId="personal-assistant" sessionId={data?.sessionId || ""} value={text}
+              onChange={editText} selected={capabilities} onSelected={setCapabilities} send={() => void send()}
+              onPaste={e => { const files = Array.from(e.clipboardData.files); if (files.length && !busy) { e.preventDefault(); attachment.add(files); } }}/>
+            <footer>
+              <div className="today-composer-tools">
+                <input ref={fileInput} hidden type="file" multiple aria-label="选择本地附件" onChange={e => { attachment.add(e.currentTarget.files); e.currentTarget.value = ""; }}/>
+                <button className="today-attach-button" aria-label="添加附件" title="添加本地附件" disabled={busy || !data} onClick={() => fileInput.current?.click()}><Plus size={22}/></button>
+                <span className="composer-divider"/>
+                <button ref={personalizationTrigger} onClick={() => setPersonalization(true)}><SlidersHorizontal size={18}/><span>个性化</span></button>
+                <span className="composer-divider"/>
+                <button aria-label={arrangements ? "收起已有安排" : "打开已有安排"} aria-expanded={arrangements} onClick={() => setArrangements(!arrangements)}>{arrangements ? <PanelRightClose size={18}/> : <PanelRightOpen size={18}/>}<span>已有安排</span></button>
+              </div>
+              <button className="primary today-send" aria-label="发送个人消息" disabled={!canSend} onClick={send}><ArrowUp size={21}/></button>
+            </footer>
+          </div>
         </div>
       </section>
       {arrangements && (
@@ -770,8 +712,7 @@ export function Today({
           />
         </aside>
       )}
-      {rules && <PersonalRulesPanel close={() => setRules(false)} notify={notify} />}
-      {memory && <MemoryPanel close={() => setMemory(false)} notify={notify} />}
+      {personalization && <Personalization close={() => setPersonalization(false)} notify={notify} returnFocus={personalizationTrigger.current}/>}
     </div>
   );
 }

@@ -3,6 +3,9 @@ package workbench
 import (
 	"errors"
 	"github.com/gin-gonic/gin"
+	"io"
+	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -10,16 +13,42 @@ import (
 func (a *API) mountToday(g *gin.RouterGroup) {
 	s := a.Store
 	a.mountPlanner(g)
+	g.POST("/personal/attachments", func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 129<<20)
+		header, e := c.FormFile("file")
+		if e != nil {
+			reply(c, nil, e)
+			return
+		}
+		f, e := header.Open()
+		if e != nil {
+			reply(c, nil, e)
+			return
+		}
+		defer f.Close()
+		b, e := io.ReadAll(io.LimitReader(f, maxFile+1))
+		if e != nil {
+			reply(c, nil, e)
+			return
+		}
+		path, e := s.StagePersonalUpload(c.PostForm("sessionId"), header.Filename, b)
+		name := filepath.Base(strings.ReplaceAll(header.Filename, "\\", "/"))
+		reply(c, gin.H{"path": path, "name": name, "size": len(b)}, e)
+	})
 	g.GET("/personal/followups", func(c *gin.Context) { v, e := s.Followups(); reply(c, v, e) })
 	g.POST("/personal/followups/:id/continue", func(c *gin.Context) {
 		bind(c, func(v struct {
 			Version int64 `json:"version"`
-		}) (any, error) { return s.ResumeFollowup(c.Param("id"), v.Version) })
+		}) (any, error) {
+			return s.ResumeFollowup(c.Param("id"), v.Version)
+		})
 	})
 	g.POST("/personal/followups/:id/cancel", func(c *gin.Context) {
 		bind(c, func(v struct {
 			Version int64 `json:"version"`
-		}) (any, error) { return s.CancelFollowup(c.Param("id"), v.Version) })
+		}) (any, error) {
+			return s.CancelFollowup(c.Param("id"), v.Version)
+		})
 	})
 	g.GET("/personal/understanding", func(c *gin.Context) { v, e := s.Understanding(); reply(c, v, e) })
 	g.POST("/personal/understanding/refresh", func(c *gin.Context) { reply(c, gin.H{"state": "pending"}, s.RequestUnderstanding()) })

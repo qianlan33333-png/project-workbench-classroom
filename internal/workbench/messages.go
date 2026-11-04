@@ -224,8 +224,11 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 	if isChatChannel(m.Incoming.Source) && p.ID != personalProjectID {
 		return m, errors.New("机器人消息属于今天个人助手")
 	}
-	if p.ID == personalProjectID && (len(m.Incoming.References) > 0 || len(m.Incoming.Attachments) > 0 && !isChatChannel(m.Incoming.Source)) {
+	if p.ID == personalProjectID && len(m.Incoming.References) > 0 {
 		return m, errors.New("个人助手按只读方式查阅业务资料，请勿附加项目文件")
+	}
+	if err := s.validateMessageAttachments(m.Incoming, sess); err != nil {
+		return m, err
 	}
 	expert := m.Incoming.ExpertID
 	if expert == "" {

@@ -48,8 +48,9 @@ type Executor interface {
 	Cleanup(context.Context, string) error
 }
 type Harness struct {
-	Config Config
-	Store  *Store
+	Config       Config
+	Store        *Store
+	attachmentMu sync.Mutex
 }
 
 type rpcFrame struct {
@@ -432,7 +433,7 @@ func (h *Harness) Cleanup(ctx context.Context, run string) error {
 		return errors.New("执行编号无效")
 	}
 	if h.Config.RuntimeMode == "podman" {
-		cmd := exec.CommandContext(ctx, h.Config.Podman, "rm", "--force", "--ignore", "pw-"+run)
+		cmd := exec.CommandContext(ctx, h.Config.Podman, "rm", "--force", "--ignore", "pw-"+run, "pw-"+run+"-attachment")
 		if out, e := cmd.CombinedOutput(); e != nil {
 			return fmt.Errorf("执行容器未能清理: %s", strings.TrimSpace(string(out)))
 		}
@@ -448,7 +449,7 @@ func (h *Harness) removeScratch(run string) error {
 	if run != "" && !toolIdentifier.MatchString(run) {
 		return errors.New("无效的运行标识")
 	}
-	for _, dir := range []string{"router", "router-home", "gateway-workspaces"} {
+	for _, dir := range []string{"router", "router-home", "gateway-workspaces", "attachment-scratch"} {
 		if e := os.RemoveAll(filepath.Join(h.Config.DataDir, "runtime", dir, run)); e != nil {
 			return e
 		}
@@ -487,8 +488,8 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 		defer slot.finish()
 	}
 	args, env, cwd, err := h.prepare(input)
+	var closeBridge func()
 	if err == nil && !input.Routing && (h.Config.RuntimeMode == "podman" || h.Config.RuntimeDir != "") {
-		var closeBridge func()
 		closeBridge, err = h.startBridge(parent, input)
 		if err == nil {
 			defer closeBridge()
@@ -524,6 +525,9 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 	processDone := make(chan error, 1)
 	go func() { processDone <- cmd.Wait() }()
 	defer func() {
+		if closeBridge != nil {
+			closeBridge()
+		}
 		stdin.Close()
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		timer := time.NewTimer(2 * time.Second)

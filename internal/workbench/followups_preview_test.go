@@ -19,7 +19,7 @@ import (
 // No credentials, provider, production data or channel transport are loaded.
 type followupPreviewExecutor struct{ store *Store }
 
-func (e *followupPreviewExecutor) Execute(_ context.Context, in RuntimeInput, _ RuntimeHooks) (RuntimeResult, error) {
+func (e *followupPreviewExecutor) Execute(ctx context.Context, in RuntimeInput, _ RuntimeHooks) (RuntimeResult, error) {
 	if in.Run.FollowupID != "" {
 		f, err := e.store.Followup(in.Run.FollowupID)
 		if err != nil {
@@ -28,11 +28,21 @@ func (e *followupPreviewExecutor) Execute(_ context.Context, in RuntimeInput, _ 
 		_, err = e.store.SaveFollowup(in, FollowupChange{ID: f.ID, Version: f.Version, Action: "complete", Evidence: "隔离演示：已核对测试资料，完成条件得到确认。"})
 		return RuntimeResult{Text: "已核对测试资料，并记录完成依据。"}, err
 	}
+	if len(in.Run.Attachments) > 0 {
+		runtime, _ := filepath.Abs("../../runtime")
+		h := Harness{Store: e.store, Config: Config{DataDir: e.store.Root, RuntimeDir: runtime}}
+		v, err := h.readMessageAttachment(ctx, in, json.RawMessage(`{"index":0}`))
+		return RuntimeResult{Text: "隔离演示已核对附件：" + encode(v)}, err
+	}
 	return RuntimeResult{Text: "已收到。这是隔离演示，不会执行真实业务。"}, nil
 }
 func (*followupPreviewExecutor) Cleanup(context.Context, string) error { return nil }
 func TestFollowupPreview(t *testing.T) {
 	dir := os.Getenv("PW_FOLLOWUP_PREVIEW")
+	white := os.Getenv("PW_TODAY_WHITE_PREVIEW") != ""
+	if white {
+		dir = os.Getenv("PW_TODAY_WHITE_PREVIEW")
+	}
 	if dir == "" {
 		t.Skip("opt-in local UI fixture")
 	}
@@ -43,25 +53,53 @@ func TestFollowupPreview(t *testing.T) {
 	s := testStore(t)
 	p := testProject(t, s, "产品反馈")
 	_ = p
-	for i, action := range []string{"ask", "review", "save", "complete"} {
+	if white {
+		rules, _ := s.PersonalRules()
+		rules.Agent = "先给结论，再补充依据。复杂任务分步骤推进。"
+		rules.Soul = "直接、耐心，不用过度鼓励。需要时帮我理清思路。"
+		if _, e := s.SavePersonalRules(rules); e != nil {
+			t.Fatal(e)
+		}
+		for _, text := range []string{"你希望沟通直接、耐心，不需要过度鼓励。", "复杂任务先确定范围，再分步骤推进。", "你倾向先看结论，再看必要的依据。"} {
+			if _, e := s.SaveMemory(PersonalMemory{Text: text, Kind: "fact"}); e != nil {
+				t.Fatal(e)
+			}
+			time.Sleep(2 * time.Millisecond) // Stable newest-first order for the selected reference.
+		}
 		in := followupInput(t, s)
 		q := followupRequest()
-		q.Key = string(rune('a' + i))
-		q.Title = []string{"选择反馈验证顺序", "下午核对资料更新", "核实导出功能的实际结果", "确认测试资料已补齐"}[i]
-		q.Action = action
-		q.At = now() + 60*60000
-		q.Evidence = "隔离演示：只读核对了测试资料，原问题已经解决。"
+		q.Action = "ask"
 		q.Decision = followupDecision()
 		if _, e := s.SaveFollowup(in, q); e != nil {
 			t.Fatal(e)
 		}
+		in.Run.Text = "帮我看一下这份记录，列出需要确认的事。"
 		in.Run.State = "completed"
-		in.Run.Result = "已保存本次跟进，后续按约定继续。"
+		in.Run.Result = "我整理出了两件需要确认的事。\n\n- 明天的评审会是否按原计划进行？\n- 需要我继续完善会议材料吗？"
 		if e := s.saveRun(in.Run); e != nil {
 			t.Fatal(e)
 		}
+	} else {
+		for i, action := range []string{"ask", "review", "save", "complete"} {
+			in := followupInput(t, s)
+			q := followupRequest()
+			q.Key = string(rune('a' + i))
+			q.Title = []string{"选择反馈验证顺序", "下午核对资料更新", "核实导出功能的实际结果", "确认测试资料已补齐"}[i]
+			q.Action = action
+			q.At = now() + 60*60000
+			q.Evidence = "隔离演示：只读核对了测试资料，原问题已经解决。"
+			q.Decision = followupDecision()
+			if _, e := s.SaveFollowup(in, q); e != nil {
+				t.Fatal(e)
+			}
+			in.Run.State = "completed"
+			in.Run.Result = "已保存本次跟进，后续按约定继续。"
+			if e := s.saveRun(in.Run); e != nil {
+				t.Fatal(e)
+			}
+		}
+		_, _ = s.DB.Exec("INSERT INTO daily_contents VALUES(?,?)", shanghaiDay(), encode(DailyContent{Day: shanghaiDay(), Version: 1, State: "ready", Text: "今天先确认反馈中的真实变化，再决定下一步。", UpdatedAt: now()}))
 	}
-	_, _ = s.DB.Exec("INSERT INTO daily_contents VALUES(?,?)", shanghaiDay(), encode(DailyContent{Day: shanghaiDay(), Version: 1, State: "ready", Text: "今天先确认反馈中的真实变化，再决定下一步。", UpdatedAt: now()}))
 	hash, e := PasswordHash("isolated-local-preview")
 	if e != nil {
 		t.Fatal(e)
@@ -70,7 +108,7 @@ func TestFollowupPreview(t *testing.T) {
 	urls := map[string]string{}
 	for _, which := range []string{"baseline", "current"} {
 		web := filepath.Join(dir, "baseline-dist")
-		if which == "current" {
+		if which == "current" || white {
 			web, _ = filepath.Abs("../../web/dist")
 		}
 		g := gin.New()

@@ -1,5 +1,14 @@
 # 实施记录
 
+## 2026-11-04 Today 第3版纯白与附件
+
+按用户选中的第3张Product Design参考实现。取消今天/日期、能力导语、刷新和键盘提示；底部1200px宽输入区支持本地选择、多选、拖入、粘贴图片和纯附件消息；统一个性化一级表单与我的记忆二级页，保留原保存版本、纠正/遗忘/依据及未保存保护，真实规则正文不自动删改。对话不卸载，Session/Harness身份沿用。
+
+个人网页上传复用原暂存/消息/物化链，增加本人来源与Session绑定；原业务项目只读边界不扩张。read_message_attachment通过固定有界解析器读取文本、DOCX/XLSX/PPTX、PDF文字与图片OCR；生产容器无网络/凭证/项目挂载，限CPU/内存/时间，停止收拢读取子进程并清理暂存。上传128MiB；单次解析32MiB、提取文本2MiB、PDF/PPTX最多50页；扫描PDF无文字时如实报错，OCR不是完整图像理解。macOS开发先运行scripts/build-macos-attachment-reader.sh，Linux使用镜像固定读取组件。
+
+源码review修复后复核，无剩余可操作问题；39项浏览器、6项实际文件/限量检查、Go竞争检测/vet、Web check/build和13项runtime通过。真实本机Harness两轮读取六种格式，另分别回放微信/飞书附件到原个人会话，无外部发送；实际生产Linux、安装包与渠道状态在切换前后另行核对。详见TODAY-WHITE-REVIEW.md、TODAY-WHITE-ACCEPTANCE.md及根design-qa.md。
+
+
 ## 2026-11-04 今天页面精简
 
 按用户截图，使用Product Design删除重复“个人助手”标题及其能力说明，移除专用桌面/手机样式，并将跟进入口与页头间距收为16/12px。对话可用高度分别增加约83/85px。没有后端、runtime或业务逻辑修改。桌面/手机同状态视觉对照、原18项跟进旅程、Web check/build和Go test/vet通过。具体对照见根design-qa.md；后端和runtime沿用94f692e已完成的真实Harness/渠道验收。 已生产发布为`cloud-20261104-30-today-clean-024e6c6`，前端`024e6c6`、后端/runtime字节保持`94f692e`。原有CLI下载静态文件曾在上一组合包漏带，本次按既有stage-cli脚本补齐，公网读取摘要已核对。公开HTML/JS/CSS与CLI、实际程序路径、服务状态及重启后微信/飞书心跳通过；1942个文件、21个会话映射和业务配置一致，只保留当前和上一成功版。

@@ -23,7 +23,8 @@ const states: Record<string, string> = {
 };
 const closed = (f: Followup) => ["completed", "cancelled"].includes(f.state);
 
-export function FollowupsPanel({ items, decisions, refresh, renderDecision }: {
+export function FollowupsPanel({ items, decisions, refresh, renderDecision, compact = false }: {
+  compact?: boolean;
   items: Followup[];
   decisions: any[];
   refresh: () => Promise<void>;
@@ -85,7 +86,8 @@ export function FollowupsPanel({ items, decisions, refresh, renderDecision }: {
       </div>}
     </article>;
   };
-  return <section className="followup-panel" aria-label="持续跟进">
+  if (compact && !active.length && !history.length && !open) return null;
+  return <section className={`followup-panel ${compact ? "compact" : ""}`} aria-label="持续跟进">
     <button className="followup-toggle" aria-expanded={open} aria-controls="today-followups" onClick={() => setOpen(!open)}>
       <span><ListChecks size={17} /><strong>持续跟进</strong><small>{active.length ? `${active.length} 项进行中` : "暂无进行中事项"}</small></span>
       <span>{waiting > 0 && <em>{waiting} 项等你决定</em>}{open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -110,7 +111,19 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 			http.Error(w, "持续跟进本轮只能核对资料及更新自身事项，或事项已失效", 403)
 			return
 		}
-		if req.Tool == "run_global_cli" && in.Project.ID == personalProjectID && !in.Routing {
+		if req.Tool == "read_message_attachment" && in.Project.ID == personalProjectID && !in.Routing {
+			stdio.mu.Lock()
+			if stdio.closed {
+				stdio.mu.Unlock()
+				http.Error(w, "执行已停止", 410)
+				return
+			}
+			stdio.work.Add(1)
+			stdio.mu.Unlock()
+			defer stdio.work.Done()
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(45 * time.Second))
+			value, err = h.readMessageAttachment(r.Context(), in, req.Args)
+		} else if req.Tool == "run_global_cli" && in.Project.ID == personalProjectID && !in.Routing {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(95 * time.Second))
 			value, err = h.runPersonalCLI(r.Context(), in, req.Args)
 		} else if model == nil && (req.Tool == "query_calendar" || req.Tool == "change_calendar") {
@@ -127,14 +140,17 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 		json.NewEncoder(w).Encode(value)
 	})
 	go server.Serve(listener)
+	var once sync.Once
 	return func() {
-		stdio.mu.Lock()
-		stdio.closed = true
-		stdio.mu.Unlock()
-		cancel()
-		server.Close()
-		stdio.work.Wait()
-		os.Remove(socket)
+		once.Do(func() {
+			stdio.mu.Lock()
+			stdio.closed = true
+			stdio.mu.Unlock()
+			cancel()
+			server.Close()
+			stdio.work.Wait()
+			os.Remove(socket)
+		})
 	}, nil
 }
 

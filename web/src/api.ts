@@ -55,6 +55,7 @@ export type Session = {
   harnessId: string;
 };
 export type Run = {
+  attachments?: string[];
   capabilities?: Capability[];
   kind?: string;
   id: string;

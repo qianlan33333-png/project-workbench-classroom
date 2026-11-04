@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
-import { X, RefreshCw, Search } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { MoreHorizontal, Search, X } from "lucide-react";
 import { api, stamp } from "./api";
 import { RichText } from "./file-ui";
 type Ref = {
@@ -26,97 +26,145 @@ type Understanding = {
   error?: string;
   updatedAt: number;
 };
+type Evidence = { items: Ref[]; hasMore: boolean; nextOffset: number };
 export function MemoryPanel({
-  close,
   notify,
+  dirtyChanged,
+  busyChanged,
 }: {
-  close: () => void;
   notify: (s: string) => void;
+  dirtyChanged: (v: boolean) => void;
+  busyChanged: (v: boolean) => void;
 }) {
   const [data, setData] = useState<Understanding | null>(null),
     [busy, setBusy] = useState(false),
-    [active, setActive] = useState<Paragraph | null>(null),
-    [evidence, setEvidence] = useState<{
-      items: Ref[];
-      hasMore: boolean;
-      nextOffset: number;
-    } | null>(null),
-    [query, setQuery] = useState(""),
-    [evidenceID, setEvidenceID] = useState(""),
-    [evidenceOpen, setEvidenceOpen] = useState(false),
-    [edit, setEdit] = useState<string | null>(null),
+    [active, setActive] = useState<Paragraph | null>(null);
+  const [edit, setEdit] = useState<string | null>(null),
     [error, setError] = useState("");
-  const request = useRef(0);
-  const refresh = async () => setData(await api("/personal/understanding"));
+  const [evidence, setEvidence] = useState<Evidence | null>(null),
+    [evidenceOpen, setEvidenceOpen] = useState(false),
+    [query, setQuery] = useState("");
+  const [evidenceID, setEvidenceID] = useState(""),
+    [evidenceParagraph, setEvidenceParagraph] = useState<Paragraph | null>(
+      null,
+    );
+  const requests = useRef(0),
+    sourceRequest = useRef(0),
+    alive = useRef(true),
+    isBusy = useRef(false);
+  const dirty = edit !== null && edit !== active?.text;
+  const stale =
+    !!active && !!data && !data.paragraphs.some((p) => p.id === active.id);
+  const refresh = async () => {
+    const n = ++requests.current,
+      v = await api<Understanding>("/personal/understanding");
+    if (alive.current && n === requests.current) setData(v);
+  };
   useEffect(() => {
-    void refresh().catch((e) => setError(e.message));
+    alive.current = true;
+    void refresh().catch((e) => {
+      if (alive.current) setError(e.message);
+    });
     const t = setInterval(() => {
-      void refresh().catch(() => {});
+      if (!isBusy.current) void refresh().catch(() => {});
     }, 4000);
-    return () => clearInterval(t);
+    return () => {
+      alive.current = false;
+      requests.current++;
+      sourceRequest.current++;
+      clearInterval(t);
+      dirtyChanged(false);
+      busyChanged(false);
+    };
   }, []);
+  useEffect(() => {
+    dirtyChanged(dirty);
+  }, [dirty, dirtyChanged]);
   const act = async (f: () => Promise<void>) => {
+    if (isBusy.current) return;
+    isBusy.current = true;
+    requests.current++;
     setBusy(true);
+    busyChanged(true);
     setError("");
     try {
       await f();
-      await refresh();
+      if (alive.current) await refresh();
     } catch (e: any) {
-      setError(e.message);
+      if (alive.current)
+        setError(
+          e.status === 409
+            ? "这段记忆已更新，当前修改仍保留。请取消后重新选择。"
+            : e.message,
+        );
     } finally {
-      setBusy(false);
+      isBusy.current = false;
+      if (alive.current) {
+        setBusy(false);
+        busyChanged(false);
+      }
     }
   };
+  const choose = (p: Paragraph) => {
+    if (busy || (dirty && !window.confirm("放弃尚未保存的纠正？"))) return;
+    setActive(active?.id === p.id ? null : p);
+    setEdit(null);
+    setEvidenceOpen(false);
+    setEvidence(null);
+    sourceRequest.current++;
+    setError("");
+  };
   const sources = async (p: Paragraph | null, q = "", offset = 0, id = "") => {
-    const n = ++request.current;
+    const n = ++sourceRequest.current;
     setEvidenceOpen(true);
     setEvidenceID(id);
+    setEvidenceParagraph(p);
     setError("");
+    if (!offset) setEvidence(null);
     try {
       const params = new URLSearchParams({ offset: String(offset) });
       if (p) params.set("paragraphId", p.id);
       if (q) params.set("query", q);
       if (id) params.set("id", id);
-      const v = await api("/personal/understanding/evidence?" + params);
-      if (n === request.current) setEvidence(v);
+      const v = await api<Evidence>(
+        "/personal/understanding/evidence?" + params,
+      );
+      if (alive.current && n === sourceRequest.current)
+        setEvidence(
+          offset
+            ? (previous) => ({
+                ...v,
+                items: [...(previous?.items || []), ...v.items],
+              })
+            : v,
+        );
     } catch (e: any) {
-      if (n === request.current) setError(e.message);
+      if (alive.current && n === sourceRequest.current) setError(e.message);
     }
   };
-  const select = (p: Paragraph) => {
-    setActive(p);
-    setEdit(null);
-    setEvidenceOpen(false);
-    setEvidence(null);
-    request.current++;
-  };
-  const forget = () => {
-    if (!active || !data) return;
-    if (
-      !window.confirm(
-        "忘记这段理解及相关依据？来自同一表达的派生理解也会停止使用，并清理个人助手原生上下文。可见聊天仍保留，后续不从旧聊天自动恢复。",
-      )
-    )
+  const forget = (p: Paragraph) => {
+    if (!data || !window.confirm("忘记这段记忆及相关依据？聊天记录会保留。"))
       return;
     void act(async () => {
-      const only = active.id.startsWith("m:");
-      const id = only ? active.id.slice(2) : active.id;
+      const only = p.id.startsWith("m:"),
+        id = only ? p.id.slice(2) : p.id;
       await api(
         "/personal/memories/" +
           encodeURIComponent(id) +
           "?version=" +
-          (only ? active.refs[0].version : data.version),
+          (only ? p.refs[0].version : data.version),
         undefined,
         "DELETE",
       );
       setActive(null);
       setEdit(null);
       setEvidenceOpen(false);
-      notify("已忘记相关理解与依据，原生上下文已清理。");
+      sourceRequest.current++;
+      notify("已忘记这段记忆。");
     });
   };
   const save = () => {
-    if (!active || edit === null) return;
+    if (!active || edit === null || !edit.trim()) return;
     void act(async () => {
       await api("/personal/memories", {
         text: edit,
@@ -127,233 +175,227 @@ export function MemoryPanel({
       setActive(null);
       setEdit(null);
       setEvidenceOpen(false);
-      notify("纠正已生效，会话保持连续。");
+      sourceRequest.current++;
+      notify("已保存纠正。");
     });
   };
-  const stale =
-    !!active && !!data && !data.paragraphs.some((p) => p.id === active.id);
-  const dismiss = () => {
-    if (
-      edit !== null &&
-      edit !== active?.text &&
-      !window.confirm("放弃尚未保存的纠正？")
-    )
-      return;
-    close();
-  };
   return (
-    <div className="today-modal-backdrop">
-      <section
-        className="today-modal understanding-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="你目前如何理解我"
-      >
-        <header>
-          <h2>你目前如何理解我</h2>
-          <button aria-label="关闭个人理解" onClick={dismiss}>
-            <X size={18} />
-          </button>
-        </header>
-        <p className="muted understanding-intro">
-          留下对协作有用的理解，具体细节需要时再查。你可以随时纠正或忘记。
+    <div className="memory-content">
+      {error && (
+        <p className="personalization-error" role="alert">
+          {error}
         </p>
-        <div className="understanding-status">
-          <span>
-            {data?.updatedAt
-              ? "更新于 " + stamp(data.updatedAt)
-              : "尚未完成首次整理"}{" "}
-            ·{" "}
-            {data?.state === "failed"
-              ? "整理未完成，保留有效内容"
-              : data?.state === "pending"
-                ? "等待整理"
-                : "已整理"}
-          </span>
-          <button
-            disabled={busy}
-            onClick={() =>
-              void act(async () => {
-                await api("/personal/understanding/refresh", {});
-                notify("已安排整理，有新内容时更新。");
-              })
-            }
-          >
-            <RefreshCw size={14} />
-            重新整理
-          </button>
-        </div>
-        {error && (
-          <p role="alert" className="understanding-error">
-            {error}
-          </p>
-        )}
-        {!data ? (
-          <p role="status">正在读取理解…</p>
-        ) : (
-          <>
-            {!data.paragraphs.length && (
-              <div className="understanding-empty">
-                <h3>慢慢了解，从真实交流开始</h3>
-                <p className="muted">
-                  目前没有有效的个人理解。明确说“记住这件事”会立即保存；日常交流会在整理时归纳，不把一次选择当成长期偏好。
-                </p>
-              </div>
-            )}
-            <div className="understanding-prose">
-              {data.paragraphs.map((p) => (
-                <section
-                  key={p.id}
-                  className={
-                    active?.id === p.id
-                      ? "understanding-paragraph selected"
-                      : "understanding-paragraph"
-                  }
-                >
-                  {(p.status === "observation" ||
-                    p.status === "unverified") && (
-                    <small className="understanding-observation">
-                      待核观察{p.scope ? " · " + p.scope : ""}
-                    </small>
-                  )}
-                  <RichText text={p.text} />
-                  <button
-                    className="understanding-select"
-                    aria-label={"查看这段理解：" + p.text.slice(0, 18)}
-                    onClick={() => select(p)}
-                  >
-                    查看这段理解
-                  </button>
-                </section>
-              ))}
-            </div>
-            <div className="understanding-actions">
-              <button
-                disabled={!active || busy || stale}
-                onClick={() => {
-                  setEdit(active!.text);
-                  setEvidenceOpen(false);
-                }}
+      )}
+      {!data ? (
+        <p role="status">正在读取记忆…</p>
+      ) : (
+        <>
+          {!data.paragraphs.length && (
+            <p className="memory-empty">
+              暂无记忆。你可以在对话中说“记住这件事”。
+            </p>
+          )}
+          <div className="memory-rows">
+            {data.paragraphs.map((p) => (
+              <article
+                key={p.id}
+                className={`memory-row ${active?.id === p.id ? "selected" : ""}`}
               >
-                纠正
-              </button>
-              <button disabled={busy} onClick={() => void sources(active)}>
-                查看依据
-              </button>
-              <button disabled={!active || busy || stale} onClick={forget}>
-                忘记
-              </button>
-              <span className="muted">
-                {stale
-                  ? "这段理解已更新，请重新选择；未保存的纠正仍保留。"
-                  : active
-                    ? "已选中一段理解"
-                    : "选择一段后可纠正或忘记"}
-              </span>
-            </div>
-            {edit !== null && (
-              <div className="memory-editor">
-                <label>
-                  这段理解应当是
-                  <textarea
-                    autoFocus
-                    aria-label="纠正这段理解"
-                    value={edit}
-                    onChange={(e) => setEdit(e.target.value)}
-                  />
-                </label>
-                <div className="understanding-actions">
+                <div className="memory-row-main">
+                  <div>
+                    {(p.status === "observation" ||
+                      p.status === "unverified") && (
+                      <small className="memory-observation">
+                        待核观察{p.scope ? " · " + p.scope : ""}
+                      </small>
+                    )}
+                    <RichText text={p.text} />
+                  </div>
                   <button
-                    className="primary"
-                    disabled={busy || !edit.trim()}
-                    onClick={save}
+                    className="memory-row-menu"
+                    aria-label={"记忆操作：" + p.text.slice(0, 18)}
+                    aria-expanded={active?.id === p.id}
+                    disabled={busy}
+                    onClick={() => choose(p)}
                   >
-                    保存纠正
-                  </button>
-                  <button disabled={busy} onClick={() => setEdit(null)}>
-                    取消
+                    <MoreHorizontal size={20} />
                   </button>
                 </div>
-              </div>
-            )}
-            {evidenceOpen && (
-              <aside
-                className="understanding-evidence"
-                aria-label="个人理解依据"
+                {active?.id === p.id && (
+                  <>
+                    {edit === null ? (
+                      <div className="memory-actions">
+                        <button
+                          disabled={busy || stale}
+                          onClick={() => setEdit(p.text)}
+                        >
+                          纠正
+                        </button>
+                        <button
+                          disabled={busy || stale}
+                          onClick={() => forget(p)}
+                        >
+                          忘记
+                        </button>
+                        <button
+                          disabled={busy || stale}
+                          onClick={() => void sources(p)}
+                        >
+                          查看依据
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="memory-editor">
+                        <textarea
+                          autoFocus
+                          aria-label="纠正这段记忆"
+                          value={edit}
+                          disabled={busy}
+                          onChange={(e) => setEdit(e.target.value)}
+                        />
+                        <div className="memory-edit-actions">
+                          <button
+                            className="primary"
+                            disabled={busy || !edit.trim() || stale}
+                            onClick={save}
+                          >
+                            保存纠正
+                          </button>
+                          <button
+                            disabled={busy}
+                            onClick={() => {
+                              if (
+                                !dirty ||
+                                window.confirm("放弃尚未保存的纠正？")
+                              )
+                                setEdit(null);
+                            }}
+                          >
+                            取消
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </article>
+            ))}
+          </div>
+          {stale && (
+            <p role="status" className="muted">
+              这段记忆已更新，未保存的纠正仍保留。
+            </p>
+          )}
+          {edit !== null && stale && (
+            <div className="memory-editor">
+              <textarea
+                aria-label="已保留的纠正草稿"
+                value={edit}
+                onChange={(e) => setEdit(e.target.value)}
+              />
+              <button
+                onClick={() => {
+                  setEdit(null);
+                  setActive(null);
+                }}
               >
-                <header>
-                  <h3>{active ? "这段理解的依据" : "查找准确细节"}</h3>
-                  <button
-                    aria-label="收起依据"
-                    onClick={() => {
-                      setEvidenceOpen(false);
-                      request.current++;
-                    }}
-                  >
-                    <X size={16} />
+                取消纠正
+              </button>
+            </div>
+          )}
+          <details className="memory-more">
+            <summary>更多</summary>
+            <div>
+              <button disabled={busy} onClick={() => void sources(null)}>
+                查找记忆依据
+              </button>
+              <button
+                disabled={busy}
+                onClick={() =>
+                  void act(async () => {
+                    await api("/personal/understanding/refresh", {});
+                    notify("已安排整理。");
+                  })
+                }
+              >
+                重新整理
+              </button>
+            </div>
+          </details>
+        </>
+      )}
+      {evidenceOpen && (
+        <aside className="memory-evidence" aria-label="记忆依据">
+          <header>
+            <h3>{evidenceParagraph ? "这段记忆的依据" : "查找记忆依据"}</h3>
+            <button
+              aria-label="收起依据"
+              onClick={() => {
+                setEvidenceOpen(false);
+                sourceRequest.current++;
+              }}
+            >
+              <X size={18} />
+            </button>
+          </header>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void sources(null, query);
+            }}
+          >
+            <input
+              aria-label="查找记忆依据"
+              placeholder="查找原话或细节"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <button aria-label="搜索记忆">
+              <Search size={17} />
+            </button>
+          </form>
+          {!evidence ? (
+            <p role="status">正在读取…</p>
+          ) : (
+            <>
+              {evidence.items.map((r, i) => (
+                <blockquote key={r.id + ":" + i}>
+                  <small>
+                    {r.origin === "legacy_unverified"
+                      ? "旧记录，待核"
+                      : r.origin === "owner"
+                        ? "本人填写或纠正"
+                        : "个人对话原话"}{" "}
+                    · {stamp(r.at)}
+                    {r.expiresAt ? " · 有效至 " + stamp(r.expiresAt) : ""}
+                  </small>
+                  <p>{r.quote}</p>
+                  <button onClick={() => void sources(null, "", 0, r.id)}>
+                    读取完整依据
                   </button>
-                </header>
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    setActive(null);
-                    void sources(null, query);
-                  }}
+                </blockquote>
+              ))}
+              {!evidence.items.length && (
+                <p className="muted">没有找到有效依据。</p>
+              )}
+              {evidence.hasMore && (
+                <button
+                  onClick={() =>
+                    void sources(
+                      evidenceParagraph,
+                      query,
+                      evidence.nextOffset,
+                      evidenceID,
+                    )
+                  }
                 >
-                  <label className="sr-only" htmlFor="memory-query">
-                    查找记住的细节
-                  </label>
-                  <input
-                    id="memory-query"
-                    placeholder="查找记住的日期、约定或原话"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                  <button aria-label="搜索记忆">
-                    <Search size={16} />
-                  </button>
-                </form>
-                {evidence?.items.map((r, i) => (
-                  <blockquote key={r.id + ":" + i}>
-                    <small>
-                      {r.origin === "legacy_unverified"
-                        ? "旧记录（缺少原话，待核）"
-                        : r.origin === "owner"
-                          ? "本人填写或纠正"
-                          : "个人对话原话"}{" "}
-                      · {stamp(r.at)}
-                      {r.expiresAt ? " · 有效至 " + stamp(r.expiresAt) : ""}
-                    </small>
-                    <p>{r.quote}</p>
-                    <button onClick={() => void sources(null, "", 0, r.id)}>
-                      读取完整依据
-                    </button>
-                  </blockquote>
-                ))}
-                {evidence && !evidence.items.length && (
-                  <p className="muted">
-                    没有找到有效依据。被遗忘、已失效或被纠正的内容不会用于当前理解。
-                  </p>
-                )}
-                {evidence?.hasMore && (
-                  <button
-                    onClick={() =>
-                      void sources(
-                        active,
-                        query,
-                        evidence.nextOffset,
-                        evidenceID,
-                      )
-                    }
-                  >
-                    查看更多依据
-                  </button>
-                )}
-              </aside>
-            )}
-          </>
-        )}
-      </section>
+                  读取更多
+                </button>
+              )}
+            </>
+          )}
+        </aside>
+      )}
     </div>
   );
 }

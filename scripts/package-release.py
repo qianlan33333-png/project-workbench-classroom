@@ -21,7 +21,7 @@ assert (root / 'web/dist/index.html').is_file(), 'Build the web app first'
 subprocess.run(['sh', str(root/'scripts/stage-cli.sh')], check=True)
 
 def include(info):
-    if '/__pycache__/' in info.name or info.name.endswith('.pyc') or '__MACOSX' in info.name or '/.git/' in info.name or info.name.endswith('.DS_Store'):
+    if info.name == 'runtime/.local' or info.name.startswith('runtime/.local/') or '/__pycache__/' in info.name or info.name.endswith('.pyc') or '__MACOSX' in info.name or '/.git/' in info.name or info.name.endswith('.DS_Store'):
         return None
     info.uid = info.gid = 0
     info.uname = info.gname = ''

@@ -51,6 +51,7 @@ export function CapabilityComposer({
   onSelected,
   send,
   personal = false,
+  onPaste,
 }: {
   projectId: string;
   sessionId: string;
@@ -60,6 +61,7 @@ export function CapabilityComposer({
   onSelected: (c: Capability[]) => void;
   send: () => void;
   personal?: boolean;
+  onPaste?: React.ClipboardEventHandler<HTMLTextAreaElement>;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const editor = useRef<HTMLDivElement>(null);
@@ -220,10 +222,11 @@ export function CapabilityComposer({
         }
         placeholder={
           personal
-            ? "说说你的想法，或输入 / 选择 CLI、MCP…"
+            ? "发消息，或添加文件"
             : "描述任务，输入 / 选择 CLI、Skill 或 MCP…"
         }
         value={value}
+        onPaste={onPaste}
         onFocus={() => setFocused(true)}
         onBlur={() => {
           cancelSelectionFrame();
