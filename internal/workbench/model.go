@@ -29,6 +29,7 @@ type Project struct {
 	CreatedAt        int64    `json:"createdAt"`
 }
 type Session struct {
+	ContextNotice  string `json:"contextNotice,omitempty"`
 	PinnedAt       int64  `json:"pinnedAt,omitempty"`
 	RecycledAt     int64  `json:"recycledAt,omitempty"`
 	ExpiresAt      int64  `json:"expiresAt,omitempty"`
@@ -77,6 +78,7 @@ type FileReference struct {
 	Path      string `json:"path"`
 }
 type Message struct {
+	Agent        *AgentMessage   `json:"agent,omitempty"`
 	Gateway      *GatewayRun     `json:"gateway,omitempty"`
 	ID           string          `json:"id"`
 	Incoming     Incoming        `json:"incoming"`
@@ -95,37 +97,40 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
-	FollowupID           string            `json:"followupId,omitempty"`
-	hostSlot             *harnessSlot      // Process-only reservation; never persisted.
-	ConversationOutput   bool              `json:"conversationOutput,omitempty"`
-	ScheduledFor         int64             `json:"scheduledFor,omitempty"`
-	ScheduleConfig       *Schedule         `json:"scheduleConfig,omitempty"`
-	InputFingerprint     string            `json:"inputFingerprint,omitempty"`
-	Gateway              *GatewayRun       `json:"gateway,omitempty"`
-	PersonalRulesVersion int64             `json:"personalRulesVersion,omitempty"`
-	Capabilities         []Capability      `json:"capabilities,omitempty"`
-	Kind                 string            `json:"kind,omitempty"`
-	ExpertName           string            `json:"expertName,omitempty"`
-	ID                   string            `json:"id"`
-	ProjectID            string            `json:"projectId"`
-	SessionID            string            `json:"sessionId"`
-	MessageID            string            `json:"messageId"`
-	EventID              string            `json:"eventId,omitempty"`
-	State                string            `json:"state"`
-	Source               string            `json:"source"`
-	Text                 string            `json:"text"`
-	ExpertID             string            `json:"expertId"`
-	ExpertDigest         string            `json:"expertDigest"`
-	ExpertVersions       map[string]string `json:"expertVersions,omitempty"`
-	Attachments          []string          `json:"attachments,omitempty"`
-	ReplyAnchor          string            `json:"replyAnchor,omitempty"`
-	AnchorExplicit       bool              `json:"anchorExplicit"`
-	Result               string            `json:"result"`
-	Error                string            `json:"error,omitempty"`
-	ScheduleID           string            `json:"scheduleId,omitempty"`
-	CreatedAt            int64             `json:"createdAt"`
-	StartedAt            int64             `json:"startedAt"`
-	FinishedAt           int64             `json:"finishedAt"`
+	NativeMessageID         string            `json:"nativeMessageId,omitempty"`
+	Agent                   *AgentMessage     `json:"agent,omitempty"`
+	CommunicationContextIDs []string          `json:"communicationContextIds,omitempty"`
+	FollowupID              string            `json:"followupId,omitempty"`
+	hostSlot                *harnessSlot      // Process-only reservation; never persisted.
+	ConversationOutput      bool              `json:"conversationOutput,omitempty"`
+	ScheduledFor            int64             `json:"scheduledFor,omitempty"`
+	ScheduleConfig          *Schedule         `json:"scheduleConfig,omitempty"`
+	InputFingerprint        string            `json:"inputFingerprint,omitempty"`
+	Gateway                 *GatewayRun       `json:"gateway,omitempty"`
+	PersonalRulesVersion    int64             `json:"personalRulesVersion,omitempty"`
+	Capabilities            []Capability      `json:"capabilities,omitempty"`
+	Kind                    string            `json:"kind,omitempty"`
+	ExpertName              string            `json:"expertName,omitempty"`
+	ID                      string            `json:"id"`
+	ProjectID               string            `json:"projectId"`
+	SessionID               string            `json:"sessionId"`
+	MessageID               string            `json:"messageId"`
+	EventID                 string            `json:"eventId,omitempty"`
+	State                   string            `json:"state"`
+	Source                  string            `json:"source"`
+	Text                    string            `json:"text"`
+	ExpertID                string            `json:"expertId"`
+	ExpertDigest            string            `json:"expertDigest"`
+	ExpertVersions          map[string]string `json:"expertVersions,omitempty"`
+	Attachments             []string          `json:"attachments,omitempty"`
+	ReplyAnchor             string            `json:"replyAnchor,omitempty"`
+	AnchorExplicit          bool              `json:"anchorExplicit"`
+	Result                  string            `json:"result"`
+	Error                   string            `json:"error,omitempty"`
+	ScheduleID              string            `json:"scheduleId,omitempty"`
+	CreatedAt               int64             `json:"createdAt"`
+	StartedAt               int64             `json:"startedAt"`
+	FinishedAt              int64             `json:"finishedAt"`
 }
 type Event struct {
 	Seq       int64           `json:"seq"`

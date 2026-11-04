@@ -1,3 +1,4 @@
+import { CommunicationFeed, AgentOrigin } from "./session-communication";
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -1727,15 +1728,36 @@ function App() {
                     加载更早的工作记录
                   </button>
                 )}
+                {session?.contextNotice && (
+                  <p role="status">{session.contextNotice}</p>
+                )}
+                <CommunicationFeed
+                  sessionId={sessionId}
+                  notify={notify}
+                  prepare={(v) => {
+                    if (text.trim()) {
+                      notify("输入框已有草稿，请先发送或清空后再准备回复。");
+                      return;
+                    }
+                    setText(v);
+                  }}
+                />
                 {sessionRuns.map((r) => (
                   <article
                     className="turn"
                     key={r.id}
                     data-message-id={r.messageId}
                   >
-                    <div className="user-message">
+                    <div
+                      className={
+                        r.agent ? "communication-input" : "user-message"
+                      }
+                    >
+                      <AgentOrigin agent={r.agent} />
                       <span>
-                        {r.source !== "web" ? labels[r.source] + " · " : ""}
+                        {r.source !== "web" && r.source !== "agent"
+                          ? labels[r.source] + " · "
+                          : ""}
                         {stamp(r.createdAt)}
                       </span>
                       <p>{r.text}</p>

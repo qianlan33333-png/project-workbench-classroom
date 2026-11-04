@@ -127,6 +127,7 @@ func (w *Worker) gatewayRevocationLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			w.stopRevokedGatewayRuns(ctx)
+			w.stopRevokedCommunicationRuns()
 		}
 	}
 }

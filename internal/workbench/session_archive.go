@@ -22,7 +22,7 @@ func (w *Worker) executeArchive(ctx context.Context, r Run) {
 	}
 	var text strings.Builder
 	for _, row := range rows {
-		text.WriteString(fmt.Sprintf("\n用户（%s）：\n%s\n助手答复（状态 %s）：\n%s\n", time.UnixMilli(row.CreatedAt).Format(time.RFC3339), row.Text, row.State, row.Result))
+		text.WriteString(fmt.Sprintf("\n%s（%s）：\n%s\n助手答复（状态 %s）：\n%s\n", agentInputLabel(row), time.UnixMilli(row.CreatedAt).Format(time.RFC3339), row.Text, row.State, row.Result))
 		if row.Error != "" {
 			text.WriteString("未完成或异常：" + row.Error + "\n")
 		}

@@ -84,7 +84,7 @@ func (w *limitedOutput) Write(p []byte) (int, error) {
 }
 
 func (h *Harness) runPersonalCLI(parent context.Context, in RuntimeInput, raw json.RawMessage) (any, error) {
-	if in.Run.FollowupID != "" {
+	if in.Run.FollowupID != "" || communicationReadOnly(in.Run) {
 		return nil, errors.New("持续跟进的自动轮不能执行通用CLI")
 	}
 	var q struct {
@@ -131,7 +131,7 @@ func (h *Harness) runPersonalCLI(parent context.Context, in RuntimeInput, raw js
 // Relay a registered stdio MCP as a byte stream. The caller can choose only
 // its ID; executable, arguments and environment are read from owner settings.
 func (h *Harness) servePersonalMCP(lifetime context.Context, in RuntimeInput, w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" || r.Header.Get("Upgrade") != "pwb-stdio" || in.Project.ID != personalProjectID || in.Routing || in.Run.FollowupID != "" {
+	if r.Method != "GET" || r.Header.Get("Upgrade") != "pwb-stdio" || in.Project.ID != personalProjectID || in.Routing || (in.Run.FollowupID != "" || communicationReadOnly(in.Run)) {
 		http.Error(w, "not available", 403)
 		return
 	}

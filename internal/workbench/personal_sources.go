@@ -77,7 +77,7 @@ func (s *Store) personalSource(q sourceQuery, read bool) (any, error) {
 			return nil, er
 		}
 		title = session.Title + " · #T" + r.ID[:8]
-		body = "用户：" + r.Text + "\n助手：" + r.Result + "\n状态：" + stateLabel(r.State)
+		body = agentInputLabel(r) + r.Text + "\n助手：" + r.Result + "\n状态：" + stateLabel(r.State)
 	case "task":
 		t, er := s.Task(q.Key)
 		if er != nil || t.ProjectID != p.ID {

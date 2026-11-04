@@ -133,6 +133,9 @@ func (s *Store) recycleSession(id, reason, archiveRun string) (Session, error) {
 				return e
 			}
 		}
+		if e := invalidateCommunicationSourceTx(tx, id); e != nil {
+			return e
+		}
 		ss.RecycledAt = now()
 		ss.ExpiresAt = ss.RecycledAt + recycleDuration
 		ss.RecycleReason = reason
@@ -374,6 +377,9 @@ func (s *Store) PurgeSession(id string) error {
 	return s.purgeSession(ss)
 }
 func (s *Store) purgeSession(ss Session) error {
+	if e := s.Transaction(context.Background(), func(tx *sql.Tx) error { return invalidateCommunicationSourceTx(tx, ss.ID) }); e != nil {
+		return e
+	}
 	// The durable marker contains no conversation content. Backup scrubbing and
 	// restore tooling use it to prevent resurrection from an older snapshot.
 	marker := filepath.Join(s.Root, "purged-sessions", ss.ID+".json")

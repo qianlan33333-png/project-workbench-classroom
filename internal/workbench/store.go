@@ -94,7 +94,7 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(schema + ingressQueueSchema + runLeaseSchema + todaySchema + followupSchema + plannerSchema + calendarSyncSchema + gatewaySchema + crmSchema); err != nil {
+	if _, err := db.Exec(schema + communicationSchema + ingressQueueSchema + runLeaseSchema + todaySchema + followupSchema + plannerSchema + calendarSyncSchema + gatewaySchema + crmSchema); err != nil {
 		return nil, fmt.Errorf("数据库初始化: %w", err)
 	}
 	var version int
@@ -155,7 +155,13 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 	}
 	return s, nil
 }
-func getJSON[T any](db *sql.DB, q string, args ...any) (T, error) {
+
+type jsonReader interface {
+	QueryRow(string, ...any) *sql.Row
+	Query(string, ...any) (*sql.Rows, error)
+}
+
+func getJSON[T any](db jsonReader, q string, args ...any) (T, error) {
 	var out T
 	var raw string
 	err := db.QueryRow(q, args...).Scan(&raw)
@@ -173,7 +179,7 @@ func decodeJSON[T any](raw string) (T, error) {
 	err := json.Unmarshal([]byte(raw), &v)
 	return v, err
 }
-func listJSON[T any](db *sql.DB, q string, args ...any) ([]T, error) {
+func listJSON[T any](db jsonReader, q string, args ...any) ([]T, error) {
 	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err

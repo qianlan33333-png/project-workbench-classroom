@@ -58,6 +58,15 @@ func (s *Store) DeleteProject(id string) error {
 		if _, err = tx.Exec("INSERT OR REPLACE INTO settings(key,value) SELECT ?,json_group_array(id) FROM sessions WHERE project_id=?", "project_delete_sessions:"+id, id); err != nil {
 			return err
 		}
+		ss, e := listJSON[Session](tx, "SELECT data FROM sessions WHERE project_id=?", id)
+		if e != nil {
+			return e
+		}
+		for _, session := range ss {
+			if e = invalidateCommunicationSourceTx(tx, session.ID); e != nil {
+				return e
+			}
+		}
 		statements := []string{
 			"DELETE FROM gateway_crm_routes WHERE json_extract(grant,'$[1]') IN (SELECT id FROM gateway_bindings WHERE json_extract(data,'$.projectId')=?)",
 			"DELETE FROM gateway_crm_receipts WHERE session_id IN (SELECT id FROM sessions WHERE project_id=?)",

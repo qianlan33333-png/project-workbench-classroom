@@ -200,6 +200,7 @@ func (a *API) Mount(r *gin.Engine) {
 		}
 		reply(c, v, e)
 	})
+	a.mountCommunication(owner)
 	owner.POST("/messages", func(c *gin.Context) {
 		bind(c, func(v Incoming) (any, error) {
 			v.Source = "web"

@@ -253,7 +253,7 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		version = e.Digest
 		expertName = e.Name
 	}
-	run := Run{ExpertName: expertName, ID: newID(), ProjectID: p.ID, SessionID: sess.ID, MessageID: m.ID, EventID: m.Incoming.EventID, State: "queued", Source: m.Incoming.Source, Text: m.Incoming.Text, ExpertID: expert, ExpertDigest: version, ReplyAnchor: anchor, AnchorExplicit: explicit, CreatedAt: now()}
+	run := Run{Agent: m.Agent, ExpertName: expertName, ID: newID(), ProjectID: p.ID, SessionID: sess.ID, MessageID: m.ID, EventID: m.Incoming.EventID, State: "queued", Source: m.Incoming.Source, Text: m.Incoming.Text, ExpertID: expert, ExpertDigest: version, ReplyAnchor: anchor, AnchorExplicit: explicit, CreatedAt: now()}
 	if run.Source == gatewaySource {
 		run.Gateway, err = s.gatewayRunMetadata(m)
 		if err != nil {
@@ -310,7 +310,7 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		if err != nil {
 			return err
 		}
-		if old.State == "deleted" {
+		if old.State == "deleted" || old.State == "cancelled" {
 			return ErrNotFound
 		}
 		if old.RunID != "" {
@@ -328,6 +328,20 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		}
 		if currentSession.RecycledAt > 0 || currentSession.Lifecycle != "" {
 			return errors.New("对话正在归档或已在回收站")
+		}
+		if m.Agent != nil {
+			if old.State != "unrouted" {
+				return errors.New("此消息尚未获授权、仅供下轮读取或已停止")
+			}
+			if old.Agent == nil || encode(old.Agent) != encode(m.Agent) {
+				return ErrConflict
+			}
+			if e := communicationLiveTx(tx, m.Agent); e != nil {
+				return e
+			}
+			if _, e := communicationTargetTx(tx, sess.ID); e != nil {
+				return e
+			}
 		}
 		if run.Gateway == nil {
 			var external int
@@ -377,7 +391,7 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		if err != nil {
 			return err
 		}
-		if m.Incoming.Source != "automation" {
+		if m.Incoming.Source != "automation" && m.Incoming.Source != "agent" {
 			if _, err := tx.Exec("INSERT INTO entry_focus VALUES(?,?,?) ON CONFLICT(entry_key) DO UPDATE SET session_id=excluded.session_id,updated_at=excluded.updated_at", entryKey(m.Incoming), sess.ID, now()); err != nil {
 				return err
 			}
@@ -403,7 +417,11 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 			return m, err
 		}
 	}
-	if err = s.Emit(sess.ID, run.ID, "message.user", map[string]any{"text": run.Text, "source": run.Source, "messageId": m.ID, "attachments": m.Incoming.Attachments}); err != nil {
+	eventType := "message.user"
+	if run.Agent != nil {
+		eventType = "message.agent"
+	}
+	if err = s.Emit(sess.ID, run.ID, eventType, map[string]any{"text": run.Text, "source": run.Source, "messageId": m.ID, "attachments": m.Incoming.Attachments}); err != nil {
 		return m, err
 	}
 	return m, s.Emit(sess.ID, run.ID, "run.updated", run)

@@ -140,7 +140,7 @@ func (a *API) mountToday(g *gin.RouterGroup) {
 			reply(c, nil, err)
 			return
 		}
-		reply(c, gin.H{"followups": followups, "channelNotes": notes, "contextResetAt": notice, "sessionId": p.DefaultSessionID, "runs": rs, "decisions": ds, "daily": daily, "contexts": contexts}, e)
+		reply(c, gin.H{"contextNotice": func() string { ss, _ := s.Session(p.DefaultSessionID); return ss.ContextNotice }(), "followups": followups, "channelNotes": notes, "contextResetAt": notice, "sessionId": p.DefaultSessionID, "runs": rs, "decisions": ds, "daily": daily, "contexts": contexts}, e)
 	})
 	g.POST("/today/refresh", func(c *gin.Context) {
 		e := s.RequestToday()
