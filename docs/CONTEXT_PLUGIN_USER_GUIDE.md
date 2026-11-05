@@ -41,7 +41,7 @@
 
 ## 一批生成2000条怎么用
 
-先由活动专家确认场景、有效名单、原方案及素材版本。固定程序负责逐条执行、隔离上下文、限制并发和恢复。最新一期上限是**每批2000条**，更大名单拆批。
+先由活动专家确认场景、有效名单、原方案及素材版本。固定程序负责逐条执行、隔离上下文、限制并发和恢复。最新一期上限是**每批2000条**，更大名单拆批；5000人拆为2000+2000+1000三批。
 
 沿原提示词工程和资格校验生成时，用`batch_generate`：
 
@@ -85,3 +85,17 @@
 ## 回退
 
 应用沿现有current/previous发布入口回退。旧版会冻结组件专家消息/Run和定时，不会将其误当普通可写任务执行。新插件数据保留，不能用旧工作台DB覆盖新业务数据；恢复新版后人工核对冻结任务，不自动补跑发送。原中心一直保留运行。
+
+## 本次正式环境入口（2026-11-05）
+
+已上线 `cloud-20261105-34-tool-components-f775ea2`。以下入口要求你的工作台登录：
+
+- [用户上下文维护](https://dsh.qianlan333.cloud/#project=cfd26e9f-1e41-4a64-b84a-3275e407eea0&session=4d12e10e-2249-4d8c-b93e-dfe8f9f5c075)
+- [活动与批量生成](https://dsh.qianlan333.cloud/#project=1d1c4920-3def-43f5-b9db-bd64683c6374&session=4cd96325-a6a8-45c3-a988-cce635b6b787)
+- [服务计划与跟进](https://dsh.qianlan333.cloud/#project=40a83086-8186-4349-999d-410fbf24da13&session=f9ca4450-331d-427d-8224-bc4727d34443)
+- [关键用户推荐](https://dsh.qianlan333.cloud/#project=a92557f5-98bf-4e93-ac83-4bd531eb4590&session=a05ee004-13d4-4886-adc1-c935a9116cf4)
+- [报告与内容素材](https://dsh.qianlan333.cloud/#project=0d60f842-be78-46d7-a68e-a7ee479d213c&session=ec0b1392-edfa-4841-92c6-3c43c6fc6d50)
+- [群运营](https://dsh.qianlan333.cloud/#project=41e61ebe-4f13-4327-86e8-c9b0ca9cf787&session=acff8091-3aee-4a30-9539-791ff57d8772)
+- [经营分析与历史核查](https://dsh.qianlan333.cloud/#project=79c8b97b-792c-44a0-9c17-c5f6b80f822f&session=fac016cd-44a7-457b-bada-b7c9eb451de6)
+
+新数据同步、推荐两个任务均已启用；原13个任务仍由原中心运行。
