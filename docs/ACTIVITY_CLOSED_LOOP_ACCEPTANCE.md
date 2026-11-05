@@ -22,6 +22,16 @@ review_components多轮独立/re最终No findings。修复抽检取错模型原�
 
 ## 发布与真实渠道
 
-待固定发布入口执行后追加。
+已正式上线 `cloud-20261105-35-activity-loop-b7ca358`，上一成功版 `cloud-20261105-34-tool-components-f775ea2`。正式代码 `b7ca358edcee3d89d25e8912dabc09cedebce6cc`，tree `f491bc7a6110fe4e4df063538057048af48eb823`；组合包SHA256 `8f73f7e929c89d5908300d3ea91391d7615fdec6f73555f5d0cec3edcb810e00`。
+
+- 固定控制器持同一发布锁完成候选验收后提交previous。真实Harness在最终候选12.97秒通过，程序与独立插件SHA256均与本地候选一致。
+- 本人实际在微信回复联测审核码；后台读回source=wechat、同一Session、dispatchCount=1。Personal Agent最终通知持久化，抽检/确认应答/最终结果3条本人微信投递均有accepted回执。此联测使用合成批次，客户发送数0。
+- 联测全部通过、合成资源停止/归档后，最后提交归并。7个原项目归档关联到“私域运营”；7个原Session的project_id/Harness ID不变，原1条Run和1条消息逐项与迁移前相同；91个普通文件原字节核对相同（原112项清单包括目录）。
+- 原2个工作台定时已暂停，新项目对应2个定时启用；Cron、时区、NextAt、固定专家版本、参数/目标保持，专家正文重绑新组件。下次为2026-11-05 18:20数据拉取、2026-11-06 09:10关键用户推荐（上海时间）。
+- 上线后实际专家只读Run `63cc9cae-68ea-4d14-bd00-1573910ccc1a` 55.68秒完成：recommend_users两次、query_contexts三次、configuration一次均为真实成功组件调用；未触达客户。
+- 新MySQL已发布25126条上下文。原中心API仍为同一进程，13个原timer均active，原Agent仍disabled/existing_local_runner。
+- 公网已鉴权桌面/390手机读回通过；完整指南已放在统一项目文件“单项目活动闭环使用说明.md”。临时合成服务/路由/测试库已清退，仅保留正式和上一成功版及一个迁移恢复边界；业务记录未回滚覆盖。
+
+工作台程序SHA256：`89356146b1df3b40cc9fc0364e321970aa71f7cd58eeb56741f1c3ee665025a1`；插件SHA256：`03eb29cce2f7eefe738d4e83bf6839c2d799533357200af53cd271afb31b0b80`。
 
 候选门禁追加：真实原工作包目录47.27秒，前台25秒调用无法容纳；该候选未正式提交，旧current恢复且原七项目/定时未切换。修复目录/名单准备的持久化查回和首次提交轮询竞态后，再次独立/re No findings；真实8个工作包后台读取及MySQL受理/查回通过。最终发布仍以下方追加结果为准。
