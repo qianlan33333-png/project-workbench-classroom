@@ -107,6 +107,14 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 		}
 		var value any
 		var err error
+		if validateCommunicationRead(in, req.Tool, req.Args) != nil {
+			http.Error(w, "Agent消息只读，执行需本人授权", 403)
+			return
+		}
+		if in.Run.Agent != nil && h.Store.communicationLive(in.Run) != nil {
+			http.Error(w, "协作已停止", 403)
+			return
+		}
 		if in.Run.FollowupID != "" && (!h.Store.followupRunLive(in.Run) || !allowedFollowupTool(req.Tool)) {
 			http.Error(w, "持续跟进本轮只能核对资料及更新自身事项，或事项已失效", 403)
 			return
@@ -123,6 +131,8 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 			defer stdio.work.Done()
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(45 * time.Second))
 			value, err = h.readMessageAttachment(r.Context(), in, req.Args)
+		} else if req.Tool == "list_components" || req.Tool == "call_component" || req.Tool == "component_status" || req.Tool == "cancel_component" {
+			value, err = h.Store.componentTool(r.Context(), in, req.Tool, req.Args)
 		} else if req.Tool == "run_global_cli" && in.Project.ID == personalProjectID && !in.Routing {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(95 * time.Second))
 			value, err = h.runPersonalCLI(r.Context(), in, req.Args)
@@ -155,6 +165,27 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 }
 
 func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any, error) {
+	if validateCommunicationRead(in, tool, args) != nil {
+		return nil, errors.New("Agent消息只读，执行需本人授权")
+	}
+	if in.Run.Agent != nil {
+		if e := s.communicationLive(in.Run); e != nil {
+			return nil, e
+		}
+	}
+	if strings.HasSuffix(tool, "session_message") || tool == "list_session_targets" {
+		return s.communicationTool(in, tool, args)
+	}
+	if communicationReadOnly(in.Run) && (tool == "find_project_sources" || tool == "read_project_source") {
+		var q sourceQuery
+		if e := json.Unmarshal(args, &q); e != nil {
+			return nil, e
+		}
+		if in.Project.ID != personalProjectID && q.ProjectID != in.Project.ID {
+			return nil, errors.New("只能核对当前项目")
+		}
+		return s.personalSource(q, tool == "read_project_source")
+	}
 	if in.Run.FollowupID != "" && (!s.followupRunLive(in.Run) || !allowedFollowupTool(tool)) {
 		return nil, errors.New("持续跟进本轮只读或事项已失效")
 	}

@@ -116,7 +116,7 @@ func (s *Store) memoryExcluded(id string) bool {
 func (s *Store) memoryUserText(r Run) string {
 	// A stored automation instruction is replayed by the scheduler. Its runs
 	// never constitute fresh expressions of the owner's preferences.
-	if r.Source == "automation" || r.ScheduleID != "" {
+	if r.Agent != nil || r.Source == "agent" || r.Source == "automation" || r.ScheduleID != "" {
 		return ""
 	}
 

@@ -269,9 +269,43 @@ def prepare_followup_worker(path):
                       BEGIN SELECT RAISE(ABORT,'followup worker version required'); END""")
 
 
+def prepare_communication_worker(path):
+    """Freeze agent input before starting a worker without provenance/tool guards."""
+    marker = path / 'communication-protocol'
+    supported = marker.is_file() and marker.read_text().strip() == '1'
+    db_path = DATA / 'workbench.sqlite'
+    if not db_path.exists():
+        return
+    with closing(sqlite3.connect(str(db_path), timeout=30)) as db, db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='communication_roots'").fetchone():
+            return
+        if supported:
+            for name in ('insert', 'update'):
+                db.execute('DROP TRIGGER IF EXISTS rollback_guard_communication_' + name)
+            return
+        for execute, unit, name in ((run, ('systemctl',), 'project-workbench'),
+                                   (as_user, ('systemctl', '--user'), 'project-workbench-runtime')):
+            status = execute(*unit, 'show', name, '-p', 'ActiveState', '--value', capture=True, check=False)
+            if status.returncode not in (0, 4) or status.stdout.strip() != 'inactive':
+                raise RuntimeError('Cannot freeze session communication while worker is active')
+        scope = "(json_extract(data,'$.source')='agent' OR coalesce(json_array_length(data,'$.communicationContextIds'),0)>0)"
+        active = "state IN ('queued','running','waiting','stopping')"
+        if db.execute(f"SELECT 1 FROM runs WHERE {scope} AND state IN ('running','waiting','stopping')").fetchone():
+            raise RuntimeError('Communication executors must finish cleanup before rollback')
+        db.execute(f"UPDATE runs SET state='communication_frozen',data=json_set(data,'$.state','communication_frozen','$.error','旧版无法安全处理会话通信，已冻结') WHERE {scope} AND {active}")
+        db.execute("UPDATE inbox SET state='communication_frozen',data=json_set(data,'$.state','communication_frozen') WHERE source='agent' AND state IN ('unrouted','context','authorization','queued')")
+        db.execute('UPDATE communication_roots SET cancelled=1')
+        for name, operation in (('insert','INSERT'),('update','UPDATE')):
+            condition = "json_extract(NEW.data,'$.source')='agent' OR coalesce(json_array_length(NEW.data,'$.communicationContextIds'),0)>0"
+            if name == 'update':
+                condition += " OR json_extract(OLD.data,'$.source')='agent' OR coalesce(json_array_length(OLD.data,'$.communicationContextIds'),0)>0"
+            db.execute(f"CREATE TRIGGER IF NOT EXISTS rollback_guard_communication_{name} BEFORE {operation} ON runs WHEN NEW.state IN ('queued','running','waiting','stopping') AND ({condition}) BEGIN SELECT RAISE(ABORT,'communication worker version required'); END")
+
+
 def start(path, channels=True):
     prepare_gateway_worker(path)
     prepare_followup_worker(path)
+    prepare_communication_worker(path)
     point('current', path)
     set_runtime(path)
     run('systemctl', 'start', 'project-workbench')

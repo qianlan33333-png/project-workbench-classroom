@@ -73,6 +73,7 @@ type rpcResult struct {
 func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error) {
 	c := h.Config
 	personal := input.Project.ID == personalProjectID
+	readOnly := communicationReadOnly(input.Run)
 	external := h.gatewayInput(input)
 	if external && c.RuntimeMode != "podman" {
 		return nil, nil, "", errors.New("外部客户会话必须使用隔离容器")
@@ -197,7 +198,7 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 		}
 	}
 	patch = append(patch, map[string]any{"id": "system-prompt", "config": map[string]any{"personaPrefix": persona}})
-	if c.HarnessPatch != "" && !personal && !input.Routing && !external {
+	if c.HarnessPatch != "" && !personal && !input.Routing && !external && !readOnly {
 		b, e := os.ReadFile(c.HarnessPatch)
 		if e != nil {
 			return nil, nil, "", e
@@ -217,16 +218,16 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 				socket = "/bridge.sock"
 				mounts = append(mounts, "--volume", bridgeSocket(input)+":/bridge.sock:rw")
 			}
-			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "project-workbench", "name": "@deepseek-ai/dsh-mcp-client", "config": map[string]any{"serverName": "workbench", "transport": "stdio", "command": "node", "args": []string{filepath.Join(runtimeDir, "app-mcp.mjs")}, "env": map[string]string{"PW_APP_SOCKET": socket, "PW_PERSONAL": strconv.FormatBool(personal), "PW_GATEWAY": strconv.FormatBool(external), "PW_FOLLOWUP": strconv.FormatBool(input.Run.FollowupID != "")}, "failOnStartupError": true}}}})
+			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "project-workbench", "name": "@deepseek-ai/dsh-mcp-client", "config": map[string]any{"serverName": "workbench", "transport": "stdio", "command": "node", "args": []string{filepath.Join(runtimeDir, "app-mcp.mjs")}, "env": map[string]string{"PW_APP_SOCKET": socket, "PW_PERSONAL": strconv.FormatBool(personal), "PW_GATEWAY": strconv.FormatBool(external), "PW_COMMUNICATION_READONLY": strconv.FormatBool(readOnly), "PW_FOLLOWUP": strconv.FormatBool(input.Run.FollowupID != "")}, "failOnStartupError": true}}}})
 		}
-		if c.RuntimeMode == "podman" && !personal && !external {
+		if c.RuntimeMode == "podman" && !personal && !external && !readOnly {
 			patch = append(patch, map[string]any{"insert": []map[string]any{{"id": "project-browser", "name": "@deepseek-ai/dsh-mcp-client", "config": map[string]any{"serverName": "browser", "transport": "stdio", "command": "node", "args": []string{"/opt/workbench-runtime/browser-mcp.mjs"}, "cwd": "/workspace", "env": map[string]string{"DISPLAY": ":99", "PW_CHROMIUM": "/usr/bin/chromium", "PW_BROWSER_PROFILE": "/runtime/browser-profile"}}}}})
 		}
 		globalPlugins, e := h.Store.enabledProjectPlugins(input.Project.ID)
 		if e != nil {
 			return nil, nil, "", e
 		}
-		if input.Run.FollowupID != "" {
+		if input.Run.FollowupID != "" || readOnly {
 			globalPlugins = nil
 		}
 		if external {
@@ -296,7 +297,7 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 	// SDK defaults disable native automatic titles. Enable only the first
 	// untitled topic; generation is an auxiliary request in the same Harness.
 	patch = append(patch, map[string]any{"id": "session-title-llm", "disabled": input.Routing || input.Session.TitleSource != "fallback", "config": map[string]any{"targetWords": 5, "targetCjkCharacters": 10, "maxInputBytes": 131072, "maxOutputTokens": 1024, "timeoutMs": 15000}})
-	if !input.Routing && !personal && !external {
+	if !input.Routing && !personal && !external && !readOnly {
 		toolRoot := filepath.Join(c.DataDir, "tools")
 		if err = os.MkdirAll(filepath.Join(toolRoot, "state"), 0700); err != nil {
 			return nil, nil, "", err
@@ -312,7 +313,10 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 			}
 		}
 	}
-	if personal || input.Routing {
+	if readOnly && !personal && c.RuntimeMode == "podman" && c.RuntimeDir != "" {
+		mounts = append(mounts, "--volume", c.RuntimeDir+":/opt/workbench-runtime:ro")
+	}
+	if personal || input.Routing || readOnly {
 		// Enforced last: deployment patches cannot re-enable project execution tools.
 		for _, id := range []string{"tool-fs", "tool-fs-search", "tool-bash", "tool-pwsh", "tool-jobs", "tool-working-directory", "tool-skill", "tool-ask-user", "tool-web", "tool-todo", "tool-goal", "present", "agent-instructions", "workspace-dependencies", "skill-office"} {
 			patch = append(patch, map[string]any{"id": id, "disabled": true})
@@ -386,6 +390,13 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 			return nil, nil, "", errors.New("执行容器尚未配置")
 		}
 		args := []string{c.Podman, "run", "--rm", "--interactive", "--name", "pw-" + input.Run.ID, "--label", "project-workbench=true", "--label", "project-workbench-root=" + digest([]byte(c.DataDir))[:16], "--userns=keep-id", "--security-opt=no-new-privileges", "--cap-drop=ALL", "--memory=1024m", "--pids-limit=256", "--workdir", "/workspace", "--volume", root + ":/workspace:rw", "--volume", home + ":/runtime:rw", "--env", "DSH_HOME=/runtime", "--env", "HOME=/runtime", "--env", "NODE_NO_WARNINGS=1", "--env", "DSH_MAX_TOKENS_AS_SUCCESS=false", "--env", "DSH_PRIMARY_RUNTIME=", "--env", "PATH=/tools/bin:/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+		if readOnly {
+			for i, arg := range args {
+				if arg == root+":/workspace:rw" {
+					args[i] = root + ":/workspace:ro"
+				}
+			}
+		}
 		if external {
 			args = append(args, "--env", "PW_GATEWAY_MODEL_PLACEHOLDER=local-placeholder")
 			for i, arg := range args {
@@ -402,7 +413,7 @@ func (h *Harness) prepare(input RuntimeInput) ([]string, []string, string, error
 				}
 			}
 		}
-		if !input.Routing && !personal && !external {
+		if !input.Routing && !personal && !external && !readOnly {
 			args = append(args, "--publish", "127.0.0.1::6080", "--env", "PW_VISUAL_BROWSER=1")
 		} else {
 			for i, arg := range args {
@@ -753,7 +764,7 @@ func (h *Harness) Execute(parent context.Context, input RuntimeInput, hooks Runt
 	// podman run starting is not proof that its container has started. The
 	// initialized runtime is: keep the startup reservation until this handshake.
 	slot.markStarted()
-	if h.Config.RuntimeMode == "podman" && !input.Routing && input.Project.ID != personalProjectID && !h.gatewayInput(input) {
+	if h.Config.RuntimeMode == "podman" && !input.Routing && input.Project.ID != personalProjectID && !h.gatewayInput(input) && !communicationReadOnly(input.Run) {
 		lookup, stop := context.WithTimeout(ctx, 5*time.Second)
 		raw, err := exec.CommandContext(lookup, h.Config.Podman, "port", "pw-"+input.Run.ID, "6080/tcp").Output()
 		stop()

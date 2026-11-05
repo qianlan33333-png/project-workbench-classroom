@@ -1,3 +1,4 @@
+import { CommunicationFeed, AgentOrigin } from "./session-communication";
 import { Overlay, useNarrow, useSurfaceGuard } from "./surface-ui";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
@@ -791,11 +792,28 @@ export function Today({
                   <h2>想聊些什么？</h2>
                 </div>
               )}
+              {data?.contextNotice && <p role="status">{data.contextNotice}</p>}
+              <CommunicationFeed
+                sessionId={data?.sessionId || ""}
+                notify={notify}
+                prepare={(v) => {
+                  if (text.trim()) {
+                    notify("输入框已有草稿，请先发送或清空后再准备回复。");
+                    return;
+                  }
+                  editText(v);
+                }}
+              />
               {[...runs]
                 .sort((a, b) => a.createdAt - b.createdAt)
                 .map((r) => (
                   <div className="personal-turn" key={r.id}>
-                    <div className="personal-user">
+                    <div
+                      className={
+                        r.agent ? "communication-input" : "personal-user"
+                      }
+                    >
+                      <AgentOrigin agent={r.agent} />
                       {["wechat", "feishu", "automation"].includes(
                         r.source,
                       ) && (

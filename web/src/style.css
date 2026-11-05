@@ -4063,3 +4063,15 @@ button:focus-visible, a:focus-visible { outline-color: #737373; }
   .personalization-rules textarea { min-height: 130px; max-height: 35dvh; }
   .memory-more > div { flex-wrap: wrap; }
 }
+
+.communication-feed{display:grid;gap:8px;margin:12px 0}.communication-card,.communication-input{border:1px solid var(--border,#e2e5de);border-radius:10px;padding:12px 16px;background:var(--panel,#fff);text-align:left;max-width:100%;min-width:0;overflow-wrap:anywhere}.communication-card summary{display:flex;align-items:center;gap:8px;cursor:pointer;flex-wrap:wrap}.communication-card summary small{margin-left:auto;color:var(--muted,#747c73)}.communication-body{white-space:pre-wrap}.communication-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.communication-actions button{font-size:12px;padding:6px 9px}.communication-card>small,.agent-origin{display:block;color:var(--muted,#747c73);font-size:12px;margin:6px 0}.communication-input{margin-bottom:12px}.communication-input p{white-space:pre-wrap}
+
+/* Tool components inherit existing workbench forms and result surfaces. */
+.tool-components .tool-form, .session-components .tool-form { display: grid; gap: 12px; min-width: 0; }
+.tool-components label, .session-components label { display: grid; gap: 6px; min-width: 0; }
+.tool-components input, .tool-components select, .tool-components textarea, .session-components select, .session-components textarea { max-width: 100%; width: 100%; box-sizing: border-box; }
+.tool-components input[type=checkbox] { width: auto; }
+.session-components { padding: 8px 0; min-width: 0; }
+.component-result { margin: 10px 0; padding: 12px; border: 1px solid var(--line, #e5e7eb); border-radius: 10px; overflow-wrap: anywhere; }
+.component-result pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
+@media (max-width: 600px) { .tool-components .setting-row { align-items: flex-start; flex-wrap: wrap; } .tool-components .tool-actions { flex-wrap: wrap; } }

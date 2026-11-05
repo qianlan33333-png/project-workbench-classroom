@@ -37,6 +37,7 @@ export type Project = {
   archived: boolean;
 };
 export type Session = {
+  contextNotice?: string;
   pinnedAt?: number;
   recycledAt?: number;
   expiresAt?: number;
@@ -55,6 +56,7 @@ export type Session = {
   harnessId: string;
 };
 export type Run = {
+  agent?: import("./session-communication").AgentMessage;
   attachments?: string[];
   capabilities?: Capability[];
   kind?: string;

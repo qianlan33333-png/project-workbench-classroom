@@ -9,6 +9,7 @@ import (
 // MCP config remains the native Harness shape; credentials are stored outside
 // project files and never included in the owner-facing list.
 type Plugin struct {
+	Component   *ComponentSpec    `json:"component,omitempty"`
 	ProjectID   string            `json:"projectId,omitempty"`
 	Enabled     *bool             `json:"enabled,omitempty"`
 	ID          string            `json:"id"`
@@ -24,7 +25,7 @@ type Plugin struct {
 }
 
 func (s *Store) Plugins() ([]Plugin, error) {
-	vs, e := listJSON[Plugin](s.DB, "SELECT data FROM (SELECT id,data FROM plugins UNION ALL SELECT id,data FROM project_plugins) ORDER BY id")
+	vs, e := listJSON[Plugin](s.DB, "SELECT data FROM (SELECT id,data FROM plugins UNION ALL SELECT id,data FROM project_plugins UNION ALL SELECT id,data FROM component_plugins) ORDER BY id")
 	for i := range vs {
 		vs[i].HasSecrets = len(vs[i].Env) > 0 || len(vs[i].Headers) > 0
 		vs[i].Env = nil
@@ -33,9 +34,12 @@ func (s *Store) Plugins() ([]Plugin, error) {
 	return vs, e
 }
 func (s *Store) Plugin(id string) (Plugin, error) {
-	return getJSON[Plugin](s.DB, "SELECT data FROM plugins WHERE id=? UNION ALL SELECT data FROM project_plugins WHERE id=?", id, id)
+	return getJSON[Plugin](s.DB, "SELECT data FROM plugins WHERE id=? UNION ALL SELECT data FROM project_plugins WHERE id=? UNION ALL SELECT data FROM component_plugins WHERE id=?", id, id, id)
 }
 func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
+	if e := validateComponent(p); e != nil {
+		return p, e
+	}
 	if p.ProjectID != "" {
 		if _, e := s.ProjectRoot(p.ProjectID); e != nil {
 			return p, e
@@ -62,6 +66,9 @@ func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
 	if p.ID == "" {
 		p.ID = newID()
 	} else if old, e := s.Plugin(p.ID); e == nil {
+		if (p.Component == nil) != (old.Component == nil) {
+			return p, errors.New("普通插件与工具组件不能原位互换")
+		}
 		if p.ProjectID != old.ProjectID {
 			return p, errors.New("项目专用插件不能改归属")
 		}
@@ -75,7 +82,9 @@ func (s *Store) SavePlugin(p Plugin) (Plugin, error) {
 		return p, ErrNotFound
 	}
 	var e error
-	if p.ProjectID == "" {
+	if p.Component != nil {
+		_, e = s.DB.Exec("INSERT INTO component_plugins VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", p.ID, p.ProjectID, encode(p))
+	} else if p.ProjectID == "" {
 		_, e = s.DB.Exec("INSERT INTO plugins VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", p.ID, encode(p))
 	} else {
 		_, e = s.DB.Exec("INSERT INTO project_plugins(id,project_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", p.ID, p.ProjectID, encode(p))
@@ -93,7 +102,16 @@ func (s *Store) DeletePlugin(id string) error {
 	if e != nil {
 		return e
 	}
-	if p.ProjectID != "" {
+	if p.Component != nil {
+		var n int
+		if e = s.DB.QueryRow("SELECT count(*) FROM component_calls WHERE plugin_id=? AND state NOT IN ('succeeded','failed','cancelled')", p.ID).Scan(&n); e != nil {
+			return e
+		}
+		if n > 0 {
+			return errors.New("组件仍有在途任务，请先核查并停止")
+		}
+		_, e = s.DB.Exec("DELETE FROM component_plugins WHERE id=?", id)
+	} else if p.ProjectID != "" {
 		_, e = s.DB.Exec("DELETE FROM project_plugins WHERE id=?", id)
 	} else {
 		_, e = s.DB.Exec("DELETE FROM plugins WHERE id=?", id)

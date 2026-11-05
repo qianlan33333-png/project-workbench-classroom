@@ -80,6 +80,7 @@ func (a *API) Mount(r *gin.Engine) {
 	owner.Use(a.authMiddleware)
 	a.mountGateway(g, owner)
 	a.mountToday(owner)
+	a.mountComponents(owner)
 	owner.GET("/browser/*path", a.projectBrowser)
 	owner.POST("/logout", func(c *gin.Context) {
 		token, _ := c.Cookie("pw_session")
@@ -200,6 +201,7 @@ func (a *API) Mount(r *gin.Engine) {
 		}
 		reply(c, v, e)
 	})
+	a.mountCommunication(owner)
 	owner.POST("/messages", func(c *gin.Context) {
 		bind(c, func(v Incoming) (any, error) {
 			v.Source = "web"
