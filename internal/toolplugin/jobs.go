@@ -338,6 +338,14 @@ func (s *Server) execute(parent context.Context, j job) {
 	var e error
 	var result any
 	switch j.Kind {
+	case "activity_catalog", "activity_candidates":
+		if _, ok := s.grantForJob(j); !ok {
+			e = errors.New("原安装授权已撤销")
+		} else if j.Kind == "activity_catalog" {
+			result, e = s.activityCatalog(parent, j.Request)
+		} else {
+			result, e = s.activityCandidates(parent, j.Request)
+		}
 	case "activity_generate":
 		result, e = s.generateActivity(parent, j)
 	case "activity_dispatch":

@@ -628,3 +628,39 @@ func TestComponentExpertAdmissionAndSchedulePinsMethod(t *testing.T) {
 		t.Fatal("scheduled expert snapshot lost")
 	}
 }
+
+func TestComponentSubmissionIsNotPolledBeforeFirstResponse(t *testing.T) {
+	s := testStore(t)
+	p := testProject(t, s, "首次提交窗口")
+	plugin := componentFixture(t, s, p)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var lookups atomic.Int64
+	s.componentRunner = func(_ context.Context, _ Plugin, action string, _ map[string]any) (json.RawMessage, error) {
+		if action == "start" {
+			close(entered)
+			<-release
+			return json.RawMessage(`{"status":"succeeded","summary":"慢但有效的首次结果"}`), nil
+		}
+		lookups.Add(1)
+		return json.RawMessage(`{"status":"not_found"}`), nil
+	}
+	done := make(chan ComponentCall, 1)
+	go func() {
+		v, e := s.SubmitComponent(context.Background(), p.DefaultSessionID, ComponentRequest{PluginID: plugin.ID, Action: "start", OperationKey: "first-response-reservation"})
+		if e != nil {
+			t.Error(e)
+		}
+		done <- v
+	}()
+	<-entered
+	s.pollComponents(context.Background())
+	if lookups.Load() != 0 {
+		t.Fatal("background lookup raced in-flight initial response")
+	}
+	close(release)
+	v := <-done
+	if v.State != "succeeded" {
+		t.Fatal("valid initial result discarded", v.State)
+	}
+}

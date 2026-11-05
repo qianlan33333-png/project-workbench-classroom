@@ -202,7 +202,7 @@ func (s *Store) saveComponentCall(v ComponentCall) (ComponentCall, error) {
 		v.Arguments = nil
 	}
 	v.UpdatedAt = max(now(), previous+1)
-	res, e := s.DB.Exec("UPDATE component_calls SET state=?,updated_at=?,data=? WHERE id=? AND updated_at=?", v.State, v.UpdatedAt, encode(v), v.ID, previous)
+	res, e := s.DB.Exec("UPDATE component_calls SET state=?,updated_at=?,data=?,next_poll=CASE WHEN state='submitting' THEN 0 ELSE next_poll END WHERE id=? AND updated_at=?", v.State, v.UpdatedAt, encode(v), v.ID, previous)
 	if e != nil {
 		return v, e
 	}
@@ -299,7 +299,11 @@ func (s *Store) submitComponent(ctx context.Context, session string, q Component
 			v.State = "awaiting_owner"
 			v.Summary = "等待本人确认。可在页面确认，或回复：确认组件 " + v.ID[:8]
 		}
-		_, er = tx.Exec("INSERT INTO component_calls(id,session_id,plugin_id,operation_key,state,updated_at,data) VALUES(?,?,?,?,?,?,?)", v.ID, session, p.ID, q.OperationKey, v.State, v.UpdatedAt, encode(v))
+		nextPoll := int64(0)
+		if v.State == "submitting" {
+			nextPoll = now() + 30000
+		}
+		_, er = tx.Exec("INSERT INTO component_calls(id,session_id,plugin_id,operation_key,state,updated_at,data,next_poll) VALUES(?,?,?,?,?,?,?,?)", v.ID, session, p.ID, q.OperationKey, v.State, v.UpdatedAt, encode(v), nextPoll)
 		created = er == nil
 		return er
 	})

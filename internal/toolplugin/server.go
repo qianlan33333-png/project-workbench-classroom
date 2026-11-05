@@ -303,57 +303,8 @@ func (s *Server) call(ctx context.Context, g Grant, name string, a map[string]an
 			return nil, e
 		}
 		return success(activitySummary(v.State), s.activityReceiptResult(v)), nil
-	case "activity_catalog":
-		v, e := s.sourceActivityCall(ctx, "GET", "/api/local/v3/work-packages", activityWeek(a))
-		if e != nil {
-			return nil, e
-		}
-		rows, _ := v["packages"].([]any)
-		out := []any{}
-		for _, r := range rows {
-			row, ok := r.(map[string]any)
-			if !ok {
-				continue
-			}
-			item := map[string]any{}
-			for _, key := range []string{"package_id", "label", "strategy_key", "strategy_version", "product_service_key", "scene", "candidate_count", "actionable_count", "paused_count", "ready_for_generation", "state"} {
-				item[key] = row[key]
-			}
-			out = append(out, item)
-		}
-		return success("原已发布工作包；用activity_candidates准备有效名单", map[string]any{"week": v["week"], "packages": out}), nil
-	case "activity_candidates":
-		if str(a, "package_id") == "" {
-			return nil, errors.New("需要原工作包编号")
-		}
-		v, e := s.sourceActivityCall(ctx, "POST", "/api/local/v3/codex-copy-jobs", map[string]any{"action": "prepare", "package_id": str(a, "package_id"), "week": str(a, "week")})
-		if e != nil {
-			return nil, e
-		}
-		v, e = s.sourceActivityCall(ctx, "GET", "/api/local/copy/batch-runs", map[string]any{"run_id": str(v, "run_id")})
-		if e != nil {
-			return nil, e
-		}
-		rows, _ := object(v, "run")["items"].([]any)
-		refs := []string{}
-		for _, r := range rows {
-			row, ok := r.(map[string]any)
-			if !ok {
-				return nil, errors.New("原准备名单格式异常")
-			}
-			ref := str(object(row, "request"), "safe_user_ref")
-			if ref == "" || ref != str(row, "item_key") {
-				return nil, errors.New("原有效名单身份异常")
-			}
-			refs = append(refs, ref)
-		}
-		offset := number(a, "offset", 0)
-		limit := number(a, "limit", 2000)
-		if offset < 0 || offset > len(refs) || limit < 1 || limit > 2000 {
-			return nil, errors.New("名单分页参数无效")
-		}
-		end := min(len(refs), offset+limit)
-		return success("原策略准备的明确有效引用；生成时仍重新校验", map[string]any{"user_refs": refs[offset:end], "total": len(refs), "next_offset": end, "automatic_send_allowed": false}), nil
+	case "activity_catalog", "activity_candidates":
+		return s.enqueue(ctx, g, name, a)
 	case "activity_receipts":
 		return s.activityReceipts(ctx, g, a)
 	case "activity_samples":
