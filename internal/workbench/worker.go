@@ -129,6 +129,18 @@ func (w *Worker) Recover(ctx context.Context) error {
 }
 func (w *Worker) Start(ctx context.Context) {
 	w.wg.Add(6)
+	w.wg.Go(func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				w.Store.pollComponents(ctx)
+			}
+		}
+	})
 	go func() {
 		defer w.wg.Done()
 		ticker := time.NewTicker(10 * time.Second)

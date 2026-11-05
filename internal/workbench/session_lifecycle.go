@@ -70,7 +70,8 @@ func sessionIdle(tx *sql.Tx, id string) error {
 	e := tx.QueryRow(`SELECT
  (SELECT count(*) FROM runs WHERE session_id=? AND state IN ('queued','running','waiting','stopping'))+
  (SELECT count(*) FROM inbox WHERE (session_id=? OR json_extract(data,'$.incoming.sessionId')=?) AND state IN ('unrouted','clarify'))+
- (SELECT count(*) FROM deliveries WHERE json_extract(data,'$.sessionId')=? AND state='sending')`, id, id, id, id).Scan(&n)
+ (SELECT count(*) FROM deliveries WHERE json_extract(data,'$.sessionId')=? AND state='sending')+
+ (SELECT count(*) FROM component_calls WHERE session_id=? AND state NOT IN ('succeeded','failed','cancelled'))`, id, id, id, id, id).Scan(&n)
 	if e != nil {
 		return e
 	}
@@ -332,6 +333,9 @@ func (s *Store) RecoverSessionLifecycle() error {
 			}
 		case "purging":
 			if e = s.purgeSession(ss); e != nil {
+				if errors.Is(e, ErrLocked) {
+					continue
+				}
 				return e
 			}
 		case "archiving":
@@ -355,6 +359,9 @@ func (s *Store) PurgeExpiredSessions() error {
 	}
 	for _, ss := range sessions {
 		if e = s.PurgeSession(ss.ID); e != nil {
+			if errors.Is(e, ErrLocked) {
+				continue
+			}
 			return e
 		}
 	}
@@ -371,13 +378,32 @@ func (s *Store) PurgeSession(id string) error {
 		return errors.New("请先移入回收站")
 	}
 	ss.Lifecycle = "purging"
-	if e = s.saveSession(ss); e != nil {
+	if e = s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		var n int
+		if er := tx.QueryRow("SELECT count(*) FROM component_calls WHERE session_id=? AND state NOT IN ('succeeded','failed','cancelled')", id).Scan(&n); er != nil {
+			return er
+		}
+		if n > 0 {
+			return ErrLocked
+		}
+		_, er := tx.Exec("UPDATE sessions SET data=?,updated_at=? WHERE id=?", encode(ss), ss.UpdatedAt, id)
+		return er
+	}); e != nil {
 		return e
 	}
 	return s.purgeSession(ss)
 }
 func (s *Store) purgeSession(ss Session) error {
-	if e := s.Transaction(context.Background(), func(tx *sql.Tx) error { return invalidateCommunicationSourceTx(tx, ss.ID) }); e != nil {
+	if e := s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		var n int
+		if e := tx.QueryRow("SELECT count(*) FROM component_calls WHERE session_id=? AND state NOT IN ('succeeded','failed','cancelled')", ss.ID).Scan(&n); e != nil {
+			return e
+		}
+		if n > 0 {
+			return ErrLocked
+		}
+		return invalidateCommunicationSourceTx(tx, ss.ID)
+	}); e != nil {
 		return e
 	}
 	// The durable marker contains no conversation content. Backup scrubbing and
@@ -514,6 +540,9 @@ func (s *Store) ApplyPurgeLedger() error {
 		}
 		if ss, e := s.rawSession(marker.ID); e == nil {
 			if e = s.purgeSession(ss); e != nil {
+				if errors.Is(e, ErrLocked) {
+					continue
+				}
 				return e
 			}
 		}

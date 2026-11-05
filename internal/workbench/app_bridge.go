@@ -131,6 +131,8 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 			defer stdio.work.Done()
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(45 * time.Second))
 			value, err = h.readMessageAttachment(r.Context(), in, req.Args)
+		} else if req.Tool == "list_components" || req.Tool == "call_component" || req.Tool == "component_status" || req.Tool == "cancel_component" {
+			value, err = h.Store.componentTool(r.Context(), in, req.Tool, req.Args)
 		} else if req.Tool == "run_global_cli" && in.Project.ID == personalProjectID && !in.Routing {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(95 * time.Second))
 			value, err = h.runPersonalCLI(r.Context(), in, req.Args)

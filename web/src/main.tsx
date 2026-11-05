@@ -1,3 +1,4 @@
+import { ToolComponents, SessionComponents } from "./tool-components";
 import { CommunicationFeed, AgentOrigin } from "./session-communication";
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
@@ -1742,7 +1743,8 @@ function App() {
                     setText(v);
                   }}
                 />
-                {sessionRuns.map((r) => (
+                <SessionComponents key={sessionId} sessionId={sessionId} projectId={project!.id} notify={notify} />
+ {sessionRuns.map((r) => (
                   <article
                     className="turn"
                     key={r.id}
@@ -2879,7 +2881,7 @@ function SettingsPage({
     [deliveries, setDeliveries] = useState<any[]>([]),
     [plugins, setPlugins] = useState<any[]>([]);
   const [focus, setFocus] = useState<
-    "channels" | "mcp" | "cli" | "account" | null
+    "channels" | "mcp" | "cli" | "components" | "account" | null
   >(null);
   const [connectionId, setConnectionId] = useState("");
   const narrow = useNarrow(1099);
@@ -2992,7 +2994,8 @@ function SettingsPage({
             </span>
             <ChevronRight size={16} />
           </button>
-          <button
+          <button className="settings-entry" aria-expanded={focus === "components"} onClick={() => setFocus("components")}><Settings size={18} /><span><strong>工具组件</strong><small>按项目接入预先开发的能力</small></span></button>
+            <button
             className="settings-entry"
             aria-expanded={focus === "cli"}
             onClick={() => setFocus("cli")}
@@ -3183,7 +3186,7 @@ function SettingsPage({
             </button>
           </div>
           <p>全局启用的 MCP 可供所有项目调用。</p>
-          {plugins.map((p) => (
+          {plugins.filter((p) => !p.component).map((p) => (
             <div key={p.id} className="setting-row">
               <div>
                 <strong>{p.name}</strong>
@@ -3229,6 +3232,16 @@ function SettingsPage({
         className="settings-detail"
       >
         <GlobalTools notify={notify} />
+      </Overlay>
+      <Overlay
+        open={focus === "components"}
+        title="工具组件"
+        close={() => setFocus(null)}
+        mode="drawer"
+        modal={narrow}
+        className="settings-detail"
+      >
+        <ToolComponents notify={notify} />
       </Overlay>
       <Overlay
         open={focus === "account"}

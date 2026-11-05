@@ -14,6 +14,7 @@ import (
 )
 
 type Store struct {
+	componentRunner    func(context.Context, Plugin, string, map[string]any) (json.RawMessage, error)
 	crmGrants          map[string]crmGrant
 	crmTransport       http.RoundTripper // nil uses the platform trust store
 	BackupScrubCommand []string
@@ -94,7 +95,7 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(schema + communicationSchema + ingressQueueSchema + runLeaseSchema + todaySchema + followupSchema + plannerSchema + calendarSyncSchema + gatewaySchema + crmSchema); err != nil {
+	if _, err := db.Exec(schema + componentSchema + communicationSchema + ingressQueueSchema + runLeaseSchema + todaySchema + followupSchema + plannerSchema + calendarSyncSchema + gatewaySchema + crmSchema); err != nil {
 		return nil, fmt.Errorf("数据库初始化: %w", err)
 	}
 	var version int
