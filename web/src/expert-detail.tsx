@@ -61,7 +61,9 @@ export function ExpertDetail({
     [mode, setMode] = useState("overview"),
     [versions, setVersions] = useState<Expert[]>([]),
     [version, setVersion] = useState(""),
-    [name, setName] = useState(""),
+    [componentTools,setComponentTools]=useState<string[]>([]),
+ [componentOptions,setComponentOptions]=useState<{key:string;name:string}[]>([]),
+ [name, setName] = useState(""),
     [description, setDescription] = useState(""),
     [busy, setBusy] = useState(true),
     [error, setError] = useState("");
@@ -103,7 +105,8 @@ export function ExpertDetail({
         current.current = d.expert;
         setDetail(d);
         setName(d.expert.name);
-        setDescription(d.expert.description);
+        setDescription(d.expert.description);setComponentTools(d.expert.componentTools||[]);
+ const plugins=await api<any[]>("/plugins");if(live)setComponentOptions(Array.from(new Map(plugins.filter(p=>p.component).map(p=>[p.component.key||p.id,{key:p.component.key||p.id,name:p.name}])).values()));
         await loadFiles();
         await read("SKILL.md");
         setVersions(await api(`/experts/${id}/versions`));
@@ -122,7 +125,7 @@ export function ExpertDetail({
     mode === "metadata"
       ? !!detail &&
         (name !== detail.expert.name ||
-          description !== detail.expert.description)
+          description !== detail.expert.description || JSON.stringify(componentTools)!==JSON.stringify(detail.expert.componentTools||[]))
       : !!doc && doc.content !== saved;
   const save = async () => {
     if (!current.current || !dirty) return;
@@ -131,7 +134,7 @@ export function ExpertDetail({
     setError("");
     try {
       const change: any = { baseDigest: current.current.digest };
-      if (mode === "metadata") change.metadata = { name, description };
+      if (mode === "metadata") change.metadata = { name, description,"component-tools":JSON.stringify(componentTools) };
       else
         change.files = [
           { op: "write", path: doc!.path, content: doc!.content },
@@ -140,7 +143,7 @@ export function ExpertDetail({
       current.current = e;
       setDetail((old) => (old ? { ...old, expert: e } : old));
       setName(e.name);
-      setDescription(e.description);
+      setDescription(e.description);setComponentTools(e.componentTools||[]);
       if (doc) await read(doc.path, e.digest);
       await refresh();
       await loadFiles();
@@ -165,7 +168,7 @@ export function ExpertDetail({
     const e = current.current;
     if (e) {
       setName(e.name);
-      setDescription(e.description);
+      setDescription(e.description);setComponentTools(e.componentTools||[]);
     }
     if (doc) setDoc({ ...doc, content: saved });
   };
@@ -227,7 +230,7 @@ export function ExpertDetail({
       current.current = e;
       await fetchDetail();
       setName(e.name);
-      setDescription(e.description);
+      setDescription(e.description);setComponentTools(e.componentTools||[]);
       await loadFiles();
       setVersion("");
       await refresh();
@@ -526,6 +529,7 @@ export function ExpertDetail({
                   <ChevronRight size={15} />
                 </button>
               </div>
+              <div className="expert-overview-row"><strong>默认工具组件</strong><span>{expert.componentTools?.join("、")||"未设置"}</span></div>
               <div className="expert-overview-row">
                 <strong>版本</strong>
                 <button onClick={() => work(() => changeMode("versions"))}>
@@ -700,7 +704,7 @@ export function ExpertDetail({
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                 />
-              </label>
+              </label><fieldset><legend>默认工具组件</legend><p className="muted">仅为调用建议，不授予项目外权限。</p>{componentOptions.map(p=><label key={p.key}><input type="checkbox" checked={componentTools.includes(p.key)} onChange={e=>setComponentTools(e.target.checked?[...componentTools,p.key]:componentTools.filter(x=>x!==p.key))}/>{p.name}</label>)}</fieldset>
               <button className="primary" disabled={!dirty || busy || readOnly}>
                 保存信息
               </button>

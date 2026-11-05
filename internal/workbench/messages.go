@@ -135,7 +135,7 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 			}
 		}
 	}
-	m := Message{ID: newID(), Incoming: in, State: "unrouted", CreatedAt: now()}
+	m := Message{ComponentConfig: in.ComponentConfig, ID: newID(), Incoming: in, State: "unrouted", CreatedAt: now()}
 	{
 		var count int
 		if e := s.DB.QueryRow("SELECT count(*) FROM legacy_consumed WHERE hash=?", digest([]byte(in.Source+":"+in.EventID))).Scan(&count); e != nil {
@@ -274,6 +274,19 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 			return m, e
 		}
 		run.ExpertVersions[id] = ex.Digest
+	}
+	if m.ComponentConfig != nil {
+		c := *m.ComponentConfig
+		if c.SessionID != sess.ID {
+			return m, errors.New("组件配置会话不匹配")
+		}
+		if e := s.validateComponentConfig(c); e != nil {
+			return m, e
+		}
+		run.ComponentConfig = &c
+		run.ExpertID = c.ExpertID
+		run.ExpertDigest = c.ExpertVersion
+		run.ExpertVersions[c.ExpertID] = c.ExpertVersion
 	}
 	if m.References == nil {
 		m.References = m.Incoming.References

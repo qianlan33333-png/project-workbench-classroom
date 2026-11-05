@@ -57,3 +57,13 @@ P3 follow-up only: lazy-load the editor bundle if download optimization becomes 
 - [x] Preserve API/permission boundaries and distinguish simulated vs real evidence.
 
 final result: passed
+
+## 2026-11-05 tool components extension
+
+Applied Product Design image-to-code/design-qa against the existing white workbench, with user-authorized isolated Playwright after the in-app browser was disabled. Source and candidate settings were captured at 1440×1000, deviceScaleFactor 1, same authentication/theme/state, and opened together in `.var/tool-components-ui/comparison.png`.
+
+Initial finding: the new settings-entry used inconsistent child structure, pushing its title to the right. Fixed by reusing the existing icon/strong/span/chevron row. The post-fix combined image shows matching left rail, title alignment, white canvas, typography, dividers and spacing; the added component row is the intentional new content. No image assets were needed. New forms reuse existing native controls and button styles, with detailed parameters inside disclosures.
+
+Rendered candidate evidence: `components-desktop.png`, `run-config-desktop.png`, `session-mobile.png` and `session-small-mobile.png` in the same directory. Existing source has no equivalent component form; these surfaces were checked for visual consistency and actual interaction rather than claimed pixel identity. Playwright passed fixed config save/run, scheduling/pause, async result, owner review parameters/confirmation and no page errors. 390×844 and 320×640 have no document horizontal overflow. Focused row/control text is readable in captures; no font or icon substitution was introduced. Browser acceptance uses fictional isolated API state, separate from real Harness/provider/MySQL acceptance.
+
+final result: passed

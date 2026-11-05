@@ -2990,11 +2990,11 @@ function SettingsPage({
             <Library size={18} />
             <strong>MCP</strong>
             <span>
-              {plugins.filter((p) => p.enabled !== false).length} 个全局启用
+              {plugins.filter((p) => !p.component && p.enabled !== false).length} 个全局启用
             </span>
             <ChevronRight size={16} />
           </button>
-          <button className="settings-entry" aria-expanded={focus === "components"} onClick={() => setFocus("components")}><Settings size={18} /><span><strong>工具组件</strong><small>按项目接入预先开发的能力</small></span></button>
+          <button className="settings-entry" aria-expanded={focus === "components"} onClick={() => setFocus("components")}><Library size={18} /><strong>工具组件</strong><span>按项目接入</span><ChevronRight size={16} /></button>
             <button
             className="settings-entry"
             aria-expanded={focus === "cli"}

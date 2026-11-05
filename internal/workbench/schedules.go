@@ -62,6 +62,22 @@ func (s *Store) saveScheduleLocked(v Schedule, creationID string, explicitEnable
 			return v, errors.New("资料范围应填写项目内的相对路径")
 		}
 	}
+	if v.Component != nil {
+		if v.SessionID == "" || v.Component.SessionID != v.SessionID {
+			return v, errors.New("组件定时必须绑定原会话")
+		}
+		if v.Component.Mode == "expert" {
+			v.ExpertID = v.Component.ExpertID
+			prompt, e := s.componentExpertPrompt(*v.Component)
+			if e != nil {
+				return v, e
+			}
+			v.Instruction = prompt
+		}
+		if e := s.validateComponentConfig(*v.Component); e != nil {
+			return v, e
+		}
+	}
 	v.PausedReason = ""
 	v.ExpertRequired = false
 	if v.ProjectID == "" || v.ProjectID == personalProjectID {
@@ -217,6 +233,9 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 	}
 	if ctx.Err() != nil {
 		return receipt, ctx.Err()
+	}
+	if observed.Component != nil && observed.Component.Mode != "expert" {
+		return s.fireComponentSchedule(ctx, observed, at, operation)
 	}
 	s.expertMu.RLock()
 	defer s.expertMu.RUnlock()
@@ -397,6 +416,11 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 			r := Run{ID: newID(), ProjectID: p.ID, SessionID: ss.ID, MessageID: m.ID, State: "queued", Source: "automation", Text: schedule.Instruction, ExpertID: schedule.ExpertID, ScheduleID: schedule.ID, CreatedAt: now()}
 			r.FollowupID = schedule.FollowupID
 			r.ExpertVersions = versions
+			if schedule.Component != nil && schedule.Component.Mode == "expert" {
+				r.ComponentConfig = schedule.Component
+				m.ComponentConfig = schedule.Component
+				r.ExpertVersions[schedule.Component.ExpertID] = schedule.Component.ExpertVersion
+			}
 			r.ConversationOutput = schedule.ConversationOutput
 			r.Capabilities = caps
 			if !manual {
@@ -419,6 +443,9 @@ func (s *Store) fireSchedule(ctx context.Context, id string, at time.Time, opera
 					return e
 				}
 				r.ExpertDigest = ex.Digest
+				if r.ComponentConfig != nil {
+					r.ExpertDigest = r.ComponentConfig.ExpertVersion
+				}
 				r.ExpertName = ex.Name
 			}
 			if target.ID == "" {

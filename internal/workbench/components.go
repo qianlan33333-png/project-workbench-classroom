@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -24,6 +26,7 @@ BEGIN SELECT RAISE(ABORT,'组件仍有在途任务，请先核查并停止'); EN
 `
 
 type ComponentSpec struct {
+	Key          string            `json:"key,omitempty"`
 	Version      string            `json:"version"`
 	Actions      []ComponentAction `json:"actions"`
 	StatusAction string            `json:"statusAction,omitempty"`
@@ -31,19 +34,23 @@ type ComponentSpec struct {
 	CancelAction string            `json:"cancelAction,omitempty"`
 }
 type ComponentAction struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	ReadOnly      bool   `json:"readOnly,omitempty"`
+	RequiresOwner bool   `json:"requiresOwner,omitempty"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
 }
 type ComponentCall struct {
-	ID            string `json:"id"`
-	SessionID     string `json:"sessionId"`
-	ProjectID     string `json:"projectId"`
-	PluginID      string `json:"pluginId"`
-	Name          string `json:"name"`
-	Version       string `json:"version"`
-	Action        string `json:"action"`
-	OperationKey  string `json:"operationKey"`
-	InvocationKey string `json:"invocationKey"`
+	OwnerConfirmed bool           `json:"ownerConfirmed,omitempty"`
+	Arguments      map[string]any `json:"arguments,omitempty"`
+	ID             string         `json:"id"`
+	SessionID      string         `json:"sessionId"`
+	ProjectID      string         `json:"projectId"`
+	PluginID       string         `json:"pluginId"`
+	Name           string         `json:"name"`
+	Version        string         `json:"version"`
+	Action         string         `json:"action"`
+	OperationKey   string         `json:"operationKey"`
+	InvocationKey  string         `json:"invocationKey"`
 	// Integrity hashes carry no raw credentials or request payload.
 	Binding   string          `json:"binding"`
 	InputHash string          `json:"inputHash"`
@@ -56,10 +63,12 @@ type ComponentCall struct {
 	UpdatedAt int64           `json:"updatedAt"`
 }
 type ComponentRequest struct {
-	PluginID     string         `json:"pluginId"`
-	Action       string         `json:"action"`
-	Arguments    map[string]any `json:"arguments"`
-	OperationKey string         `json:"operationKey"`
+	Config         *ComponentRunConfig `json:"-"`
+	OwnerConfirmed bool                `json:"ownerConfirmed,omitempty"`
+	PluginID       string              `json:"pluginId"`
+	Action         string              `json:"action"`
+	Arguments      map[string]any      `json:"arguments"`
+	OperationKey   string              `json:"operationKey"`
 }
 
 func validateComponent(p Plugin) error {
@@ -172,6 +181,9 @@ func (s *Store) ComponentCall(id string) (ComponentCall, error) {
 }
 func (s *Store) saveComponentCall(v ComponentCall) (ComponentCall, error) {
 	previous := v.UpdatedAt
+	if componentTerminal(v.State) || v.JobRef != "" {
+		v.Arguments = nil
+	}
 	v.UpdatedAt = max(now(), previous+1)
 	res, e := s.DB.Exec("UPDATE component_calls SET state=?,updated_at=?,data=? WHERE id=? AND updated_at=?", v.State, v.UpdatedAt, encode(v), v.ID, previous)
 	if e != nil {
@@ -188,6 +200,9 @@ func (s *Store) saveComponentCall(v ComponentCall) (ComponentCall, error) {
 	return v, e
 }
 func (s *Store) SubmitComponent(ctx context.Context, session string, q ComponentRequest) (ComponentCall, error) {
+	return s.submitComponent(ctx, session, q, false)
+}
+func (s *Store) submitComponent(ctx context.Context, session string, q ComponentRequest, deferExecution bool) (ComponentCall, error) {
 	var v ComponentCall
 	ss, p, e := s.componentPlugin(session, q.PluginID)
 	if e != nil {
@@ -196,22 +211,40 @@ func (s *Store) SubmitComponent(ctx context.Context, session string, q Component
 	if !componentActionAllowed(p, q.Action) {
 		return v, errors.New("此组件动作未授权")
 	}
+	needsOwner := false
+	for _, a := range p.Component.Actions {
+		if a.Name == q.Action && a.RequiresOwner && !q.OwnerConfirmed {
+			needsOwner = true
+		}
+	}
 	if len(q.OperationKey) < 8 || len(q.OperationKey) > 160 {
 		return v, errors.New("需要8至160字符的稳定操作编号")
 	}
 	if q.Arguments == nil {
 		q.Arguments = map[string]any{}
 	}
-	for _, key := range []string{"invocation_key", "project_id", "session_id", "job_ref"} {
+	for _, key := range []string{"invocation_key", "project_id", "session_id", "job_ref", "workbench_method", "owner_confirmed"} {
 		if _, ok := q.Arguments[key]; ok {
 			return v, errors.New("调用身份和任务引用由工作台绑定")
 		}
 	}
 	raw := encode(q.Arguments)
-	if len(raw) > 64<<10 {
-		return v, errors.New("组件输入超过64KiB")
+	if len(raw) > 512<<10 {
+		return v, errors.New("组件输入超过512KiB")
 	}
-	fp := digest([]byte(q.PluginID + "\n" + q.Action + "\n" + raw))
+	if q.Config != nil {
+		snapshot, er := s.componentMethodSnapshot(*q.Config)
+		if er != nil {
+			return v, er
+		}
+		parameters := map[string]any{}
+		for k, x := range q.Arguments {
+			parameters[k] = x
+		}
+		parameters["workbench_method"] = snapshot
+		q.Arguments = parameters
+	}
+	fp := digest([]byte(q.PluginID + "\n" + q.Action + "\n" + raw + "\n" + encode(q.Config)))
 	created := false
 	e = s.Transaction(ctx, func(tx *sql.Tx) error {
 		fresh, er := getJSON[Session](tx, "SELECT data FROM sessions WHERE id=?", session)
@@ -236,7 +269,15 @@ func (s *Store) SubmitComponent(ctx context.Context, session string, q Component
 		if !errors.Is(er, ErrNotFound) {
 			return er
 		}
-		v = ComponentCall{ID: newID(), SessionID: session, ProjectID: ss.ProjectID, PluginID: p.ID, Name: p.Name, Version: p.Component.Version, Action: q.Action, OperationKey: q.OperationKey, InvocationKey: newID(), Binding: componentBinding(p), InputHash: fp, State: "submitting", Summary: "正在提交；响应不明时请查回原任务", CreatedAt: now(), UpdatedAt: now()}
+
+		v = ComponentCall{Arguments: q.Arguments, ID: newID(), SessionID: session, ProjectID: ss.ProjectID, PluginID: p.ID, Name: p.Name, Version: p.Component.Version, Action: q.Action, OperationKey: q.OperationKey, InvocationKey: newID(), Binding: componentBinding(p), OwnerConfirmed: q.OwnerConfirmed, InputHash: fp, State: "submitting", Summary: "正在提交；响应不明时请查回原任务", CreatedAt: now(), UpdatedAt: now()}
+		if deferExecution {
+			v.State = "ready"
+		}
+		if needsOwner {
+			v.State = "awaiting_owner"
+			v.Summary = "等待本人确认。可在页面确认，或回复：确认组件 " + v.ID[:8]
+		}
 		_, er = tx.Exec("INSERT INTO component_calls(id,session_id,plugin_id,operation_key,state,updated_at,data) VALUES(?,?,?,?,?,?,?)", v.ID, session, p.ID, q.OperationKey, v.State, v.UpdatedAt, encode(v))
 		created = er == nil
 		return er
@@ -244,15 +285,29 @@ func (s *Store) SubmitComponent(ctx context.Context, session string, q Component
 	if e != nil || !created {
 		return v, e
 	}
+	if deferExecution || needsOwner {
+		return v, nil
+	}
+	return s.executeComponentInvocation(ctx, v, p, q.Arguments)
+}
+func (s *Store) executeComponentInvocation(ctx context.Context, v ComponentCall, p Plugin, arguments map[string]any) (ComponentCall, error) {
 	args := map[string]any{}
-	for k, x := range q.Arguments {
+	for k, x := range arguments {
 		args[k] = x
 	}
 	args["invocation_key"] = v.InvocationKey
 	// Credentials scope the plugin; project/session metadata is host-owned, not model input.
-	args["project_id"] = ss.ProjectID
-	args["session_id"] = ss.ID
-	result, e := s.runComponent(ctx, p, q.Action, args)
+	args["project_id"] = v.ProjectID
+	args["session_id"] = v.SessionID
+	if v.OwnerConfirmed {
+		copy := map[string]string{}
+		for k, x := range p.Headers {
+			copy[k] = x
+		}
+		copy["X-Workbench-Owner-Confirmed"] = "true"
+		p.Headers = copy
+	}
+	result, e := s.runComponent(ctx, p, v.Action, args)
 	if e != nil {
 		v.State = "unknown"
 		v.Error = "提交响应未确认；请刷新查回原任务，不要另建操作编号重跑"
@@ -284,8 +339,14 @@ func applyComponentResult(v *ComponentCall, raw json.RawMessage, async bool) err
 		}
 		out.Status = "succeeded"
 	}
+	if out.Status == "not_found" && v.JobRef == "" && v.Arguments != nil {
+		v.State = "ready"
+		v.Error = ""
+		v.Summary = "插件确认未受理，使用原编号重试"
+		return nil
+	}
 	switch out.Status {
-	case "queued", "running", "succeeded", "failed", "cancelled":
+	case "queued", "running", "unknown", "succeeded", "failed", "cancelled":
 	default:
 		return errors.New("未知组件状态")
 	}
@@ -322,6 +383,14 @@ func (s *Store) RefreshComponent(ctx context.Context, id string, cancel bool) (C
 	}
 	if componentBinding(p) != v.Binding {
 		return v, errors.New("组件连接、版本或授权已变化，请恢复原配置后核查在途任务")
+	}
+	if (v.State == "ready" || v.State == "awaiting_owner") && cancel {
+		v.State = "cancelled"
+		v.Summary = "尚未提交，已取消"
+		return s.saveComponentCall(v)
+	}
+	if v.State == "awaiting_owner" || v.State == "ready" {
+		return v, nil
 	}
 	if componentTerminal(v.State) {
 		return v, nil
@@ -369,7 +438,7 @@ func (s *Store) RefreshComponent(ctx context.Context, id string, cancel bool) (C
 	return v, er
 }
 func (s *Store) pollComponents(ctx context.Context) {
-	rows, e := listJSON[ComponentCall](s.DB, "SELECT data FROM component_calls WHERE state IN ('queued','running','unknown','submitting') AND next_poll<? ORDER BY next_poll,updated_at LIMIT 4", now())
+	rows, e := listJSON[ComponentCall](s.DB, "SELECT data FROM component_calls WHERE state IN ('ready','queued','running','unknown','submitting') AND next_poll<? ORDER BY next_poll,updated_at LIMIT 4", now())
 	if e != nil {
 		return
 	}
@@ -383,17 +452,81 @@ func (s *Store) pollComponents(ctx context.Context) {
 			continue
 		}
 		attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_, _ = s.RefreshComponent(attempt, v.ID, false)
+		if v.State == "ready" {
+			_, p, er := s.componentPlugin(v.SessionID, v.PluginID)
+			if er == nil && componentBinding(p) == v.Binding {
+				old := v.UpdatedAt
+				v.State = "submitting"
+				v.UpdatedAt = max(now(), old+1)
+				res, er := s.DB.Exec("UPDATE component_calls SET state=?,updated_at=?,data=? WHERE id=? AND updated_at=? AND state='ready'", v.State, v.UpdatedAt, encode(v), v.ID, old)
+				if er == nil {
+					n, _ := res.RowsAffected()
+					if n == 1 {
+						_, _ = s.executeComponentInvocation(attempt, v, p, v.Arguments)
+					}
+				}
+			}
+		} else {
+			_, _ = s.RefreshComponent(attempt, v.ID, false)
+		}
 		cancel()
 	}
 }
 func (s *Store) componentTool(ctx context.Context, in RuntimeInput, tool string, raw json.RawMessage) (any, error) {
-	if in.Routing || in.Run.Gateway != nil || in.Run.FollowupID != "" || communicationReadOnly(in.Run) {
+	if in.Routing || in.Run.Gateway != nil || in.Run.FollowupID != "" {
 		return nil, errors.New("此执行不允许调用工具组件")
 	}
 	r, e := s.Run(in.Run.ID)
 	if e != nil || r.State != "running" || r.SessionID != in.Session.ID {
 		return nil, errors.New("执行已停止或身份不匹配")
+	}
+	if tool == "confirm_component" {
+		if in.Run.Agent != nil {
+			return nil, errors.New("Agent不能代替本人确认")
+		}
+		m, e := s.Message(in.Run.MessageID)
+		if e != nil {
+			return nil, e
+		}
+		text := strings.TrimSpace(m.Incoming.Text)
+		if m.Incoming.Source != "web" && m.Incoming.Source != "wechat" && m.Incoming.Source != "feishu" {
+			return nil, errors.New("仅本人消息可确认")
+		}
+		if !strings.HasPrefix(text, "确认组件 ") {
+			return nil, errors.New("需要本人原话：确认组件 加任务短码")
+		}
+		code := strings.TrimSpace(strings.TrimPrefix(text, "确认组件 "))
+		if len(code) < 8 || len(code) > 36 || !regexp.MustCompile(`^[a-f0-9-]+$`).MatchString(code) {
+			return nil, errors.New("确认短码无效")
+		}
+		rows, e := listJSON[ComponentCall](s.DB, "SELECT data FROM component_calls WHERE id LIKE ? AND session_id=? AND state='awaiting_owner' LIMIT 2", code+"%", in.Session.ID)
+		if e != nil {
+			return nil, e
+		}
+		if len(rows) != 1 {
+			return nil, errors.New("没有唯一待确认任务，请使用完整编号")
+		}
+		return s.ConfirmComponent(ctx, rows[0].ID)
+	}
+	if tool == "read_component_results" {
+		rows, e := s.ComponentCalls(in.Session.ID)
+		if e != nil {
+			return nil, e
+		}
+		out := []any{}
+		for i, v := range rows {
+			if i >= 10 {
+				break
+			}
+			item := map[string]any{"id": v.ID, "name": v.Name, "state": v.State, "summary": v.Summary, "updatedAt": v.UpdatedAt}
+			if len(v.Result) < 8192 {
+				item["result"] = v.Result
+			} else {
+				item["resultOmitted"] = true
+			}
+			out = append(out, item)
+		}
+		return out, nil
 	}
 	if tool == "list_components" {
 		ps, e := s.Components(r.ProjectID)
@@ -410,8 +543,33 @@ func (s *Store) componentTool(ctx context.Context, in RuntimeInput, tool string,
 		if len(q.OperationKey) < 8 || len(q.OperationKey) > 100 {
 			return nil, errors.New("需要8至100字符的稳定操作编号")
 		}
+		if communicationReadOnly(in.Run) || in.Run.ComponentConfig != nil && in.Run.ComponentConfig.Mode == "expert" {
+			p, e := s.Plugin(q.PluginID)
+			if e != nil {
+				return nil, e
+			}
+			permitted := false
+			if p.Component != nil {
+				for _, a := range p.Component.Actions {
+					if a.Name == q.Action && a.ReadOnly && !a.RequiresOwner {
+						permitted = true
+					}
+				}
+			}
+			if !permitted {
+				return nil, errors.New("只读协作不能执行此组件动作")
+			}
+		}
+		if in.Run.ComponentConfig != nil && q.PluginID == in.Run.ComponentConfig.PluginID && q.Action == in.Run.ComponentConfig.Action {
+			q.Config = in.Run.ComponentConfig
+			q.Arguments = in.Run.ComponentConfig.Arguments
+		}
+		q.OwnerConfirmed = false
 		q.OperationKey = in.Run.ID + ":" + q.OperationKey
 		return s.SubmitComponent(ctx, in.Session.ID, q.ComponentRequest)
+	}
+	if communicationReadOnly(in.Run) {
+		return nil, errors.New("只读协作只能查看结果，不能刷新或取消业务任务")
 	}
 	v, e := s.ComponentCall(q.ID)
 	if e != nil {
@@ -434,4 +592,35 @@ func (s *Store) runComponent(ctx context.Context, p Plugin, action string, args 
 		return s.componentRunner(ctx, p, action, args)
 	}
 	return componentMCP(ctx, p, action, args)
+}
+
+func (s *Store) ConfirmComponent(ctx context.Context, id string) (ComponentCall, error) {
+	v, e := s.ComponentCall(id)
+	if e != nil {
+		return v, e
+	}
+	if v.State != "awaiting_owner" {
+		return v, errors.New("该任务已确认、已停止或不需要确认")
+	}
+	_, p, e := s.componentPlugin(v.SessionID, v.PluginID)
+	if e != nil {
+		return v, e
+	}
+	if componentBinding(p) != v.Binding {
+		return v, errors.New("组件配置已改变，请核对后重新提出请求")
+	}
+	old := v.UpdatedAt
+	v.OwnerConfirmed = true
+	v.State = "ready"
+	v.Summary = "本人已确认，等待执行"
+	v.UpdatedAt = max(now(), old+1)
+	res, e := s.DB.ExecContext(ctx, "UPDATE component_calls SET state=?,updated_at=?,data=? WHERE id=? AND state='awaiting_owner' AND updated_at=?", v.State, v.UpdatedAt, encode(v), v.ID, old)
+	if e != nil {
+		return v, e
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return s.ComponentCall(id)
+	}
+	return v, s.Emit(v.SessionID, "", "component.updated", v)
 }

@@ -31,3 +31,9 @@ test("external customer catalog does not gain Today tools", {timeout: 10000}, as
   const tools = await catalog({ PW_GATEWAY: "true", PW_PERSONAL: "false" });
   assert.deepEqual(tools.map(t => t.name).sort(), ["search_history", "read_run", "read_paused_history"].sort());
 });
+
+test("read-only expert catalog exposes managed reads and cannot confirm or cancel",{timeout:10000},async()=>{
+ const tools=await catalog({PW_PERSONAL:"false",PW_COMMUNICATION_READONLY:"true"});
+ for(const name of ["list_components","call_component","read_component_results"])assert(tools.some(t=>t.name===name),name);
+ for(const name of ["confirm_component","cancel_component","component_status","manage_cli","save_schedule","run_global_cli"])assert(!tools.some(t=>t.name===name),name);
+});

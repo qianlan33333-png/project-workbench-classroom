@@ -79,6 +79,7 @@ export type Run = {
   scheduleId: string;
 };
 export type Expert = {
+ componentTools?:string[];
   skillName?: string;
   updatedAt?: number;
   createdAt?: number;

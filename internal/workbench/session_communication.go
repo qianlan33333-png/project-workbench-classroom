@@ -52,7 +52,9 @@ type CommunicationReceipt struct {
 	Error           string        `json:"error,omitempty"`
 }
 
-func communicationReadOnly(r Run) bool { return r.Agent != nil && r.Agent.AuthorizedAt == 0 }
+func communicationReadOnly(r Run) bool {
+	return r.Agent != nil && r.Agent.AuthorizedAt == 0 || r.ComponentConfig != nil && r.ComponentConfig.Mode == "expert"
+}
 func communicationTargetTx(tx *sql.Tx, id string) (Session, error) {
 	ss, e := getJSON[Session](tx, "SELECT data FROM sessions WHERE id=?", id)
 	if e != nil {
@@ -483,7 +485,7 @@ func (a *API) mountCommunication(owner *gin.RouterGroup) {
 }
 func readOnlyCommunicationTool(tool string) bool {
 	switch tool {
-	case "search_history", "read_run", "list_references", "read_reference", "project_contexts", "personal_memories", "find_project_sources", "read_project_source", "query_calendar", "list_session_targets", "send_session_message", "get_session_message":
+	case "read_component_results", "list_components", "call_component", "search_history", "read_run", "list_references", "read_reference", "project_contexts", "personal_memories", "find_project_sources", "read_project_source", "query_calendar", "list_session_targets", "send_session_message", "get_session_message":
 		return true
 	}
 	return false
@@ -493,7 +495,10 @@ func validateCommunicationRead(in RuntimeInput, tool string, args json.RawMessag
 		return nil
 	}
 	if !readOnlyCommunicationTool(tool) {
-		return errors.New("Agent消息只读，执行需本人授权")
+		return errors.New("当前执行只读，不允许此工具动作")
+	}
+	if in.Run.ComponentConfig != nil && in.Run.ComponentConfig.Mode == "expert" && tool == "send_session_message" {
+		return errors.New("专家只读任务不能发送会话消息")
 	}
 	if tool == "query_calendar" {
 		var q struct {

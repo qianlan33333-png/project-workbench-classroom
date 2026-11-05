@@ -29,10 +29,11 @@ func expertManifest(b []byte) (Expert, error) {
 		return Expert{}, errors.New("SKILL.md 元数据未闭合")
 	}
 	var meta struct {
-		Name        string   `yaml:"name"`
-		DisplayName string   `yaml:"display-name"`
-		Description string   `yaml:"description"`
-		Tools       []string `yaml:"tools"`
+		Name           string   `yaml:"name"`
+		DisplayName    string   `yaml:"display-name"`
+		Description    string   `yaml:"description"`
+		Tools          []string `yaml:"tools"`
+		ComponentTools []string `yaml:"component-tools"`
 	}
 	if err := yaml.Unmarshal([]byte(s[4:4+end]), &meta); err != nil {
 		return Expert{}, err
@@ -47,7 +48,7 @@ func expertManifest(b []byte) (Expert, error) {
 	if name == "" {
 		name = meta.Name
 	}
-	return Expert{Name: name, SkillName: meta.Name, Description: meta.Description, Tools: meta.Tools}, nil
+	return Expert{Name: name, SkillName: meta.Name, Description: meta.Description, Tools: meta.Tools, ComponentTools: meta.ComponentTools}, nil
 }
 func (s *Store) installExpertDir(root, id string, expected ...string) (Expert, error) {
 	s.expertMu.Lock()

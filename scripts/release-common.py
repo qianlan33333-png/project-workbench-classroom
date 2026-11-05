@@ -302,10 +302,46 @@ def prepare_communication_worker(path):
             db.execute(f"CREATE TRIGGER IF NOT EXISTS rollback_guard_communication_{name} BEFORE {operation} ON runs WHEN NEW.state IN ('queued','running','waiting','stopping') AND ({condition}) BEGIN SELECT RAISE(ABORT,'communication worker version required'); END")
 
 
+def prepare_component_worker(path):
+    db_path = DATA / 'workbench.sqlite'
+    if not db_path.exists():
+        return
+    marker = path / 'component-protocol'
+    supported = marker.is_file() and marker.read_text().strip() == '1'
+    with closing(sqlite3.connect(str(db_path), timeout=30)) as db, db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='component_session_configs'").fetchone():
+            return
+        for name in ('runs_insert','runs_update','inbox_insert','inbox_update','schedules_insert','schedules_update'):
+            if supported:
+                db.execute('DROP TRIGGER IF EXISTS rollback_guard_component_' + name)
+        if supported:
+            return
+        for execute, unit, name in ((run, ('systemctl',), 'project-workbench'),
+                                   (as_user, ('systemctl', '--user'), 'project-workbench-runtime')):
+            status = execute(*unit, 'show', name, '-p', 'ActiveState', '--value', capture=True, check=False)
+            if status.returncode not in (0, 4) or status.stdout.strip() != 'inactive':
+                raise RuntimeError('Cannot freeze component work while worker is active')
+        scope = "json_type(data,'$.componentConfig')='object'"
+        if db.execute(f"SELECT 1 FROM runs WHERE {scope} AND state IN ('running','waiting','stopping')").fetchone():
+            raise RuntimeError('Component expert executors must finish cleanup before rollback')
+        db.execute(f"UPDATE runs SET state='component_frozen',data=json_set(data,'$.state','component_frozen','$.error','旧版无法安全处理组件专家任务，已冻结') WHERE {scope} AND state='queued'")
+        db.execute(f"UPDATE inbox SET state='component_frozen',data=json_set(data,'$.state','component_frozen') WHERE {scope} AND state IN ('unrouted','queued','routing','context','authorization')")
+        db.execute("UPDATE schedules SET enabled=0,data=json_set(data,'$.enabled',json('false'),'$.pausedReason','旧版不支持工具组件，请升级后确认再启用') WHERE json_type(data,'$.component')='object'")
+        for table in ('runs','inbox','schedules'):
+            for suffix,operation in (('insert','INSERT'),('update','UPDATE')):
+                field='component' if table=='schedules' else 'componentConfig'
+                condition = f"json_type(NEW.data,'$.{field}')='object'"
+                if suffix=='update':
+                    condition += f" OR json_type(OLD.data,'$.{field}')='object'"
+                live = "NEW.enabled=1" if table=='schedules' else "NEW.state IN ('queued','running','waiting','stopping')" if table=='runs' else "NEW.state IN ('unrouted','queued','routing','context','authorization')"
+                db.execute(f"CREATE TRIGGER IF NOT EXISTS rollback_guard_component_{table}_{suffix} BEFORE {operation} ON {table} WHEN ({condition}) AND {live} BEGIN SELECT RAISE(ABORT,'component worker version required'); END")
+
+
 def start(path, channels=True):
     prepare_gateway_worker(path)
     prepare_followup_worker(path)
     prepare_communication_worker(path)
+    prepare_component_worker(path)
     point('current', path)
     set_runtime(path)
     run('systemctl', 'start', 'project-workbench')

@@ -190,7 +190,7 @@ func expertMetadata(b []byte, fields map[string]string) ([]byte, error) {
 		if key == "name" {
 			target = "display-name"
 		}
-		if target != "display-name" && target != "description" && target != "skill-name" {
+		if target != "display-name" && target != "description" && target != "skill-name" && target != "component-tools" {
 			return nil, errors.New("不支持的专家字段：" + key)
 		}
 		if target == "skill-name" {
@@ -199,13 +199,34 @@ func expertMetadata(b []byte, fields map[string]string) ([]byte, error) {
 		found := false
 		for i := 0; i < len(mapping.Content); i += 2 {
 			if mapping.Content[i].Value == target {
-				mapping.Content[i+1].SetString(value)
+				if target == "component-tools" {
+					var node yaml.Node
+					if e := yaml.Unmarshal([]byte(value), &node); e != nil || len(node.Content) != 1 || node.Content[0].Kind != yaml.SequenceNode {
+						return nil, errors.New("组件默认值需要字符串数组")
+					}
+					for _, item := range node.Content[0].Content {
+						if item.Tag != "!!str" {
+							return nil, errors.New("组件标识必须为字符串")
+						}
+					}
+					mapping.Content[i+1] = node.Content[0]
+				} else {
+					mapping.Content[i+1].SetString(value)
+				}
 				found = true
 				break
 			}
 		}
 		if !found {
-			mapping.Content = append(mapping.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: target}, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
+			var node yaml.Node
+			if target == "component-tools" {
+				if e := yaml.Unmarshal([]byte(value), &node); e != nil || len(node.Content) != 1 || node.Content[0].Kind != yaml.SequenceNode {
+					return nil, errors.New("组件默认值需要字符串数组")
+				}
+				mapping.Content = append(mapping.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: target}, node.Content[0])
+			} else {
+				mapping.Content = append(mapping.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: target}, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
+			}
 		}
 	}
 	var out bytes.Buffer

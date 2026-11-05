@@ -235,6 +235,21 @@ func TestComponentsPreview(t *testing.T) {
 	s := testStore(t)
 	p := testProject(t, s, "组件接入验证")
 	plugin := componentFixture(t, s, p)
+	plugin.Component.Actions = append(plugin.Component.Actions, ComponentAction{Name: "read", Description: "读取样例", ReadOnly: true}, ComponentAction{Name: "approve", Description: "确认样例操作", RequiresOwner: true})
+	if _, e := s.SavePlugin(plugin); e != nil {
+		t.Fatal(e)
+	}
+
+	ex, err := s.CreateExpert("组件样例专家", "虚构验收", "只使用当前项目工具读取虚构样例。")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.ExpertIDs = []string{ex.ID}
+	p.DefaultExpertID = ex.ID
+	p, err = s.UpdateProject(p.ID, p)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s.componentRunner = func(_ context.Context, _ Plugin, action string, args map[string]any) (json.RawMessage, error) {
 		if action == "start" {
 			return json.RawMessage(`{"job_ref":"preview-job","status":"running","summary":"后台正在处理样例"}`), nil
@@ -387,5 +402,229 @@ func TestComponentPurgeGuardBeforeTombstoneAndRecovery(t *testing.T) {
 	}
 	if _, e = s.ComponentCall(v.ID); e != nil {
 		t.Fatal("lost reference", e)
+	}
+}
+
+func TestComponentFixedSessionConfigAndDeterministicSchedule(t *testing.T) {
+	s := testStore(t)
+	p := testProject(t, s, "fixed-config")
+	plugin := componentFixture(t, s, p)
+	expert, e := s.CreateExpert("数据方法", "固定版本", "固定规则：只读事实，不推断权益。")
+	if e != nil {
+		t.Fatal(e)
+	}
+	p.ExpertIDs = []string{expert.ID}
+	if _, e = s.UpdateProject(p.ID, p); e != nil {
+		t.Fatal(e)
+	}
+	var calls atomic.Int64
+	s.componentRunner = func(_ context.Context, _ Plugin, _ string, a map[string]any) (json.RawMessage, error) {
+		calls.Add(1)
+		m, ok := a["workbench_method"].(map[string]any)
+		if !ok || m["expert_version"] != expert.Digest || !strings.Contains(m["instructions"].(string), "固定规则") {
+			t.Error("frozen expert method not executed", m)
+		}
+		return json.RawMessage(`{"status":"succeeded","summary":"fixed"}`), nil
+	}
+	cfg, e := s.SaveComponentConfig(ComponentRunConfig{SessionID: p.DefaultSessionID, PluginID: plugin.ID, PluginVersion: "1", Action: "start", Arguments: map[string]any{}, ExpertID: expert.ID, ExpertVersion: expert.Digest, RuleVersion: "canonical.clean.v1"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.SaveComponentConfig(ComponentRunConfig{SessionID: p.DefaultSessionID, PluginID: plugin.ID, PluginVersion: "1", Action: "start"}); !errors.Is(e, ErrConflict) {
+		t.Fatal("missing config CAS", e)
+	}
+	sc, e := s.SaveSchedule(Schedule{ProjectID: p.ID, SessionID: p.DefaultSessionID, ExpertID: expert.ID, Component: &cfg, Name: "固定组件任务", Instruction: "按保存配置执行", Cron: "* * * * *", Timezone: "Asia/Shanghai", Enabled: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	at := time.UnixMilli(sc.NextAt)
+	if _, e = s.fireSchedule(context.Background(), sc.ID, at, ""); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.fireSchedule(context.Background(), sc.ID, at, ""); e != nil {
+		t.Fatal(e)
+	}
+	rows, _ := s.ComponentCalls(p.DefaultSessionID)
+	if len(rows) != 1 || rows[0].State != "ready" {
+		t.Fatal("occurrence not deduplicated", rows)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("scheduler executed inline")
+	}
+	s.pollComponents(context.Background())
+	if calls.Load() != 1 {
+		t.Fatal("intent not dispatched")
+	}
+	if _, e = s.ChangeExpert(expert.ID, ExpertChanges{BaseDigest: expert.Digest, Metadata: map[string]string{"description": "专家已有新版本"}}, nil); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.RunComponentConfig(context.Background(), p.DefaultSessionID, "saved-config-after-expert-upgrade"); e != nil {
+		t.Fatal(e)
+	}
+	if calls.Load() != 2 {
+		t.Fatal("saved method did not run")
+	}
+}
+func TestComponent2000ReferencesAndOwnerConfirmation(t *testing.T) {
+	s := testStore(t)
+	p := testProject(t, s, "2000")
+	plugin := componentFixture(t, s, p)
+	count := 0
+	s.componentRunner = func(_ context.Context, p Plugin, _ string, a map[string]any) (json.RawMessage, error) {
+		if items, ok := a["items"].([]string); ok {
+			count = len(items)
+		}
+		return json.RawMessage(`{"status":"succeeded","summary":"accepted"}`), nil
+	}
+	items := []string{}
+	for i := 0; i < 2000; i++ {
+		items = append(items, newID())
+	}
+	q := ComponentRequest{PluginID: plugin.ID, Action: "start", Arguments: map[string]any{"items": items}, OperationKey: "two-thousand-uuid-references"}
+	if len(encode(q.Arguments)) <= 64<<10 {
+		t.Fatal("fixture does not cross old bound")
+	}
+	if _, e := s.SubmitComponent(context.Background(), p.DefaultSessionID, q); e != nil || count != 2000 {
+		t.Fatal("2000 references rejected", count, e)
+	}
+	plugin.Component.Actions = append(plugin.Component.Actions, ComponentAction{Name: "approve", RequiresOwner: true})
+	if _, e := s.SavePlugin(plugin); e != nil {
+		t.Fatal(e)
+	}
+	in := commInput(t, s, p)
+	q.Action = "approve"
+	q.OperationKey = "forged-owner-confirmation"
+	q.OwnerConfirmed = true
+	before := count
+	v, e := s.componentTool(context.Background(), in, "call_component", json.RawMessage(encode(q)))
+	if e != nil {
+		t.Fatal(e)
+	}
+	pending := v.(ComponentCall)
+	if pending.State != "awaiting_owner" || pending.OwnerConfirmed || count != before {
+		t.Fatal("model bypassed owner confirmation", pending.State)
+	}
+	if _, e = s.componentTool(context.Background(), in, "confirm_component", nil); e == nil {
+		t.Fatal("model inferred an owner confirmation")
+	}
+	if _, e = s.RefreshComponent(context.Background(), pending.ID, true); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.ConfirmComponent(context.Background(), pending.ID); e == nil {
+		t.Fatal("cancelled action confirmed")
+	}
+	q.OperationKey = "actual-owner-confirmation"
+	v, e = s.componentTool(context.Background(), in, "call_component", json.RawMessage(encode(q)))
+	if e != nil {
+		t.Fatal(e)
+	}
+	pending = v.(ComponentCall)
+	m, e := s.Submit(Incoming{Source: "web", SessionID: p.DefaultSessionID, EventID: newID(), Text: "确认组件 " + pending.ID[:8]})
+	if e != nil {
+		t.Fatal(e)
+	}
+	in.Run.MessageID = m.ID
+	s.saveRun(in.Run)
+	v, e = s.componentTool(context.Background(), in, "confirm_component", nil)
+	if e != nil || v.(ComponentCall).State != "ready" {
+		t.Fatal(v, e)
+	}
+	s.pollComponents(context.Background())
+	confirmed, e := s.ComponentCall(pending.ID)
+	if e != nil || confirmed.State != "succeeded" {
+		t.Fatal(confirmed, e)
+	}
+	if _, e := s.SaveComponentConfig(ComponentRunConfig{SessionID: p.DefaultSessionID, PluginID: plugin.ID, PluginVersion: "1", Action: "approve"}); e == nil {
+		t.Fatal("owner-only action became unattended")
+	}
+}
+
+func TestComponentExpertReadOnlyRunBoundary(t *testing.T) {
+	s := testStore(t)
+	p := testProject(t, s, "expert-only")
+	in := commInput(t, s, p)
+	in.Run.ComponentConfig = &ComponentRunConfig{Mode: "expert"}
+	s.saveRun(in.Run)
+	if !communicationReadOnly(in.Run) {
+		t.Fatal("expert mode not read only")
+	}
+	for _, tool := range []string{"save_schedule", "change_calendar", "manage_cli", "run_global_cli", "confirm_component", "send_session_message"} {
+		if _, e := s.appTool(in, tool, json.RawMessage(`{}`)); e == nil {
+			t.Fatal("expert mode wrote through", tool)
+		}
+	}
+	h := &Harness{Store: s, Config: Config{DataDir: s.Root, RuntimeMode: "podman", Podman: "podman", RuntimeImage: "test", RuntimeDir: "/runtime-code"}}
+	args, _, _, e := h.prepare(in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	root, _ := s.ProjectRoot(p.ID)
+	if !strings.Contains(strings.Join(args, " "), root+":/workspace:ro") {
+		t.Fatal("writable project mount")
+	}
+	raw, e := os.ReadFile(filepath.Join(s.Root, "runtime/projects", p.ID, "invocation-"+in.Run.ID+".yml"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, unsafe := range []string{"project-browser", "global-mcp-", "PW_VISUAL_BROWSER"} {
+		if strings.Contains(string(raw), unsafe) {
+			t.Fatal(unsafe)
+		}
+	}
+	if !strings.Contains(string(raw), "PW_COMMUNICATION_READONLY: \"true\"") {
+		t.Fatal("runtime tool filtering missing")
+	}
+}
+
+func TestComponentExpertAdmissionAndSchedulePinsMethod(t *testing.T) {
+	s := testStore(t)
+	p := testProject(t, s, "expert-snapshot")
+	plugin := componentFixture(t, s, p)
+	plugin.Component.Actions = []ComponentAction{{Name: "read", ReadOnly: true}}
+	if _, e := s.SavePlugin(plugin); e != nil {
+		t.Fatal(e)
+	}
+	ex, e := s.CreateExpert("只读方法", "固定方法", "EXPERT_METHOD_FIXED_729")
+	if e != nil {
+		t.Fatal(e)
+	}
+	p.ExpertIDs = []string{ex.ID}
+	if _, e = s.UpdateProject(p.ID, p); e != nil {
+		t.Fatal(e)
+	}
+	cfg, e := s.SaveComponentConfig(ComponentRunConfig{Mode: "expert", Goal: "解释读取结果", SessionID: p.DefaultSessionID, PluginID: plugin.ID, PluginVersion: "1", Action: "read", Arguments: map[string]any{}, ExpertID: ex.ID, ExpertVersion: ex.Digest})
+	if e != nil {
+		t.Fatal(e)
+	}
+	v, e := s.RunComponentConfig(context.Background(), p.DefaultSessionID, "expert-manual-729")
+	if e != nil {
+		t.Fatal(e)
+	}
+	m := v.(Message)
+	r, e := s.Run(m.RunID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !communicationReadOnly(r) || r.ExpertDigest != ex.Digest || !strings.Contains(m.Incoming.Text, "EXPERT_METHOD_FIXED_729") || m.ComponentConfig == nil {
+		t.Fatal("manual expert snapshot lost")
+	}
+	sc, e := s.SaveSchedule(Schedule{ProjectID: p.ID, SessionID: p.DefaultSessionID, Component: &cfg, Name: "expert schedule", Cron: "* * * * *", Timezone: "Asia/Shanghai", Enabled: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	receipt, e := s.fireSchedule(context.Background(), sc.ID, time.UnixMilli(sc.NextAt), "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	r, e = s.Run(receipt.RunID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	m, e = s.Message(r.MessageID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !communicationReadOnly(r) || m.ComponentConfig == nil || r.ExpertDigest != ex.Digest || !strings.Contains(r.Text, "EXPERT_METHOD_FIXED_729") {
+		t.Fatal("scheduled expert snapshot lost")
 	}
 }
