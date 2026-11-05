@@ -46,6 +46,7 @@ type Model struct {
 	Name     string `json:"name"`
 }
 type Config struct {
+	ReceiptCommand        []string             `json:"receiptCommand,omitempty"`
 	GenerationConcurrency int                  `json:"generationConcurrency"`
 	Listen                string               `json:"listen"`
 	DSN                   string               `json:"mysqlDSN"`
@@ -244,21 +245,34 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(frame)
 }
 
-var descriptions = map[string]string{"sync_contexts": "拉取并清洗源上下文，校验后发布到插件MySQL", "query_contexts": "读取已发布用户上下文与来源", "batch_generate": "按固定方案批量生成，最多2000条", "batch_results": "分页读取批次条目", "recommend_users": "读取原候选与证据，不自动触达", "legacy_read": "按登记操作读取原中心能力", "legacy_action": "本人确认后调用已登记原中心动作", "legacy_prepare": "沿原方法准备内容，保留原校验，不发送", "status": "查询任务状态", "lookup": "按原调用编号查回", "cancel": "停止任务", "configuration": "查看已迁移配置及依赖摘要"}
+var descriptions = map[string]string{"activity_candidates": "按原工作包准备暂停草稿并读取明确有效名单，不生成不发送", "activity_generate": "从新MySQL固定发布代逐人生成1至2000条，name/package_id/week/items/instruction；通过原门禁后自动抽检，不发送", "activity_dispatch": "受管本人确认固定版本后交接原渠道并查回回执", "activity_status": "读取活动实际进度和原回执", "activity_receipts": "分页读取原渠道逐人实发/失败/未知的核证回执", "activity_samples": "读取实际待发送正文及附件的冻结样本", "activity_catalog": "读取原工作包与明确候选入口", "activity_cancel": "停止未授权的活动", "sync_contexts": "拉取并清洗源上下文，校验后发布到插件MySQL", "query_contexts": "读取已发布用户上下文与来源", "batch_generate": "按固定方案批量生成，最多2000条", "batch_results": "分页读取批次条目", "recommend_users": "读取原候选与证据，不自动触达", "legacy_read": "按登记操作读取原中心能力", "legacy_action": "本人确认后调用已登记原中心动作", "legacy_prepare": "沿原方法准备内容，保留原校验，不发送", "status": "查询任务状态", "lookup": "按原调用编号查回", "cancel": "停止任务", "configuration": "查看已迁移配置及依赖摘要"}
 
 func str(m map[string]any, k string) string { x, _ := m[k].(string); return x }
 func number(m map[string]any, k string, def int) int {
-	if v, ok := m[k].(float64); ok {
+	switch v := m[k].(type) {
+	case int:
+		return v
+	case int64:
 		return int(v)
+	case float64:
+		if v == float64(int(v)) {
+			return int(v)
+		}
+	case json.Number:
+		n, e := v.Int64()
+		if e == nil {
+			return int(n)
+		}
 	}
 	return def
 }
+
 func success(summary string, result any) any {
 	return map[string]any{"status": "succeeded", "summary": summary, "result": result}
 }
 func (s *Server) call(ctx context.Context, g Grant, name string, a map[string]any, owner bool) (any, error) {
 	switch name {
-	case "sync_contexts", "batch_generate":
+	case "sync_contexts", "batch_generate", "activity_generate":
 		return s.enqueue(ctx, g, name, a)
 	case "status", "lookup", "cancel", "retry":
 		return s.jobControl(ctx, g, name, a)
@@ -275,6 +289,81 @@ func (s *Server) call(ctx context.Context, g Grant, name string, a map[string]an
 		return s.upstream(ctx, g, a, false, owner)
 	case "legacy_prepare":
 		return s.enqueue(ctx, g, name, a)
+	case "activity_dispatch":
+		if !owner {
+			return nil, errors.New("活动发送必须由受管本人确认")
+		}
+		if str(a, "digest") == "" || str(a, "approval_event") == "" {
+			return nil, errors.New("缺少批次摘要或本人事件")
+		}
+		return s.enqueue(ctx, g, name, a)
+	case "activity_status":
+		v, e := s.activity(ctx, g, a)
+		if e != nil {
+			return nil, e
+		}
+		return success(activitySummary(v.State), s.activityReceiptResult(v)), nil
+	case "activity_catalog":
+		v, e := s.sourceActivityCall(ctx, "GET", "/api/local/v3/work-packages", activityWeek(a))
+		if e != nil {
+			return nil, e
+		}
+		rows, _ := v["packages"].([]any)
+		out := []any{}
+		for _, r := range rows {
+			row, ok := r.(map[string]any)
+			if !ok {
+				continue
+			}
+			item := map[string]any{}
+			for _, key := range []string{"package_id", "label", "strategy_key", "strategy_version", "product_service_key", "scene", "candidate_count", "actionable_count", "paused_count", "ready_for_generation", "state"} {
+				item[key] = row[key]
+			}
+			out = append(out, item)
+		}
+		return success("原已发布工作包；用activity_candidates准备有效名单", map[string]any{"week": v["week"], "packages": out}), nil
+	case "activity_candidates":
+		if str(a, "package_id") == "" {
+			return nil, errors.New("需要原工作包编号")
+		}
+		v, e := s.sourceActivityCall(ctx, "POST", "/api/local/v3/codex-copy-jobs", map[string]any{"action": "prepare", "package_id": str(a, "package_id"), "week": str(a, "week")})
+		if e != nil {
+			return nil, e
+		}
+		v, e = s.sourceActivityCall(ctx, "GET", "/api/local/copy/batch-runs", map[string]any{"run_id": str(v, "run_id")})
+		if e != nil {
+			return nil, e
+		}
+		rows, _ := object(v, "run")["items"].([]any)
+		refs := []string{}
+		for _, r := range rows {
+			row, ok := r.(map[string]any)
+			if !ok {
+				return nil, errors.New("原准备名单格式异常")
+			}
+			ref := str(object(row, "request"), "safe_user_ref")
+			if ref == "" || ref != str(row, "item_key") {
+				return nil, errors.New("原有效名单身份异常")
+			}
+			refs = append(refs, ref)
+		}
+		offset := number(a, "offset", 0)
+		limit := number(a, "limit", 2000)
+		if offset < 0 || offset > len(refs) || limit < 1 || limit > 2000 {
+			return nil, errors.New("名单分页参数无效")
+		}
+		end := min(len(refs), offset+limit)
+		return success("原策略准备的明确有效引用；生成时仍重新校验", map[string]any{"user_refs": refs[offset:end], "total": len(refs), "next_offset": end, "automatic_send_allowed": false}), nil
+	case "activity_receipts":
+		return s.activityReceipts(ctx, g, a)
+	case "activity_samples":
+		v, e := s.activity(ctx, g, a)
+		if e != nil {
+			return nil, e
+		}
+		return success("读取冻结抽检样本", map[string]any{"digest": v.Digest, "samples": v.Data["samples"]}), nil
+	case "activity_cancel":
+		return s.cancelActivity(ctx, g, a)
 	case "legacy_action":
 		if !owner {
 			return nil, errors.New("owner confirmation required")
@@ -313,7 +402,7 @@ func (s *Server) sourceRequest(ctx context.Context, method, path string, body io
 			s.authUntil = time.Time{}
 			s.authMu.Unlock()
 		}
-		return nil, fmt.Errorf("source returned HTTP %d; no business request was replayed", res.StatusCode)
+		return nil, sourceHTTPError{res.StatusCode}
 	}
 	return res, nil
 }
@@ -476,4 +565,10 @@ func (s *Server) readConfiguration(a map[string]any) (any, error) {
 	}
 	end := min(start+16000, len(chars))
 	return success("读取原配置快照；发布/草稿状态见迁移清单", map[string]any{"name": name, "sha256": hash(string(content)), "content": string(chars[start:end]), "next_offset": end, "complete": start == 0 && end == len(chars)}), nil
+}
+
+type sourceHTTPError struct{ Status int }
+
+func (e sourceHTTPError) Error() string {
+	return fmt.Sprintf("source returned HTTP %d; no business request was replayed", e.Status)
 }

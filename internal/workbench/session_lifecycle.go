@@ -71,7 +71,8 @@ func sessionIdle(tx *sql.Tx, id string) error {
  (SELECT count(*) FROM runs WHERE session_id=? AND state IN ('queued','running','waiting','stopping'))+
  (SELECT count(*) FROM inbox WHERE (session_id=? OR json_extract(data,'$.incoming.sessionId')=?) AND state IN ('unrouted','clarify'))+
  (SELECT count(*) FROM deliveries WHERE json_extract(data,'$.sessionId')=? AND state='sending')+
- (SELECT count(*) FROM component_calls WHERE session_id=? AND state NOT IN ('succeeded','failed','cancelled'))`, id, id, id, id, id).Scan(&n)
+ (SELECT count(*) FROM component_calls WHERE session_id=? AND state NOT IN ('succeeded','failed','cancelled'))+
+ (SELECT count(*) FROM component_reviews WHERE session_id=? AND state IN ('awaiting_owner','approved','dispatching','unknown'))`, id, id, id, id, id, id).Scan(&n)
 	if e != nil {
 		return e
 	}
@@ -380,7 +381,7 @@ func (s *Store) PurgeSession(id string) error {
 	ss.Lifecycle = "purging"
 	if e = s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var n int
-		if er := tx.QueryRow("SELECT count(*) FROM component_calls WHERE session_id=? AND state NOT IN ('succeeded','failed','cancelled')", id).Scan(&n); er != nil {
+		if er := tx.QueryRow("SELECT (SELECT count(*) FROM component_calls WHERE session_id=? AND state NOT IN ('succeeded','failed','cancelled'))+(SELECT count(*) FROM component_reviews WHERE session_id=? AND state IN ('awaiting_owner','approved','dispatching','unknown'))", id, id).Scan(&n); er != nil {
 			return er
 		}
 		if n > 0 {
@@ -396,7 +397,7 @@ func (s *Store) PurgeSession(id string) error {
 func (s *Store) purgeSession(ss Session) error {
 	if e := s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var n int
-		if e := tx.QueryRow("SELECT count(*) FROM component_calls WHERE session_id=? AND state NOT IN ('succeeded','failed','cancelled')", ss.ID).Scan(&n); e != nil {
+		if e := tx.QueryRow("SELECT (SELECT count(*) FROM component_calls WHERE session_id=? AND state NOT IN ('succeeded','failed','cancelled'))+(SELECT count(*) FROM component_reviews WHERE session_id=? AND state IN ('awaiting_owner','approved','dispatching','unknown'))", ss.ID, ss.ID).Scan(&n); e != nil {
 			return e
 		}
 		if n > 0 {

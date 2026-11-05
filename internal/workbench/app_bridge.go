@@ -273,7 +273,7 @@ func (s *Store) appTool(in RuntimeInput, tool string, args json.RawMessage) (any
 		if e != nil {
 			return nil, e
 		}
-		if r.ProjectID != in.Project.ID {
+		if !s.projectHistoryAllowed(in.Project.ID, r.ProjectID) {
 			return nil, errors.New("只能读取当前项目的执行历史")
 		}
 		return r, nil

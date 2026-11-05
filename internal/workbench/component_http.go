@@ -1,9 +1,26 @@
 package workbench
 
-import "github.com/gin-gonic/gin"
+import (
+	"errors"
+	"github.com/gin-gonic/gin"
+)
 
 func (a *API) mountComponents(g *gin.RouterGroup) {
+	a.mountProjectHistory(g)
 	s := a.Store
+	g.GET("/sessions/:id/component-reviews", func(c *gin.Context) { v, e := s.ComponentReviews(c.Param("id")); reply(c, v, e) })
+	g.POST("/component-reviews/:id/approve", func(c *gin.Context) {
+		bind(c, func(q struct {
+			Digest       string `json:"digest"`
+			OperationKey string `json:"operationKey"`
+		}) (any, error) {
+			if len(q.OperationKey) < 8 {
+				return nil, errors.New("需要稳定的本人确认编号")
+			}
+			return s.ApproveComponentReview(c.Request.Context(), c.Param("id"), q.Digest, "web:"+q.OperationKey)
+		})
+	})
+	g.POST("/component-reviews/:id/cancel", func(c *gin.Context) { v, e := s.CancelComponentReview(c.Param("id")); reply(c, v, e) })
 	g.GET("/sessions/:id/component-config", func(c *gin.Context) { v, e := s.ComponentConfig(c.Param("id")); reply(c, v, e) })
 	g.PUT("/sessions/:id/component-config", func(c *gin.Context) {
 		bind(c, func(v ComponentRunConfig) (any, error) { v.SessionID = c.Param("id"); return s.SaveComponentConfig(v) })

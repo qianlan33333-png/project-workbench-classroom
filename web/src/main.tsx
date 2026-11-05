@@ -1,3 +1,4 @@
+import { ProjectHistory } from "./project-history";
 import { ToolComponents, SessionComponents } from "./tool-components";
 import { CommunicationFeed, AgentOrigin } from "./session-communication";
 import React, { useEffect, useState, useRef, useCallback } from "react";
@@ -1542,7 +1543,7 @@ function App() {
                   管理本项目的 AI 任务
                 </button>
               )}
-              <div className="project-panel-footer">
+              <ProjectHistory key={projectId} projectId={projectId}/><div className="project-panel-footer">
                 <button
                   onClick={() =>
                     setDialog({
@@ -1744,7 +1745,7 @@ function App() {
                   }}
                 />
                 <SessionComponents key={sessionId} sessionId={sessionId} projectId={project!.id} notify={notify} />
- {sessionRuns.map((r) => (
+ {sessionRuns.filter(r=>r.kind!=="component_notice").map((r) => (
                   <article
                     className="turn"
                     key={r.id}

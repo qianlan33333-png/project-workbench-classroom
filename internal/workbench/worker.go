@@ -916,6 +916,9 @@ func (w *Worker) Stop(id string) error {
 	return w.Store.saveRun(r)
 }
 func (w *Worker) handleControl(m Message) (bool, error) {
+	if handled, e := w.Store.handleComponentOwnerControl(context.Background(), m); handled || e != nil {
+		return handled, e
+	}
 	if handled, e := w.handleFollowupControl(m); handled || e != nil {
 		return handled, e
 	}
@@ -960,7 +963,7 @@ func (s *Store) SessionSearch(project, q string) ([]map[string]any, error) {
 	if strings.TrimSpace(q) == "" {
 		return []map[string]any{}, nil
 	}
-	rows, err := s.DB.Query("SELECT r.id,r.session_id,r.data FROM runs r WHERE r.project_id=? AND r.session_id IN (SELECT id FROM sessions WHERE coalesce(json_extract(data,'$.recycledAt'),0)=0) AND coalesce(json_extract(r.data,'$.kind'),'')<>'archive' AND instr(lower(r.data),lower(?))>0 ORDER BY r.created_at DESC LIMIT 30", project, q)
+	rows, err := s.DB.Query("SELECT r.id,r.session_id,r.data FROM runs r WHERE (r.project_id=? OR r.project_id IN(SELECT source_id FROM project_history_sources WHERE project_id=?)) AND r.session_id IN (SELECT id FROM sessions WHERE coalesce(json_extract(data,'$.recycledAt'),0)=0) AND coalesce(json_extract(r.data,'$.kind'),'')<>'archive' AND instr(lower(r.data),lower(?))>0 ORDER BY r.created_at DESC LIMIT 30", project, project, q)
 	if err != nil {
 		return nil, err
 	}

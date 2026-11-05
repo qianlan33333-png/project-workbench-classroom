@@ -163,6 +163,7 @@ type Connection struct {
 	LastHeartbeat int64  `json:"lastHeartbeat"`
 }
 type Delivery struct {
+	FinishedAt     int64            `json:"finishedAt,omitempty"`
 	Gateway        *GatewayDelivery `json:"gateway,omitempty"`
 	ID             string           `json:"id"`
 	MessageID      string           `json:"messageId"`

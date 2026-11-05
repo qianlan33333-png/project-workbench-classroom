@@ -119,7 +119,7 @@ func (s *Store) ClaimDelivery(connection string) (*Delivery, error) {
 	var out *Delivery
 	err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var raw string
-		err := tx.QueryRow("SELECT data FROM deliveries WHERE connection_id=? AND state='pending' AND EXISTS(SELECT 1 FROM connections c WHERE c.id=deliveries.connection_id AND c.data->>'$.enabled'=1 AND c.data->>'$.ownerId'=deliveries.data->>'$.actorId') AND (json_extract(data,'$.sessionId')='' OR json_extract(data,'$.sessionId') IN (SELECT id FROM sessions WHERE coalesce(json_extract(data,'$.recycledAt'),0)=0)) ORDER BY created_at LIMIT 1", connection).Scan(&raw)
+		err := tx.QueryRow("SELECT data FROM deliveries WHERE connection_id=? AND state='pending' AND EXISTS(SELECT 1 FROM connections c WHERE c.id=deliveries.connection_id AND c.data->>'$.enabled'=1 AND c.data->>'$.ownerId'=deliveries.data->>'$.actorId') AND (data->>'$.kind'<>'component-review' OR EXISTS(SELECT 1 FROM component_reviews r WHERE 'component-review-notify:'||r.id=deliveries.data->>'$.messageId' AND r.state='awaiting_owner')) AND (json_extract(data,'$.sessionId')='' OR json_extract(data,'$.sessionId') IN (SELECT id FROM sessions WHERE coalesce(json_extract(data,'$.recycledAt'),0)=0)) ORDER BY created_at LIMIT 1", connection).Scan(&raw)
 		if err == sql.ErrNoRows {
 			return nil
 		}
@@ -163,6 +163,7 @@ func (s *Store) FinishDeliveryReceipts(id, state, receipt string, receipts []str
 	d.Receipt = receipt
 	d.Receipts = receipts
 	d.Error = detail
+	d.FinishedAt = now()
 	_, err = s.DB.Exec("UPDATE deliveries SET state=?,data=? WHERE id=? AND state='sending'", state, encode(d), id)
 	if err != nil {
 		return err

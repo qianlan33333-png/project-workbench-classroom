@@ -95,7 +95,7 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(schema + componentConfigSchema + componentSchema + communicationSchema + ingressQueueSchema + runLeaseSchema + todaySchema + followupSchema + plannerSchema + calendarSyncSchema + gatewaySchema + crmSchema); err != nil {
+	if _, err := db.Exec(schema + projectHistorySchema + componentConfigSchema + componentSchema + componentReviewSchema + communicationSchema + ingressQueueSchema + runLeaseSchema + todaySchema + followupSchema + plannerSchema + calendarSyncSchema + gatewaySchema + crmSchema); err != nil {
 		return nil, fmt.Errorf("数据库初始化: %w", err)
 	}
 	var version int

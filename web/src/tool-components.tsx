@@ -1,10 +1,11 @@
+import { ComponentReviews } from "./component-reviews";
 import { ComponentRunConfiguration } from "./component-run-config";
 import React, { useEffect, useRef, useState } from "react";
 import { api, type Project } from "./api";
 import { useSurfaceGuard } from "./surface-ui";
 
 type Action = { name: string; description: string; requiresOwner?:boolean; readOnly?:boolean };
-type Spec = { key?:string; version: string; actions: Action[]; statusAction?: string; lookupAction?: string; cancelAction?: string };
+type Spec = { key?:string; version: string; actions: Action[]; statusAction?: string; lookupAction?: string; cancelAction?: string; ownerReviewAction?:string; ownerNotifyConnectionId?:string };
 type Plugin = { id: string; projectId: string; name: string; description: string; url: string; enabled: boolean; hasSecrets: boolean; component: Spec };
 type Call = { id: string; pluginId: string; name: string; version: string; action: string; state: string; summary: string; error?: string; result?: unknown; jobRef?: string; arguments?:unknown };
 const terminal = (s: string) => ["succeeded", "failed", "cancelled"].includes(s);
@@ -21,13 +22,13 @@ export function ToolComponents({ notify }: { notify: (s: string) => void }) {
   useEffect(() => { void load().catch(e => setError(e.message)); }, []);
   const edit = (p?: Plugin) => {
     setError("");
-    setDraft({ key:p?.component.key||"", id: p?.id || "", projectId: p?.projectId || "", name: p?.name || "", description: p?.description || "", url: p?.url || "", version: p?.component.version || "1.0.0", actions: p?.component.actions.map(a => `${a.requiresOwner ? "!" : a.readOnly ? "?" : ""}${a.name} ${a.description}`).join("\n") || "", statusAction: p?.component.statusAction || "", lookupAction: p?.component.lookupAction || "", cancelAction: p?.component.cancelAction || "", headers: "", enabled: p?.enabled !== false });
+    setDraft({ key:p?.component.key||"", id: p?.id || "", projectId: p?.projectId || "", name: p?.name || "", description: p?.description || "", url: p?.url || "", version: p?.component.version || "1.0.0", actions: p?.component.actions.map(a => `${a.requiresOwner ? "!" : a.readOnly ? "?" : ""}${a.name} ${a.description}`).join("\n") || "", statusAction: p?.component.statusAction || "", lookupAction: p?.component.lookupAction || "", cancelAction: p?.component.cancelAction || "", ownerReviewAction:p?.component.ownerReviewAction||"", ownerNotifyConnectionId:p?.component.ownerNotifyConnectionId||"", headers: "", enabled: p?.enabled !== false });
   };
   const save = async (e: React.FormEvent) => {
     e.preventDefault(); setBusy(true); setError("");
     try {
       const actions = draft.actions.split("\n").map((s: string) => s.trim()).filter(Boolean).map((s: string) => { const [name, ...rest] = s.split(/\s+/); return { name:name.replace(/^[!?]/,""), requiresOwner:name.startsWith("!"), readOnly:name.startsWith("?"), description: rest.join(" ") }; });
-      await api("/plugins", { id: draft.id, name: draft.name, description: draft.description, projectId: draft.projectId, transport: "http", url: draft.url, enabled: draft.enabled, ...(draft.headers.trim() ? { headers: JSON.parse(draft.headers) } : {}), component: { key:draft.key||draft.name, version: draft.version, actions, statusAction: draft.statusAction, lookupAction: draft.lookupAction, cancelAction: draft.cancelAction } });
+      await api("/plugins", { id: draft.id, name: draft.name, description: draft.description, projectId: draft.projectId, transport: "http", url: draft.url, enabled: draft.enabled, ...(draft.headers.trim() ? { headers: JSON.parse(draft.headers) } : {}), component: { key:draft.key||draft.name, version: draft.version, actions, statusAction: draft.statusAction, lookupAction: draft.lookupAction, cancelAction: draft.cancelAction, ownerReviewAction:draft.ownerReviewAction, ownerNotifyConnectionId:draft.ownerNotifyConnectionId } });
       setDraft(null); await load(); notify("工具组件已保存，尚未执行任何任务");
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
@@ -47,7 +48,7 @@ export function ToolComponents({ notify }: { notify: (s: string) => void }) {
       <label>允许动作（每行：标识 用途；!表示本人确认，?表示纯读取）<textarea required rows={3} value={draft.actions} onChange={e => setDraft({ ...draft, actions: e.target.value })} /></label>
       <details><summary>后台任务与凭据</summary>
         <p className="muted">即时工具可留空。后台工具需要同时登记状态和查回动作。</p>
-        {[["statusAction", "查询状态动作"], ["lookupAction", "按操作编号查回动作"], ["cancelAction", "取消动作（可选）"]].map(([key, label]) => <label key={key}>{label}<input value={draft[key]} onChange={e => setDraft({ ...draft, [key]: e.target.value })} /></label>)}
+        {[["statusAction", "查询状态动作"], ["lookupAction", "按操作编号查回动作"], ["cancelAction", "取消动作（可选）"], ["ownerReviewAction","抽检后本人确认动作（可选）"], ["ownerNotifyConnectionId","本人微信连接编号（可选）"]].map(([key, label]) => <label key={key}>{label}<input value={draft[key]} onChange={e => setDraft({ ...draft, [key]: e.target.value })} /></label>)}
         <label>请求头（JSON；留空保留已有凭据）<textarea autoComplete="off" value={draft.headers} onChange={e => setDraft({ ...draft, headers: e.target.value })} /></label>
       </details>
       <label><input type="checkbox" checked={draft.enabled} onChange={e => setDraft({ ...draft, enabled: e.target.checked })} />启用后允许本项目调用</label>
@@ -86,12 +87,12 @@ export function SessionComponents({ sessionId, projectId, notify }: { sessionId:
     try { const updated = await api<Call>(`/component-calls/${c.id}/${cancel ? "cancel" : "refresh"}`, {}); if (n === epoch.current) setCalls(old => old.map(x => x.id === c.id ? updated : x)); }
     catch (e) { if (n === epoch.current) setError((e as Error).message); } finally { if (n === epoch.current) setBusy(false); }
   };
-  if (!plugins.length && !calls.length && !error) return null;
-  return <section className="session-components">
+  if (!plugins.length && !calls.length && !error) return <ComponentReviews sessionId={sessionId} notify={notify}/>;
+  return <><ComponentReviews sessionId={sessionId} notify={notify}/><section className="session-components">
     <ComponentRunConfiguration sessionId={sessionId} projectId={projectId} plugins={plugins} notify={notify}/>
     <button onClick={() => setOpen(!open)} aria-expanded={open}>工具组件{calls.filter(c => !terminal(c.state)).length ? ` · ${calls.filter(c => !terminal(c.state)).length}项待完成` : ""}</button>
     {open && <div className="tool-form"><label>组件<select value={pluginId} onChange={e => { setPluginId(e.target.value); setAction(""); }}><option value="">选择组件</option>{plugins.filter(p => p.enabled !== false).map(p => <option key={p.id} value={p.id}>{p.name} · {p.component.version}</option>)}</select></label><label>动作<select value={action} onChange={e => setAction(e.target.value)}><option value="">选择动作</option>{plugin?.component.actions.map(a => <option key={a.name} value={a.name}>{a.description || a.name}</option>)}</select></label><label>参数（JSON）<textarea rows={3} value={input} onChange={e => setInput(e.target.value)} /></label><button disabled={busy || !pluginId || !action} onClick={() => void run()}>执行组件</button><p className="muted">专家也可在当前对话中通过 list_components 和 call_component 调用。</p></div>}
     {error && <p role="alert">{error}</p>}
     {calls.map(c => <details key={c.id} className="component-result"><summary>{c.name} · {labels[c.state] || c.state} · {c.summary}</summary><p>{c.action} · {c.version}</p>{c.error && <p role="alert">{c.error}</p>}{c.state==='awaiting_owner'&&<><p>确认前请核对以下动作参数：</p><pre>{JSON.stringify(c.arguments,null,2)}</pre></>}{!terminal(c.state) && <div className="row">{c.state==='awaiting_owner'&&<button disabled={busy} onClick={()=>{if(window.confirm("确认按此任务保存的动作和参数执行？"))void api<Call>(`/component-calls/${c.id}/confirm`,{}).then(v=>setCalls(old=>old.map(x=>x.id===c.id?v:x))).catch(e=>setError(e.message))}}>本人确认执行</button>}<button disabled={busy} onClick={() => void refresh(c, false)}>刷新状态</button>{(c.state==='awaiting_owner'||c.state==='ready'||(c.jobRef&&plugins.find(p => p.id === c.pluginId)?.component.cancelAction)) && <button disabled={busy} onClick={() => { if (window.confirm("请求停止此组件任务？以组件返回结果为准。")) void refresh(c, true); }}>请求停止</button>}</div>}{c.result !== undefined && <pre>{JSON.stringify(c.result, null, 2)}</pre>}</details>)}
-  </section>;
+  </section></>;
 }

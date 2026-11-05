@@ -26,12 +26,14 @@ BEGIN SELECT RAISE(ABORT,'组件仍有在途任务，请先核查并停止'); EN
 `
 
 type ComponentSpec struct {
-	Key          string            `json:"key,omitempty"`
-	Version      string            `json:"version"`
-	Actions      []ComponentAction `json:"actions"`
-	StatusAction string            `json:"statusAction,omitempty"`
-	LookupAction string            `json:"lookupAction,omitempty"`
-	CancelAction string            `json:"cancelAction,omitempty"`
+	OwnerReviewAction       string            `json:"ownerReviewAction,omitempty"`
+	OwnerNotifyConnectionID string            `json:"ownerNotifyConnectionId,omitempty"`
+	Key                     string            `json:"key,omitempty"`
+	Version                 string            `json:"version"`
+	Actions                 []ComponentAction `json:"actions"`
+	StatusAction            string            `json:"statusAction,omitempty"`
+	LookupAction            string            `json:"lookupAction,omitempty"`
+	CancelAction            string            `json:"cancelAction,omitempty"`
 }
 type ComponentAction struct {
 	ReadOnly      bool   `json:"readOnly,omitempty"`
@@ -40,6 +42,7 @@ type ComponentAction struct {
 	Description   string `json:"description"`
 }
 type ComponentCall struct {
+	ReviewRejected bool           `json:"reviewRejected,omitempty"`
 	OwnerConfirmed bool           `json:"ownerConfirmed,omitempty"`
 	Arguments      map[string]any `json:"arguments,omitempty"`
 	ID             string         `json:"id"`
@@ -100,6 +103,17 @@ func validateComponent(p Plugin) error {
 	if c.CancelAction != "" && c.StatusAction == "" {
 		return errors.New("取消动作需要异步状态能力")
 	}
+	if c.OwnerReviewAction != "" {
+		valid := false
+		for _, a := range c.Actions {
+			if a.Name == c.OwnerReviewAction && a.RequiresOwner && !a.ReadOnly {
+				valid = true
+			}
+		}
+		if !valid || c.StatusAction == "" {
+			return errors.New("审核动作须登记为本人确认，并提供后台查回能力")
+		}
+	}
 	return nil
 }
 func componentBinding(p Plugin) string {
@@ -126,6 +140,9 @@ func (s *Store) Components(project string) ([]Plugin, error) {
 }
 func componentEnabled(p Plugin) bool { return p.Component != nil && (p.Enabled == nil || *p.Enabled) }
 func componentActionAllowed(p Plugin, action string) bool {
+	if action != "" && (action == p.Component.StatusAction || action == p.Component.LookupAction || action == p.Component.CancelAction) {
+		return true
+	}
 	for _, a := range p.Component.Actions {
 		if a.Name == action {
 			return true
@@ -253,6 +270,10 @@ func (s *Store) submitComponent(ctx context.Context, session string, q Component
 		}
 		if fresh.RecycledAt > 0 || fresh.Lifecycle != "" || fresh.Draft {
 			return errors.New("会话已失效")
+		}
+		project, er := getJSON[Project](tx, "SELECT data FROM projects WHERE id=?", fresh.ProjectID)
+		if er != nil || project.Archived {
+			return errors.New("项目已归档，不能新建组件调用")
 		}
 		current, er := getJSON[Plugin](tx, "SELECT data FROM component_plugins WHERE id=?", p.ID)
 		if er != nil || !componentEnabled(current) || componentBinding(current) != componentBinding(p) {
@@ -438,6 +459,7 @@ func (s *Store) RefreshComponent(ctx context.Context, id string, cancel bool) (C
 	return v, er
 }
 func (s *Store) pollComponents(ctx context.Context) {
+	defer s.pollComponentReviews(ctx)
 	rows, e := listJSON[ComponentCall](s.DB, "SELECT data FROM component_calls WHERE state IN ('ready','queued','running','unknown','submitting') AND next_poll<? ORDER BY next_poll,updated_at LIMIT 4", now())
 	if e != nil {
 		return

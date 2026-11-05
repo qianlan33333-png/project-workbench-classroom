@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -23,7 +24,7 @@ func (s *Server) init() error {
 	}
 	defer conn.ExecContext(context.Background(), "DO RELEASE_LOCK(?)", "plugin-schema:"+s.namespace)
 
-	statements := []string{
+	statements := []string{activitySchema,
 		`CREATE TABLE IF NOT EXISTS plugin_worker_epoch(id INT PRIMARY KEY,epoch BIGINT NOT NULL) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS plugin_jobs(id VARCHAR(64) PRIMARY KEY,project_id VARCHAR(80) NOT NULL,session_id VARCHAR(80) NOT NULL,invocation_key VARCHAR(160) NOT NULL,kind VARCHAR(40) NOT NULL,input_hash CHAR(64) NOT NULL,request_json JSON NOT NULL,state VARCHAR(20) NOT NULL,result_json JSON,error_text TEXT,cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,lease_epoch BIGINT NOT NULL DEFAULT 0,created_at BIGINT NOT NULL,updated_at BIGINT NOT NULL,UNIQUE KEY invocation_scope(project_id,session_id,invocation_key)) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS plugin_items(job_id VARCHAR(64) NOT NULL,item_key VARCHAR(160) NOT NULL,state VARCHAR(20) NOT NULL,request_json JSON NOT NULL,result_json JSON,error_text TEXT,attempts INT NOT NULL DEFAULT 0,total_attempts INT NOT NULL DEFAULT 0,PRIMARY KEY(job_id,item_key)) ENGINE=InnoDB`,
@@ -36,7 +37,7 @@ func (s *Server) init() error {
 			return e
 		}
 	}
-	for _, column := range []struct{ table, name, definition string }{{"plugin_items", "total_attempts", "BIGINT NOT NULL DEFAULT 0"}, {"plugin_jobs", "lease_epoch", "BIGINT NOT NULL DEFAULT 0"}} {
+	for _, column := range []struct{ table, name, definition string }{{"plugin_items", "total_attempts", "BIGINT NOT NULL DEFAULT 0"}, {"plugin_jobs", "lease_epoch", "BIGINT NOT NULL DEFAULT 0"}, {"plugin_jobs", "available_at", "BIGINT NOT NULL DEFAULT 0"}} {
 		var n int
 		if e := s.DB.QueryRowContext(ctx, "SELECT count(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?", column.table, column.name).Scan(&n); e != nil {
 			return e
@@ -66,7 +67,11 @@ func scanJob(row interface{ Scan(...any) error }) (job, error) {
 	if e != nil {
 		return j, e
 	}
-	json.Unmarshal([]byte(req), &j.Request)
+	decoder := json.NewDecoder(strings.NewReader(req))
+	decoder.UseNumber()
+	if e = decoder.Decode(&j.Request); e != nil {
+		return j, e
+	}
 	if result.Valid {
 		j.Result = json.RawMessage(result.String)
 	}
@@ -77,6 +82,16 @@ func scanJob(row interface{ Scan(...any) error }) (job, error) {
 const jobSelect = `SELECT id,project_id,session_id,invocation_key,kind,state,request_json,result_json,error_text FROM plugin_jobs`
 
 func (s *Server) enqueue(ctx context.Context, g Grant, kind string, a map[string]any) (any, error) {
+	for k := range a {
+		if strings.HasPrefix(k, "__") {
+			return nil, errors.New("内部任务字段不允许由调用方指定")
+		}
+	}
+	if kind == "activity_generate" {
+		if e := validateActivityInput(a); e != nil {
+			return nil, e
+		}
+	}
 	key := str(a, "invocation_key")
 	session := str(a, "session_id")
 	if key == "" || len(key) > 160 {
@@ -151,7 +166,7 @@ func (s *Server) jobControl(ctx context.Context, g Grant, action string, a map[s
 		return nil, errors.New("job belongs to another installation grant")
 	}
 	if action == "retry" {
-		if j.Kind == "legacy_action" {
+		if j.Kind == "legacy_action" || j.Kind == "activity_dispatch" {
 			return nil, errors.New("原动作不能自动重试，须核对原回执")
 		}
 		if j.State != "failed" && j.State != "cancelled" {
@@ -169,6 +184,19 @@ func (s *Server) jobControl(ctx context.Context, g Grant, action string, a map[s
 		if state != "failed" && state != "cancelled" {
 			return nil, errors.New("任务状态已改变，请刷新")
 		}
+		if j.Kind == "activity_generate" {
+			var activityState string
+			er = tx.QueryRowContext(ctx, "SELECT state FROM plugin_activities WHERE id=? FOR UPDATE", j.ID).Scan(&activityState)
+			if er != nil && er != sql.ErrNoRows {
+				return nil, er
+			}
+			if activityState == "cancelled" || activityState == "awaiting_review" || activityState == "approving" || activityState == "sent" {
+				return nil, errors.New("活动已冻结或停止，不能补跑旧授权")
+			}
+			if _, er = tx.ExecContext(ctx, "UPDATE plugin_items SET result_json=NULL WHERE job_id=? AND state='failed'", j.ID); er != nil {
+				return nil, er
+			}
+		}
 		if _, er = tx.ExecContext(ctx, "UPDATE plugin_items SET attempts=0,state='queued' WHERE job_id=? AND state<>'succeeded'", j.ID); er != nil {
 			return nil, er
 		}
@@ -185,6 +213,9 @@ func (s *Server) jobControl(ctx context.Context, g Grant, action string, a map[s
 		}
 	}
 	if action == "cancel" {
+		if j.Kind == "activity_generate" {
+			return s.cancelActivity(ctx, g, map[string]any{"task_ref": j.ID, "session_id": j.Session})
+		}
 		// Lock the current state so a claim cannot race cancellation or escape the
 		// special boundary for an already issued external action.
 		tx, er := s.DB.BeginTx(ctx, nil)
@@ -196,7 +227,7 @@ func (s *Server) jobControl(ctx context.Context, g Grant, action string, a map[s
 		if er = tx.QueryRowContext(ctx, "SELECT state FROM plugin_jobs WHERE id=? FOR UPDATE", j.ID).Scan(&state); er != nil {
 			return nil, er
 		}
-		if j.Kind == "legacy_action" && (state == "running" || state == "unknown") {
+		if (j.Kind == "legacy_action" && (state == "running" || state == "unknown")) || j.Kind == "activity_dispatch" {
 			return map[string]any{"job_ref": j.ID, "status": state, "summary": "原系统动作已发出，需先核对原回执，不能用取消推定未执行"}, nil
 		}
 		if _, er = tx.ExecContext(ctx, "UPDATE plugin_jobs SET cancel_requested=TRUE,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE id=?", time.Now().UnixMilli(), j.ID); er != nil {
@@ -215,7 +246,7 @@ func (s *Server) jobControl(ctx context.Context, g Grant, action string, a map[s
 		summary = "原操作请求已返回；实际完成或送达请核对原回执"
 	}
 	out := map[string]any{"job_ref": j.ID, "status": j.State, "summary": summary}
-	if j.Kind == "batch_generate" {
+	if j.Kind == "batch_generate" || j.Kind == "activity_generate" {
 		var total, done int
 		if er := s.DB.QueryRowContext(ctx, "SELECT count(*),coalesce(sum(state='succeeded'),0) FROM plugin_items WHERE job_id=?", j.ID).Scan(&total, &done); er == nil {
 			out["progress"] = map[string]any{"total": total, "succeeded": done, "remaining": total - done}
@@ -270,7 +301,7 @@ func (s *Server) Run(ctx context.Context) {
 		if s.DB.QueryRowContext(ctx, "SELECT epoch FROM plugin_worker_epoch WHERE id=1").Scan(&actual) != nil || actual != s.epoch {
 			return
 		}
-		j, e := scanJob(s.DB.QueryRowContext(ctx, jobSelect+` WHERE state='queued' ORDER BY (kind='sync_contexts') DESC,updated_at LIMIT 1`))
+		j, e := scanJob(s.DB.QueryRowContext(ctx, jobSelect+` WHERE state='queued' AND available_at<=? ORDER BY (kind='sync_contexts') DESC,updated_at LIMIT 1`, time.Now().UnixMilli()))
 		if e == nil {
 			s.execute(ctx, j)
 			continue
@@ -307,6 +338,10 @@ func (s *Server) execute(parent context.Context, j job) {
 	var e error
 	var result any
 	switch j.Kind {
+	case "activity_generate":
+		result, e = s.generateActivity(parent, j)
+	case "activity_dispatch":
+		result, e = s.activityDispatch(parent, j)
 	case "sync_contexts":
 		if _, ok := s.grantForJob(j); !ok {
 			e = errors.New("original grant removed")
@@ -341,6 +376,12 @@ func (s *Server) execute(parent context.Context, j job) {
 			state = "unknown"
 		}
 	}
+	availableAt := int64(0)
+	if errors.Is(e, errActivityWait) {
+		state = "queued"
+		message = ""
+		availableAt = time.Now().Add(30 * time.Second).UnixMilli()
+	}
 	if errors.Is(e, errYield) {
 		state = "queued"
 		message = ""
@@ -358,7 +399,7 @@ func (s *Server) execute(parent context.Context, j job) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	s.DB.ExecContext(ctx, `UPDATE plugin_jobs SET state=?,result_json=?,error_text=?,updated_at=? WHERE id=? AND lease_epoch=? AND EXISTS(SELECT 1 FROM plugin_worker_epoch WHERE id=1 AND epoch=?)`, state, encode(result), message, time.Now().UnixMilli(), j.ID, s.epoch, s.epoch)
+	s.DB.ExecContext(ctx, `UPDATE plugin_jobs SET state=?,result_json=?,error_text=?,updated_at=?,available_at=? WHERE id=? AND lease_epoch=? AND EXISTS(SELECT 1 FROM plugin_worker_epoch WHERE id=1 AND epoch=?)`, state, encode(result), message, time.Now().UnixMilli(), availableAt, j.ID, s.epoch, s.epoch)
 }
 func (s *Server) batchResults(ctx context.Context, g Grant, a map[string]any) (any, error) {
 	j, e := scanJob(s.DB.QueryRowContext(ctx, jobSelect+` WHERE id=? AND project_id=? AND session_id=?`, taskRef(a), g.ProjectID, str(a, "session_id")))
@@ -405,7 +446,11 @@ func (s *Server) checkJobEpoch(ctx context.Context, id string) error {
 	if e != nil {
 		return e
 	}
-	if epoch != s.epoch || global != s.epoch || state != "running" {
+	var cancelled bool
+	if e = s.DB.QueryRowContext(ctx, "SELECT cancel_requested FROM plugin_jobs WHERE id=?", id).Scan(&cancelled); e != nil {
+		return e
+	}
+	if epoch != s.epoch || global != s.epoch || state != "running" || cancelled {
 		return errors.New("execution lease changed")
 	}
 	return nil

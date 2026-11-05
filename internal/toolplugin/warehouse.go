@@ -274,7 +274,7 @@ func (s *Server) syncContexts(ctx context.Context, j job) (any, error) {
 	}
 	tx = nil
 	// Keep current/previous snapshots; failed unpublished builds are retained until next successful run.
-	s.DB.ExecContext(ctx, "DELETE FROM context_records WHERE generation NOT IN (SELECT generation FROM context_state UNION SELECT previous_generation FROM context_state) AND generation IN(SELECT id FROM plugin_jobs WHERE state IN ('succeeded','failed','cancelled'))")
+	s.DB.ExecContext(ctx, "DELETE FROM context_records WHERE generation NOT IN (SELECT generation FROM context_state UNION SELECT previous_generation FROM context_state UNION SELECT generation FROM plugin_activities WHERE state NOT IN ('sent','completed_with_failures','cancelled')) AND generation IN(SELECT id FROM plugin_jobs WHERE state IN ('succeeded','failed','cancelled'))")
 	s.DB.ExecContext(ctx, "DELETE FROM context_aliases WHERE generation NOT IN(SELECT generation FROM context_state UNION SELECT previous_generation FROM context_state) AND generation IN(SELECT id FROM plugin_jobs WHERE state IN ('succeeded','failed','cancelled'))")
 	return map[string]any{"published": true, "generation": generation, "previous_generation": old, "users": count, "previous_users": oldCount, "source_metadata": metadata, "published_at": now}, nil
 }
