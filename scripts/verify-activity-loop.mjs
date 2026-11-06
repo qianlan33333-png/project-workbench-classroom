@@ -6,7 +6,15 @@ const browser=await chromium.launch({executablePath:'/Applications/Google Chrome
 try {
  await page.goto(`${meta.url}/#project=${meta.project.id}&session=${meta.project.defaultSessionId}`);await page.getByRole('region',{name:'批次抽检与回执'}).waitFor();await page.getByText('11月体验活动 · 2000人',{exact:true}).waitFor();await page.screenshot({path:dir+'/review-desktop.png',fullPage:true});
  // No custom dashboard: same activity conversation, one fixed-version review.
- await page.getByRole('navigation',{name:'项目导航',exact:true}).getByRole('button',{name:'对话',exact:true}).click();await page.getByText('合并前的记录与配置',{exact:true}).click();await page.locator('.project-history select').selectOption({index:1});await page.getByText('合并前的配置和记录完整保留',{exact:true}).waitFor();await page.screenshot({path:dir+'/history-desktop.png',fullPage:true});
+ await page.getByRole('navigation',{name:'项目导航',exact:true}).getByRole('button',{name:'对话',exact:true}).click();
+ assert.equal(await page.getByText('合并前的记录与配置',{exact:true}).count(),0);
+ const history=(await page.request.get(meta.url+'/api/v1/projects/'+meta.project.id+'/history-sessions'));
+ assert(history.ok());
+ const [historicalSession]=await history.json();
+ assert(historicalSession);
+ const runs=await page.request.get(meta.url+'/api/v1/projects/'+meta.project.id+'/history-runs?sessionId='+encodeURIComponent(historicalSession.id));
+ assert(runs.ok());
+ assert(JSON.stringify(await runs.json()).includes('合并前的配置和记录完整保留'));
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:dir+'/review-mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'390 overflow');
  await page.setViewportSize({width:320,height:640});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'320 overflow');await page.screenshot({path:dir+'/review-small-mobile.png',fullPage:true});
  await page.setViewportSize({width:1440,height:1000});await page.getByRole('button',{name:'确认这批，执行发送',exact:true}).click();await page.getByText('已收回结果',{exact:true}).waitFor();await page.locator('.review-card > summary').click();await page.getByText('查看执行与实际回执',{exact:true}).click();await page.locator('.review-card pre').filter({hasText:'sent_count'}).waitFor();await page.screenshot({path:dir+'/receipt-desktop.png',fullPage:true});

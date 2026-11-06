@@ -1,4 +1,3 @@
-import { ProjectHistory } from "./project-history";
 import { ToolComponents, SessionComponents } from "./tool-components";
 import { CommunicationFeed, AgentOrigin } from "./session-communication";
 import React, { useEffect, useState, useRef, useCallback } from "react";
@@ -2306,9 +2305,6 @@ function App() {
                         })
                       }
                     />
-                  )}
-                  {tab === "sessions" && (
-                    <ProjectHistory projectId={projectId} />
                   )}
                   <div className="project-panel-footer">
                     <button

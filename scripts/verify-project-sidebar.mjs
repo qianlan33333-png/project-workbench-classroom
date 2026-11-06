@@ -85,7 +85,10 @@ try {
     ]) {
       await select(name);
       assert.equal(await files.count(), count, name + " 残留了资料区");
-      assert((await page.locator(".project-history").count()) <= 1);
+      assert.equal(
+        await page.getByText("合并前的记录与配置", { exact: true }).count(),
+        0,
+      );
       assert.equal(await page.locator(".project-context-view").count(), 1);
     }
   }
