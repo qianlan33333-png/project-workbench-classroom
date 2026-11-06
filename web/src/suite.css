@@ -1821,7 +1821,7 @@ select {
   border-radius: 0;
   font-size: 14px;
 }
-.project-panel .file-search input {
+.project-context .file-search input {
   border: 0;
 }
 .rail nav button {
@@ -1924,5 +1924,122 @@ select {
 @media (min-width: 1100px) {
   .rail:not(.collapsed) .rail-brand {
     flex-direction: row;
+  }
+}
+
+/* A single project context surface sits beside the persistent conversation. */
+.project-context {
+  flex: 0 0 auto;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  background: #fff;
+  border-left: 1px solid #e8e8e8;
+}
+.project-context-rail {
+  width: 56px;
+  flex: 0 0 56px;
+  padding: 10px 5px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  border-left: 1px solid #eee;
+}
+.project-context-rail button {
+  display: grid;
+  place-items: center;
+  gap: 4px;
+  padding: 7px 0;
+  min-height: 44px;
+  font-size: 11px;
+  border: 0;
+  background: transparent;
+  color: #525252;
+}
+.project-context-rail button:hover,
+.project-context-rail button[aria-pressed="true"] {
+  color: #171717;
+  background: #f0f0f0;
+}
+.project-context-body {
+  width: clamp(320px, 30vw, 430px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.project-context-view {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.project-context-view .project-panel-footer {
+  margin-top: auto;
+}
+.project-context .project-inline-detail {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  border: 0;
+}
+.project-inline-detail > header {
+  height: auto;
+  min-height: 52px;
+  flex-wrap: wrap;
+}
+.project-inline-detail > footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid #eee;
+}
+.project-schedule-list,
+.project-record-detail {
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+.project-schedule-row {
+  width: 100%;
+  display: flex;
+  align-items: start;
+  gap: 8px;
+  padding: 12px 8px;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+}
+.project-schedule-row small {
+  display: block;
+  margin-top: 4px;
+  color: #737373;
+}
+.project-context-overlay > .surface-panel-content {
+  padding: 0;
+}
+.project-context-overlay .project-context {
+  height: 100%;
+  border-left: 0;
+}
+.project-context-overlay .project-context-body {
+  width: auto;
+  flex: 1;
+}
+.surface-overlay.drawer > .surface-panel.project-context-overlay {
+  width: min(480px, 100vw);
+}
+@media (max-width: 767px) {
+  .surface-overlay.drawer > .surface-panel.project-context-overlay {
+    width: 100%;
+    max-width: none;
+  }
+  .project-context-rail {
+    width: 48px;
+    flex-basis: 48px;
+    padding-inline: 3px;
   }
 }

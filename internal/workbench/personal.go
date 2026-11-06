@@ -300,6 +300,8 @@ func (s *Store) personalTool(in RuntimeInput, tool string, args json.RawMessage)
 	switch tool {
 	case "list_followups", "manage_followup":
 		return s.followupTool(in, tool, args)
+	case "create_task":
+		return s.createPersonalTask(in, args)
 	case "project_contexts":
 		return s.ContextCatalog()
 	case "personal_memories":
@@ -359,7 +361,7 @@ func (s *Store) personalTool(in RuntimeInput, tool string, args json.RawMessage)
 		a.Memory.Replaces = nil
 		return s.SaveMemory(a.Memory)
 	}
-	return nil, errors.New("今天只能查询项目资料；写操作请进入对应项目")
+	return nil, errors.New("此工具当前不可用。项目资料与既有任务只读，建任务请使用 create_task")
 
 }
 func (w *Worker) personalPrompt(r Run) string {

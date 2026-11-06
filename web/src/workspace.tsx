@@ -13,7 +13,10 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   LogOut,
-  X,
+  MessageSquare,
+  Clock,
+  FileText,
+  PanelRightClose,
 } from "lucide-react";
 import type { Project } from "./api";
 
@@ -232,120 +235,82 @@ export function NavigationRail({
     rail
   );
 }
+const projectTabs = [
+  ["sessions", "对话", MessageSquare],
+  ["tasks", "任务", ListChecks],
+  ["schedules", "定时", Clock],
+  ["files", "资料", FileText],
+] as const;
+export type ProjectTab = (typeof projectTabs)[number][0];
+
 export function ProjectSidebar({
   children,
   open,
+  narrow,
+  tab,
+  select,
   close,
-  title = "资料",
 }: {
   children: React.ReactNode;
   open: boolean;
+  narrow: boolean;
+  tab: ProjectTab;
+  select: (tab: ProjectTab) => void;
   close: () => void;
-  title?: string;
 }) {
-  const narrow = useNarrow(1099);
+  const navigation = (
+    <nav className="project-context-rail" aria-label="项目导航">
+      {projectTabs.map(([id, label, Icon]) => (
+        <button
+          key={id}
+          type="button"
+          title={label}
+          aria-pressed={open && tab === id}
+          aria-expanded={open && tab === id}
+          onClick={() => select(id)}
+        >
+          <Icon size={18} aria-hidden="true" />
+          <span>{label}</span>
+        </button>
+      ))}
+      {open && !narrow && (
+        <button
+          type="button"
+          title="收起项目侧栏"
+          aria-label="收起项目侧栏"
+          onClick={close}
+        >
+          <PanelRightClose size={18} />
+        </button>
+      )}
+    </nav>
+  );
+  const body = <div className="project-context-body">{children}</div>;
+  if (narrow && open) {
+    return (
+      <Overlay
+        title="项目侧栏"
+        close={close}
+        mode="drawer"
+        className="project-context-overlay"
+      >
+        <div className="project-context">
+          {body}
+          {navigation}
+        </div>
+      </Overlay>
+    );
+  }
   return (
-    <Overlay
-      open={open}
-      title={title}
-      close={close}
-      mode="drawer"
-      modal={narrow}
-      className="project-panel"
-    >
-      <div className="project-panel-body">{children}</div>
-    </Overlay>
+    <aside className="project-context" aria-label="项目侧栏">
+      {open && body}
+      {navigation}
+    </aside>
   );
 }
 export function ConversationPane({ children }: { children: React.ReactNode }) {
   return (
     <section className="chat" aria-label="项目对话">
-      {children}
-    </section>
-  );
-}
-export function InspectorPane({
-  children,
-  close,
-}: {
-  children: React.ReactNode;
-  close: () => void;
-}) {
-  const pane = useRef<HTMLElement>(null);
-  const [width, setWidth] = useState<number | null>(() => {
-    const n = Number(localStorage.getItem("pwb.inspectorWidth"));
-    return n >= 360 ? n : null;
-  });
-  const [available, setAvailable] = useState(1100);
-  useEffect(() => {
-    const parent = pane.current?.parentElement;
-    if (!parent) return;
-    const update = () => setAvailable(parent.clientWidth);
-    const observer = new ResizeObserver(update);
-    observer.observe(parent);
-    const sidebar = parent.querySelector(".project-panel");
-    if (sidebar) observer.observe(sidebar);
-    update();
-    return () => observer.disconnect();
-  }, []);
-  const actual = Math.max(
-    360,
-    Math.min(width ?? available * 0.4, 640, available - 446),
-  );
-  const resize = (value: number) => {
-    const n = Math.max(360, Math.min(value, 640, available - 446));
-    setWidth(n);
-    localStorage.setItem("pwb.inspectorWidth", String(n));
-  };
-  return (
-    <section
-      ref={pane}
-      className="inspector editor-pane"
-      style={{ "--inspector-width": `${actual}px` } as React.CSSProperties}
-      aria-label="文档与详情"
-    >
-      <div
-        className="inspector-resize"
-        role="separator"
-        aria-label="调整详情宽度"
-        aria-orientation="vertical"
-        aria-valuemin={360}
-        aria-valuemax={Math.floor(
-          Math.max(360, Math.min(640, available - 446)),
-        )}
-        aria-valuenow={Math.floor(actual)}
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === "ArrowLeft") {
-            e.preventDefault();
-            resize(actual + 20);
-          }
-          if (e.key === "ArrowRight") {
-            e.preventDefault();
-            resize(actual - 20);
-          }
-        }}
-        onPointerDown={(e) => {
-          const el = e.currentTarget;
-          el.setPointerCapture(e.pointerId);
-          const x = e.clientX;
-          const initial = actual;
-          const move = (event: PointerEvent) =>
-            resize(initial + x - event.clientX);
-          const stop = () => {
-            el.removeEventListener("pointermove", move);
-            el.removeEventListener("pointerup", stop);
-            el.removeEventListener("pointercancel", stop);
-          };
-          el.addEventListener("pointermove", move);
-          el.addEventListener("pointerup", stop);
-          el.addEventListener("pointercancel", stop);
-        }}
-      />
-      <button className="inspector-back" onClick={close}>
-        <X size={16} />
-        关闭文档
-      </button>
       {children}
     </section>
   );

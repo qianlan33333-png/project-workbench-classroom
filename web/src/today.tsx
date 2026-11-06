@@ -70,7 +70,13 @@ export function TasksPanel({
   notify,
   openTasks,
   selectedId,
+  inlineDetail = false,
+  clearSelected,
+  editorChanged,
 }: {
+  inlineDetail?: boolean;
+  clearSelected?: () => void;
+  editorChanged?: (open: boolean) => void;
   selectedId?: string;
   projectId?: string;
   projects: Project[];
@@ -132,21 +138,26 @@ export function TasksPanel({
     if (selectedId)
       void api<Task>("/tasks/" + selectedId)
         .then((v) => {
-          if (alive) setViewing(v);
+          if (alive && (!projectId || v.projectId === projectId)) setViewing(v);
         })
         .catch((e) => notify(e.message));
     return () => {
       alive = false;
     };
-  }, [selectedId]);
+  }, [selectedId, projectId]);
   const editTask = (task: Partial<Task>) => {
     editBaseline.current = JSON.stringify(task);
     setEditing(task);
+    editorChanged?.(true);
   };
   const dirty = !!editing && JSON.stringify(editing) !== editBaseline.current;
   const editGuard = useSurfaceGuard(dirty);
+  const finishEditing = () => {
+    setEditing(null);
+    editorChanged?.(false);
+  };
   const closeEditing = () => {
-    if (!busy && editGuard()) setEditing(null);
+    if (!busy && editGuard()) finishEditing();
   };
   const viewed = tasks.find((t) => t.id === viewing?.id) || viewing;
 
@@ -209,70 +220,90 @@ export function TasksPanel({
       )}
     </article>
   );
-  return (
-    <div
-      className={`tasks-panel ${compact ? "compact" : ""} ${viewed && !compact ? "has-task-detail" : ""}`}
-    >
-      {!compact && (
-        <button
-          className="task-add"
-          onClick={() =>
-            editTask({
-              projectId: projectId || "personal-assistant",
-              title: "",
-              description: "",
-              state: "pending",
-            })
-          }
-        >
-          <Plus size={15} />
-          新增任务
-        </button>
-      )}
-      {!active.length && (
-        <p className="muted task-empty">
-          {compact ? "暂无安排" : "暂无未完成任务"}
+  const closeDetail = () => {
+    setViewing(null);
+    clearSelected?.();
+  };
+  const taskDetail = viewed && (
+    <>
+      <div className="task-detail-title">
+        <h3>{viewed.title}</h3>
+        <button onClick={() => editTask(viewed)}>编辑</button>
+      </div>
+      <p className="muted">
+        {projects.find((p) => p.id === viewed.projectId)?.name || "个人"} ·{" "}
+        {states[viewed.state]}
+      </p>
+      {(viewed.scheduledDate || viewed.dueDate) && (
+        <p className="task-detail-time">
+          {viewed.scheduledDate && "安排 " + viewed.scheduledDate}
+          {viewed.dueDate && " · 截止 " + viewed.dueDate}
         </p>
       )}
-      <div className="task-rows">{active.map(row)}</div>
-      {!!ended.length && (
-        <details className="tasks-ended">
-          <summary>已结束 · {ended.length}</summary>
-          {ended.map(row)}
-        </details>
+      <RichText text={viewed.description || "暂无说明"} />
+      {["pending", "in_progress"].includes(viewed.state) && (
+        <button
+          className="primary"
+          disabled={busy}
+          onClick={() => void start(viewed)}
+        >
+          {viewed.sessionId ? "继续处理" : "开始处理"}
+        </button>
       )}
-      {!compact && viewed && (
+    </>
+  );
+  return (
+    <div
+      className={`tasks-panel ${compact ? "compact" : ""} ${viewed && !compact && !inlineDetail ? "has-task-detail" : ""}`}
+    >
+      {inlineDetail && viewed ? (
+        <section className="project-record-detail" aria-label="任务详情">
+          <button className="panel-action" onClick={closeDetail}>
+            返回任务列表
+          </button>
+          {taskDetail}
+        </section>
+      ) : (
+        <>
+          {!compact && (
+            <button
+              className="task-add"
+              onClick={() =>
+                editTask({
+                  projectId: projectId || "personal-assistant",
+                  title: "",
+                  description: "",
+                  state: "pending",
+                })
+              }
+            >
+              <Plus size={15} />
+              新增任务
+            </button>
+          )}
+          {!active.length && (
+            <p className="muted task-empty">
+              {compact ? "暂无安排" : "暂无未完成任务"}
+            </p>
+          )}
+          <div className="task-rows">{active.map(row)}</div>
+          {!!ended.length && (
+            <details className="tasks-ended">
+              <summary>已结束 · {ended.length}</summary>
+              {ended.map(row)}
+            </details>
+          )}
+        </>
+      )}
+      {!compact && viewed && !inlineDetail && (
         <Overlay
           title="任务详情"
-          close={() => setViewing(null)}
+          close={closeDetail}
           mode="drawer"
           modal={narrow}
           className="task-detail-panel"
         >
-          <div className="task-detail-title">
-            <h3>{viewed.title}</h3>
-            <button onClick={() => editTask(viewed)}>编辑</button>
-          </div>
-          <p className="muted">
-            {projects.find((p) => p.id === viewed.projectId)?.name || "个人"} ·{" "}
-            {states[viewed.state]}
-          </p>
-          {(viewed.scheduledDate || viewed.dueDate) && (
-            <p className="task-detail-time">
-              {viewed.scheduledDate && "安排 " + viewed.scheduledDate}
-              {viewed.dueDate && " · 截止 " + viewed.dueDate}
-            </p>
-          )}
-          <RichText text={viewed.description || "暂无说明"} />
-          {["pending", "in_progress"].includes(viewed.state) && (
-            <button
-              className="primary"
-              disabled={busy}
-              onClick={() => void start(viewed)}
-            >
-              {viewed.sessionId ? "继续处理" : "开始处理"}
-            </button>
-          )}
+          {taskDetail}
         </Overlay>
       )}
       {editing && (
@@ -372,7 +403,7 @@ export function TasksPanel({
                     },
                     editing.id ? "PUT" : "POST",
                   );
-                  setEditing(null);
+                  finishEditing();
                 })
               }
             >
@@ -395,7 +426,7 @@ export function TasksPanel({
                         },
                         "PUT",
                       );
-                      setEditing(null);
+                      finishEditing();
                     })
                   }
                 >
@@ -404,7 +435,7 @@ export function TasksPanel({
                 <button
                   onClick={() => {
                     void start(editing as Task);
-                    setEditing(null);
+                    finishEditing();
                   }}
                 >
                   执行待办
@@ -414,7 +445,7 @@ export function TasksPanel({
                     <button
                       onClick={() => {
                         void start(editing as Task, true);
-                        setEditing(null);
+                        finishEditing();
                       }}
                     >
                       另开对话
@@ -430,7 +461,7 @@ export function TasksPanel({
                           undefined,
                           "DELETE",
                         );
-                        setEditing(null);
+                        finishEditing();
                         setViewing(null);
                       });
                   }}

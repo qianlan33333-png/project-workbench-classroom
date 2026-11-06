@@ -67,3 +67,11 @@ Initial finding: the new settings-entry used inconsistent child structure, pushi
 Rendered candidate evidence: `components-desktop.png`, `run-config-desktop.png`, `session-mobile.png` and `session-small-mobile.png` in the same directory. Existing source has no equivalent component form; these surfaces were checked for visual consistency and actual interaction rather than claimed pixel identity. Playwright passed fixed config save/run, scheduling/pause, async result, owner review parameters/confirmation and no page errors. 390×844 and 320×640 have no document horizontal overflow. Focused row/control text is readable in captures; no font or icon substitution was introduced. Browser acceptance uses fictional isolated API state, separate from real Harness/provider/MySQL acceptance.
 
 final result: passed
+
+## 项目右栏统一验收
+
+以用户提供的重复文件树截图和确认的四入口布局为对照。桌面 1440px 的资料和手机 390px 的全屏资料截图位于 `.var/sidebar-preview/`，同时实测了平板 900px。沿用现有字体、黑白灰配色、文件图标和分隔线。右边缘使用图标与文字区分四个入口，选中状态有可见底色。顶部重复入口与第二份文件树移除，面板窄化后输入框和返回操作可达。
+
+隔离浏览器验证了 32 次切换、迟到请求、跨项目草稿、未保存文件取消与放弃、任务编辑跨断点、规则详情和直达链接。控制台页面异常为零。
+
+final result: passed

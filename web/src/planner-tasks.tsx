@@ -278,6 +278,88 @@ export function TaskCenter({
     </section>
   );
 }
+export function ProjectSchedules({
+  projectId,
+  notify,
+  manage,
+}: {
+  projectId: string;
+  notify: (text: string) => void;
+  manage: (rule?: string) => void;
+}) {
+  const [rules, setRules] = useState<Rule[] | null>(null);
+  const [selected, setSelected] = useState("");
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const rows = await api<Rule[]>(
+          "/schedules?projectId=" + encodeURIComponent(projectId),
+        );
+        if (active) setRules(rows);
+      } catch (e) {
+        if (active) {
+          setRules((old) => old ?? []);
+          notify((e as Error).message);
+        }
+      }
+    };
+    void load();
+    const timer = setInterval(() => void load(), 7000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [projectId, notify]);
+  const rule = rules?.find((item) => item.id === selected);
+  const timing = (item: Rule) =>
+    !item.enabled
+      ? "已暂停"
+      : item.nextAt
+        ? "下次 " + stamp(item.nextAt)
+        : "已启用 · 无下一次";
+  return (
+    <div className="project-schedule-list">
+      {rule ? (
+        <section className="project-record-detail" aria-label="定时详情">
+          <button className="panel-action" onClick={() => setSelected("")}>
+            返回定时列表
+          </button>
+          <h3>{rule.name}</h3>
+          <p>{timing(rule)}</p>
+          {rule.pausedReason && <p className="muted">{rule.pausedReason}</p>}
+          <RichText text={rule.instruction} />
+          <button onClick={() => manage(rule.id)}>编辑规则与执行记录</button>
+        </section>
+      ) : (
+        <>
+          <button className="panel-action" onClick={() => manage()}>
+            管理本项目的 AI 任务
+          </button>
+          {!rules ? (
+            <p className="muted">加载定时任务…</p>
+          ) : (
+            !rules.length && <p className="muted">暂无定时任务</p>
+          )}
+          {rules?.map((item) => (
+            <button
+              className="project-schedule-row"
+              key={item.id}
+              onClick={() => setSelected(item.id)}
+            >
+              <Clock size={15} aria-hidden="true" />
+              <span>
+                <strong>{item.name}</strong>
+                <small>{timing(item)}</small>
+              </span>
+            </button>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 function Execution({ check }: { check: any }) {
   const [text, setText] = useState("");
   return (

@@ -147,6 +147,10 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
+		if task, ok := value.(taskCreation); ok && h.Config.PublicURL != "" {
+			task.URL = strings.TrimRight(h.Config.PublicURL, "/") + task.URL
+			value = task
+		}
 		json.NewEncoder(w).Encode(value)
 	})
 	go server.Serve(listener)

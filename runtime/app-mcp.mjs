@@ -62,6 +62,9 @@ const businessTools = [
 ];
 const sourceKinds=z.enum(["file","conversation","task"]);
 const personalTools = [
+ ...(process.env.PW_CREATE_TASK === "true" ? [["create_task",
+   "本人本轮明确要求时创建正式待处理任务。projectId 必须是查到的项目 ID，个人任务用 personal-assistant。quote 传本轮本人授权的原话。仅讨论时不调用，归属不清先询问。按工具回执报告任务链接。一次涉及多个项目时逐条调用。",
+   {projectId:z.string().min(1),title:z.string().min(1),description:z.string(),scheduledDate:z.string().optional(),dueDate:z.string().optional(),quote:z.string().min(2)}]] : []),
  ["list_followups","读取今天已保存的持续跟进及其版本、状态和完成条件。",{}],
  ["manage_followup","仅本人明确委托时保存持续跟进。创建提供固定key、title、goal、about；更新提供id和version。save记录进展，ask保存2–3项持久决策后结束本轮；review安排1分钟至30天内一次只读复查（at为Unix毫秒，每事项最多3次）；complete必须提供核实依据evidence，本轮成功结束才结案。不能修改项目正文，自动轮只能更新自身。",{id:z.string().optional(),version:z.number().int().optional(),key:z.string().optional(),title:z.string().optional(),goal:z.string().optional(),about:z.string().optional(),action:z.enum(["save","ask","review","complete"]),at:z.number().int().optional(),evidence:z.string().optional(),decision:z.object({question:z.string(),reason:z.string(),options:z.array(z.object({label:z.string(),tradeoff:z.string(),recommended:z.boolean()})).min(2).max(3)}).optional()}],
  ["run_global_cli","调用已安装和启用的全局 CLI，如飞书或 CRM。id 使用本轮目录中的工具 ID，args 是参数数组（不含命令名），可先查 --help。只在用户明确要求时执行外部写入。不绕过项目只读规则。exitCode 非零为失败。",{id:z.string().min(1),args:z.array(z.string()).max(256)}],

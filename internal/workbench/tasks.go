@@ -34,6 +34,10 @@ func validateTask(t ProjectTask) error {
 	return nil
 }
 func (s *Store) SaveTask(t ProjectTask) (ProjectTask, error) {
+	return s.saveTask(t, "")
+}
+
+func (s *Store) saveTask(t ProjectTask, activeRun string) (ProjectTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, e := s.Project(t.ProjectID)
@@ -74,7 +78,24 @@ func (s *Store) SaveTask(t ProjectTask) (ProjectTask, error) {
 		return t, e
 	}
 	t.UpdatedAt = now()
-	_, e = s.DB.Exec("INSERT INTO project_tasks VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", t.ID, t.ProjectID, t.Operation, encode(t))
+	if activeRun != "" {
+		// Stop records its marker before cancelling the worker. Bind the check to
+		// the insert so a late socket call cannot write after Stop has succeeded.
+		var result sql.Result
+		result, e = s.DB.Exec(`INSERT INTO project_tasks SELECT ?,?,?,? WHERE EXISTS
+			(SELECT 1 FROM runs r LEFT JOIN communication_roots c ON c.id=r.id
+			 WHERE r.id=? AND r.state='running' AND coalesce(c.cancelled,0)=0)`,
+			t.ID, t.ProjectID, t.Operation, encode(t), activeRun)
+		if e == nil {
+			var changed int64
+			changed, e = result.RowsAffected()
+			if e == nil && changed == 0 {
+				e = errors.New("执行已停止")
+			}
+		}
+	} else {
+		_, e = s.DB.Exec("INSERT INTO project_tasks VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", t.ID, t.ProjectID, t.Operation, encode(t))
+	}
 	if e == nil {
 		e = s.Emit("", "", "task.updated", t)
 	}
