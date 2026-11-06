@@ -4073,6 +4073,9 @@ button:focus-visible, a:focus-visible { outline-color: #737373; }
 .tool-components input[type=checkbox] { width: auto; }
 .session-components { padding: 8px 0; min-width: 0; }
 .component-result { margin: 10px 0; padding: 12px; border: 1px solid var(--line, #e5e7eb); border-radius: 10px; overflow-wrap: anywhere; }
+.component-result-summary { cursor: pointer; }
+.component-result-times { display: flex; flex-wrap: wrap; column-gap: 12px; row-gap: 2px; margin: 3px 0 0 16px; color: var(--muted, #666); font-size: 13px; }
+.component-result-times > span, .component-publication-count { white-space: nowrap; }
 .component-result pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
 @media (max-width: 600px) { .tool-components .setting-row { align-items: flex-start; flex-wrap: wrap; } .tool-components .tool-actions { flex-wrap: wrap; } }
 

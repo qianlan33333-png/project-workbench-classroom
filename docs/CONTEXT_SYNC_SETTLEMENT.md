@@ -17,3 +17,16 @@ flowchart TD
 范围只覆盖同步插件和已有任务的恢复；Session、定时、原数据源和发送链路不变。复用 MySQL/InnoDB 和 [Go 事务](https://go.dev/doc/database/execute-transactions)，不增加任务种类或部署依赖。
 
 验收：任务结果写入失败则发布回滚、旧代仍可用；清理失败仍可从原调用读取成功与实际人数；恢复旧任务时保持发布代及时间、不访问上游；没有发布证据的旧任务沿原规则恢复。只删除已结束的暂存代，保留当前、上一代和活动仍使用的记录。
+
+## Session 卡片
+
+```mermaid
+flowchart LR
+    A[打开 Session] --> B[查看动作、状态和调用时间]
+    B --> C{回执确认已发布？}
+    C -- 是 --> D[直接显示发布时间和人数]
+    C -- 否 --> E[显示当前状态或失败原因]
+    D --> F[按需展开原始结果]
+```
+
+参考 [GitHub Actions 运行历史](https://docs.github.com/en/actions/how-tos/monitoring-and-troubleshooting-workflows/monitoring-workflows/viewing-workflow-run-history) 的列表与详情分层，沿用工作台现有折叠卡。卡面区分同步、状态查询、配置读取和原系统读取，时间显示为北京时间。同步使用调用记录的发起时间和回执中的实际发布时间。状态查询使用查询发起时间，同时展示它查到的发布时间。历史记录缺少时间时只显示已有字段。验收覆盖折叠态、已恢复回执、未获授权提示和窄屏布局。

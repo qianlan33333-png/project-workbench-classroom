@@ -7,9 +7,46 @@ import { useSurfaceGuard } from "./surface-ui";
 type Action = { name: string; description: string; requiresOwner?:boolean; readOnly?:boolean };
 type Spec = { key?:string; version: string; actions: Action[]; statusAction?: string; lookupAction?: string; cancelAction?: string; ownerReviewAction?:string; ownerNotifyConnectionId?:string };
 type Plugin = { id: string; projectId: string; name: string; description: string; url: string; enabled: boolean; hasSecrets: boolean; component: Spec };
-type Call = { id: string; pluginId: string; name: string; version: string; action: string; state: string; summary: string; error?: string; result?: unknown; jobRef?: string; arguments?:unknown };
+type Call = { id: string; pluginId: string; name: string; version: string; action: string; state: string; summary: string; createdAt?: number; error?: string; result?: unknown; jobRef?: string; arguments?:unknown };
 const terminal = (s: string) => ["succeeded", "failed", "cancelled"].includes(s);
 const labels: Record<string, string> = { awaiting_owner:"待本人确认", ready:"待提交", submitting: "提交中", unknown: "需查回确认", queued: "排队中", running: "运行中", succeeded: "已完成", failed: "失败", cancelled: "已取消" };
+const callActionLabels: Record<string, string> = {
+  sync_contexts: "数据拉取与清洗",
+  status: "状态查询",
+  configuration: "配置读取",
+  legacy_read: "原系统读取",
+};
+const callTimeFormat = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai",
+  month: "long",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+const usersFormat = new Intl.NumberFormat("zh-CN");
+
+function callDate(value: unknown) {
+  if (typeof value !== "number" || value <= 0) return null;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function CallTime({ label, date }: { label: string; date: Date }) {
+  return <span>{label} <time dateTime={date.toISOString()} title="北京时间">{callTimeFormat.format(date)}</time></span>;
+}
+
+function publicationReceipt(call: Call) {
+  if (call.state !== "succeeded" || !["sync_contexts", "status"].includes(call.action)) return null;
+  const result = call.result as { published?: unknown; users?: unknown; published_at?: unknown } | null | undefined;
+  if (result?.published !== true) return null;
+  const users = result.users;
+  return {
+    users: typeof users === "number" && Number.isSafeInteger(users) && users >= 0 ? users : null,
+    date: callDate(result.published_at),
+  };
+}
 
 export function ToolComponents({ notify }: { notify: (s: string) => void }) {
   const [plugins, setPlugins] = useState<Plugin[]>([]), [projects, setProjects] = useState<Project[]>([]);
@@ -93,6 +130,32 @@ export function SessionComponents({ sessionId, projectId, notify }: { sessionId:
     <button onClick={() => setOpen(!open)} aria-expanded={open}>工具组件{calls.filter(c => !terminal(c.state)).length ? ` · ${calls.filter(c => !terminal(c.state)).length}项待完成` : ""}</button>
     {open && <div className="tool-form"><label>组件<select value={pluginId} onChange={e => { setPluginId(e.target.value); setAction(""); }}><option value="">选择组件</option>{plugins.filter(p => p.enabled !== false).map(p => <option key={p.id} value={p.id}>{p.name} · {p.component.version}</option>)}</select></label><label>动作<select value={action} onChange={e => setAction(e.target.value)}><option value="">选择动作</option>{plugin?.component.actions.map(a => <option key={a.name} value={a.name}>{a.description || a.name}</option>)}</select></label><label>参数（JSON）<textarea rows={3} value={input} onChange={e => setInput(e.target.value)} /></label><button disabled={busy || !pluginId || !action} onClick={() => void run()}>执行组件</button><p className="muted">专家也可在当前对话中通过 list_components 和 call_component 调用。</p></div>}
     {error && <p role="alert">{error}</p>}
-    {calls.map(c => <details key={c.id} className="component-result"><summary>{c.name} · {labels[c.state] || c.state} · {c.summary}</summary><p>{c.action} · {c.version}</p>{c.error && <p role="alert">{c.error}</p>}{c.state==='awaiting_owner'&&<><p>确认前请核对以下动作参数：</p><pre>{JSON.stringify(c.arguments,null,2)}</pre></>}{!terminal(c.state) && <div className="row">{c.state==='awaiting_owner'&&<button disabled={busy} onClick={()=>{if(window.confirm("确认按此任务保存的动作和参数执行？"))void api<Call>(`/component-calls/${c.id}/confirm`,{}).then(v=>setCalls(old=>old.map(x=>x.id===c.id?v:x))).catch(e=>setError(e.message))}}>本人确认执行</button>}<button disabled={busy} onClick={() => void refresh(c, false)}>刷新状态</button>{(c.state==='awaiting_owner'||c.state==='ready'||(c.jobRef&&plugins.find(p => p.id === c.pluginId)?.component.cancelAction)) && <button disabled={busy} onClick={() => { if (window.confirm("请求停止此组件任务？以组件返回结果为准。")) void refresh(c, true); }}>请求停止</button>}</div>}{c.result !== undefined && <pre>{JSON.stringify(c.result, null, 2)}</pre>}</details>)}
+    {calls.map(c => {
+      const created = callDate(c.createdAt);
+      const receipt = publicationReceipt(c);
+      const summary = c.summary.replace(/^(工具未完成：)?operation not granted$/, "此操作未获授权");
+      const details = c.result !== undefined && <pre>{JSON.stringify(c.result, null, 2)}</pre>;
+      return <details key={c.id} className="component-result">
+        <summary className="component-result-summary">
+          <strong>{callActionLabels[c.action] || c.name}</strong>
+          {" · "}{labels[c.state] || c.state}
+          {receipt && <> · <span className="component-publication-count">已发布{receipt.users === null ? "" : ` ${usersFormat.format(receipt.users)} 人`}</span></>}
+          {!receipt && summary && <> · {summary}</>}
+          {(created || receipt?.date) && <span className="component-result-times">
+            {created && <CallTime label={c.action === "status" ? "查询" : "发起"} date={created} />}
+            {receipt?.date && <CallTime label="发布" date={receipt.date} />}
+          </span>}
+        </summary>
+        <p>{c.name} · {c.action} · {c.version}</p>
+        {c.error && <p role="alert">{c.error}</p>}
+        {c.state==='awaiting_owner'&&<><p>确认前请核对以下动作参数：</p><pre>{JSON.stringify(c.arguments,null,2)}</pre></>}
+        {!terminal(c.state) && <div className="row">
+          {c.state==='awaiting_owner'&&<button disabled={busy} onClick={()=>{if(window.confirm("确认按此任务保存的动作和参数执行？"))void api<Call>(`/component-calls/${c.id}/confirm`,{}).then(v=>setCalls(old=>old.map(x=>x.id===c.id?v:x))).catch(e=>setError(e.message))}}>本人确认执行</button>}
+          <button disabled={busy} onClick={() => void refresh(c, false)}>刷新状态</button>
+          {(c.state==='awaiting_owner'||c.state==='ready'||(c.jobRef&&plugins.find(p => p.id === c.pluginId)?.component.cancelAction)) && <button disabled={busy} onClick={() => { if (window.confirm("请求停止此组件任务？以组件返回结果为准。")) void refresh(c, true); }}>请求停止</button>}
+        </div>}
+        {receipt ? <details><summary>原始结果</summary>{details}</details> : details}
+      </details>;
+    })}
   </section></>;
 }
