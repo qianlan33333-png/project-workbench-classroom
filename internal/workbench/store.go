@@ -27,6 +27,7 @@ type Store struct {
 	calendarWake       chan struct{}
 	calendarRunner     func(context.Context, CLITool, []string) ([]byte, error)
 	scheduleMu         sync.Mutex
+	workflowMu         sync.Mutex
 	stopScheduleRun    func(string) error
 	expertMu           sync.RWMutex
 	browsers           sync.Map // run ID -> browserEndpoint, only while its container is alive
@@ -95,7 +96,7 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(schema + projectHistorySchema + componentConfigSchema + componentSchema + componentReviewSchema + communicationSchema + ingressQueueSchema + runLeaseSchema + todaySchema + followupSchema + plannerSchema + calendarSyncSchema + gatewaySchema + crmSchema); err != nil {
+	if _, err := db.Exec(schema + projectHistorySchema + componentConfigSchema + componentSchema + componentReviewSchema + communicationSchema + ingressQueueSchema + runLeaseSchema + todaySchema + followupSchema + plannerSchema + calendarSyncSchema + gatewaySchema + crmSchema + workflowSchema); err != nil {
 		return nil, fmt.Errorf("数据库初始化: %w", err)
 	}
 	var version int

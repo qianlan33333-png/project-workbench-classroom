@@ -60,6 +60,7 @@ type Expert struct {
 	CreatedAt      int64    `json:"createdAt"`
 }
 type Incoming struct {
+	WorkflowID      string              `json:"workflowId,omitempty"`
 	ComponentConfig *ComponentRunConfig `json:"-"`
 	TaskID          string              `json:"taskId,omitempty"`
 	Capabilities    []CapabilityRef     `json:"capabilities,omitempty"`
@@ -100,6 +101,7 @@ type Candidate struct {
 	Label     string `json:"label"`
 }
 type Run struct {
+	WorkflowID              string              `json:"workflowId,omitempty"`
 	ComponentConfig         *ComponentRunConfig `json:"componentConfig,omitempty"`
 	NativeMessageID         string              `json:"nativeMessageId,omitempty"`
 	Agent                   *AgentMessage       `json:"agent,omitempty"`

@@ -119,7 +119,11 @@ func (h *Harness) startBridge(parent context.Context, in RuntimeInput) (func(), 
 			http.Error(w, "持续跟进本轮只能核对资料及更新自身事项，或事项已失效", 403)
 			return
 		}
-		if req.Tool == "read_message_attachment" && in.Project.ID == personalProjectID && !in.Routing {
+		if req.Tool == "read_workflow" && !in.Routing && in.Run.Gateway == nil && in.Run.FollowupID == "" {
+			value, err = h.Store.workflowTool(in, req.Args)
+		} else if req.Tool == "resume_workflow" && !in.Routing && in.Run.Gateway == nil && in.Run.FollowupID == "" {
+			value, err = h.Store.resumeWorkflowTool(r.Context(), in)
+		} else if req.Tool == "read_message_attachment" && in.Project.ID == personalProjectID && !in.Routing {
 			stdio.mu.Lock()
 			if stdio.closed {
 				stdio.mu.Unlock()

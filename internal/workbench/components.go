@@ -42,6 +42,8 @@ type ComponentAction struct {
 	Description   string `json:"description"`
 }
 type ComponentCall struct {
+	WorkflowID     string         `json:"workflowId,omitempty"`
+	RunID          string         `json:"runId,omitempty"`
 	ReviewRejected bool           `json:"reviewRejected,omitempty"`
 	OwnerConfirmed bool           `json:"ownerConfirmed,omitempty"`
 	Arguments      map[string]any `json:"arguments,omitempty"`
@@ -66,12 +68,15 @@ type ComponentCall struct {
 	UpdatedAt int64           `json:"updatedAt"`
 }
 type ComponentRequest struct {
-	Config         *ComponentRunConfig `json:"-"`
-	OwnerConfirmed bool                `json:"ownerConfirmed,omitempty"`
-	PluginID       string              `json:"pluginId"`
-	Action         string              `json:"action"`
-	Arguments      map[string]any      `json:"arguments"`
-	OperationKey   string              `json:"operationKey"`
+	ExpectedBinding string              `json:"-"`
+	WorkflowID      string              `json:"-"`
+	RunID           string              `json:"-"`
+	Config          *ComponentRunConfig `json:"-"`
+	OwnerConfirmed  bool                `json:"ownerConfirmed,omitempty"`
+	PluginID        string              `json:"pluginId"`
+	Action          string              `json:"action"`
+	Arguments       map[string]any      `json:"arguments"`
+	OperationKey    string              `json:"operationKey"`
 }
 
 func validateComponent(p Plugin) error {
@@ -228,6 +233,9 @@ func (s *Store) submitComponent(ctx context.Context, session string, q Component
 	if !componentActionAllowed(p, q.Action) {
 		return v, errors.New("此组件动作未授权")
 	}
+	if q.ExpectedBinding != "" && componentBinding(p) != q.ExpectedBinding {
+		return v, errors.New("组件授权或配置已变化")
+	}
 	needsOwner := false
 	for _, a := range p.Component.Actions {
 		if a.Name == q.Action && a.RequiresOwner && !q.OwnerConfirmed {
@@ -290,8 +298,18 @@ func (s *Store) submitComponent(ctx context.Context, session string, q Component
 		if !errors.Is(er, ErrNotFound) {
 			return er
 		}
+		if q.WorkflowID == "" && contains([]string{"sync_contexts", "activity_catalog"}, q.Action) {
+			var active int
+			if er = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE active_key=?)", ss.ProjectID+":"+q.Action).Scan(&active); er != nil {
+				return er
+			}
+			if active != 0 {
+				return errors.New("已有同类轮次在执行或待核，请在原轮次查回")
+			}
+		}
 
 		v = ComponentCall{Arguments: q.Arguments, ID: newID(), SessionID: session, ProjectID: ss.ProjectID, PluginID: p.ID, Name: p.Name, Version: p.Component.Version, Action: q.Action, OperationKey: q.OperationKey, InvocationKey: newID(), Binding: componentBinding(p), OwnerConfirmed: q.OwnerConfirmed, InputHash: fp, State: "submitting", Summary: "正在提交；响应不明时请查回原任务", CreatedAt: now(), UpdatedAt: now()}
+		v.WorkflowID, v.RunID = q.WorkflowID, q.RunID
 		if deferExecution {
 			v.State = "ready"
 		}
@@ -479,12 +497,21 @@ func (s *Store) pollComponents(ctx context.Context) {
 		}
 		attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if v.State == "ready" {
+			if v.WorkflowID != "" {
+				r, e := s.workflowRun(v.SessionID, v.WorkflowID)
+				if e != nil || r.State != "running" || r.Deadline <= now() {
+					cancel()
+					continue
+				}
+			}
 			_, p, er := s.componentPlugin(v.SessionID, v.PluginID)
 			if er == nil && componentBinding(p) == v.Binding {
 				old := v.UpdatedAt
 				v.State = "submitting"
 				v.UpdatedAt = max(now(), old+1)
-				res, er := s.DB.Exec("UPDATE component_calls SET state=?,updated_at=?,data=? WHERE id=? AND updated_at=? AND state='ready'", v.State, v.UpdatedAt, encode(v), v.ID, old)
+				res, er := s.DB.Exec(`UPDATE component_calls SET state=?,updated_at=?,data=? WHERE id=? AND updated_at=? AND state='ready'
+					AND (?='' OR EXISTS(SELECT 1 FROM workflow_runs WHERE id=? AND json_extract(data,'$.state')='running' AND json_extract(data,'$.deadline')>?))`,
+					v.State, v.UpdatedAt, encode(v), v.ID, old, v.WorkflowID, v.WorkflowID, now())
 				if er == nil {
 					n, _ := res.RowsAffected()
 					if n == 1 {
@@ -591,6 +618,7 @@ func (s *Store) componentTool(ctx context.Context, in RuntimeInput, tool string,
 			q.Arguments = in.Run.ComponentConfig.Arguments
 		}
 		q.OwnerConfirmed = false
+		q.RunID = in.Run.ID
 		q.OperationKey = in.Run.ID + ":" + q.OperationKey
 		return s.SubmitComponent(ctx, in.Session.ID, q.ComponentRequest)
 	}

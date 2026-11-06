@@ -2,12 +2,36 @@ package workbench
 
 import (
 	"errors"
+	"strconv"
+
 	"github.com/gin-gonic/gin"
 )
 
 func (a *API) mountComponents(g *gin.RouterGroup) {
 	a.mountProjectHistory(g)
 	s := a.Store
+	g.GET("/sessions/:id/workflows", func(c *gin.Context) {
+		before, _ := strconv.ParseInt(c.Query("before"), 10, 64)
+		v, e := s.workflowViews(c.Param("id"), before)
+		reply(c, v, e)
+	})
+	g.GET("/sessions/:id/workflows/:workflow/steps/:step/receipt", func(c *gin.Context) {
+		step, err := strconv.Atoi(c.Param("step"))
+		if err != nil {
+			reply(c, nil, ErrNotFound)
+			return
+		}
+		v, e := s.workflowReceipt(c.Param("id"), c.Param("workflow"), step)
+		reply(c, v, e)
+	})
+	g.POST("/sessions/:id/workflows/:workflow/resume", func(c *gin.Context) {
+		v, e := s.resumeWorkflow(c.Request.Context(), c.Param("id"), c.Param("workflow"))
+		reply(c, v, e)
+	})
+	g.POST("/sessions/:id/workflows/:workflow/retry-summary", func(c *gin.Context) {
+		v, e := s.retryWorkflowSummary(c.Param("id"), c.Param("workflow"))
+		reply(c, v, e)
+	})
 	g.GET("/sessions/:id/component-reviews", func(c *gin.Context) { v, e := s.ComponentReviews(c.Param("id")); reply(c, v, e) })
 	g.POST("/component-reviews/:id/approve", func(c *gin.Context) {
 		bind(c, func(q struct {

@@ -103,6 +103,12 @@ func (s *Store) Submit(in Incoming) (Message, error) {
 	}
 	if in.Source != "web" {
 		in.Capabilities = nil
+		in.WorkflowID = ""
+	}
+	if in.WorkflowID != "" {
+		if _, err := s.workflowRun(in.SessionID, in.WorkflowID); err != nil {
+			return Message{}, errors.New("工作轮次不在当前会话")
+		}
 	}
 	if in.Source == "wechat" || in.Source == "feishu" {
 		c, err := s.Connection(in.ConnectionID)
@@ -254,6 +260,12 @@ func (s *Store) queue(m Message, sessionID string, anchor string, explicit bool)
 		expertName = e.Name
 	}
 	run := Run{Agent: m.Agent, ExpertName: expertName, ID: newID(), ProjectID: p.ID, SessionID: sess.ID, MessageID: m.ID, EventID: m.Incoming.EventID, State: "queued", Source: m.Incoming.Source, Text: m.Incoming.Text, ExpertID: expert, ExpertDigest: version, ReplyAnchor: anchor, AnchorExplicit: explicit, CreatedAt: now()}
+	if m.Incoming.WorkflowID != "" {
+		if _, err := s.workflowRun(sess.ID, m.Incoming.WorkflowID); err != nil {
+			return m, errors.New("工作轮次不在当前会话")
+		}
+		run.WorkflowID = m.Incoming.WorkflowID
+	}
 	if run.Source == gatewaySource {
 		run.Gateway, err = s.gatewayRunMetadata(m)
 		if err != nil {

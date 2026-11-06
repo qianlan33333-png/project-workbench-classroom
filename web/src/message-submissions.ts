@@ -3,6 +3,7 @@ import { api, type Message, type Run, type Capability } from "./api";
 
 export type MessageInput = {
   taskId?:string;
+  workflowId?: string;
   capabilities?: Capability[];
   eventId: string;
   sessionId: string;

@@ -44,7 +44,7 @@ with tarfile.open(out, 'w:gz', compresslevel=3) as tar:
                (root/'vendor-src/deepseek-harness/native/system/packages/entry/src','native-src'),
                (root/'gateway-protocol-v1','gateway-protocol-v1'), (root/'gateway-protocol-v2','gateway-protocol-v2'),
                (root/'followup-protocol','followup-protocol'),
-               (root/'component-protocol','component-protocol'), (root/'planner-protocol','planner-protocol'), (root/'docs','docs'), (root/'scripts','scripts'), (root/'cli','cli'),
+               (root/'component-protocol','component-protocol'), (root/'workflow-protocol','workflow-protocol'), (root/'planner-protocol','planner-protocol'), (root/'docs','docs'), (root/'scripts','scripts'), (root/'cli','cli'),
                (node,'node'), (root/'README.md','README.md')]
     for source, destination in entries:
         tar.add(source, arcname=destination, filter=include)

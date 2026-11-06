@@ -485,7 +485,7 @@ func (a *API) mountCommunication(owner *gin.RouterGroup) {
 }
 func readOnlyCommunicationTool(tool string) bool {
 	switch tool {
-	case "read_component_results", "list_components", "call_component", "search_history", "read_run", "list_references", "read_reference", "project_contexts", "personal_memories", "find_project_sources", "read_project_source", "query_calendar", "list_session_targets", "send_session_message", "get_session_message":
+	case "read_component_results", "read_workflow", "list_components", "call_component", "search_history", "read_run", "list_references", "read_reference", "project_contexts", "personal_memories", "find_project_sources", "read_project_source", "query_calendar", "list_session_targets", "send_session_message", "get_session_message":
 		return true
 	}
 	return false

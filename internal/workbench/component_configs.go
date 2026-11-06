@@ -116,13 +116,30 @@ func (s *Store) fireComponentSchedule(ctx context.Context, observed Schedule, at
 	if e = s.validateComponentConfig(c); e != nil {
 		return receipt, e
 	}
-	v, e := s.submitComponent(ctx, c.SessionID, ComponentRequest{PluginID: c.PluginID, Action: c.Action, Arguments: c.Arguments, OperationKey: sc.ID + ":" + operation, Config: &c}, true)
+	source := "schedule"
+	if manual {
+		source = "manual"
+	}
+	atMillis := at.UnixMilli()
+	if !manual {
+		atMillis = sc.NextAt
+	}
+	w, managed, e := s.beginWorkflow(ctx, c, sc.ID+":"+operation, source, atMillis)
 	if e != nil {
 		return receipt, e
 	}
-	receipt.RunID = v.ID
-	receipt.Outcome = "queued"
-	receipt.Detail = "工具组件已排队，结果返回原会话"
+	if managed {
+		receipt.RunID, receipt.Outcome, receipt.Detail = w.ID, "queued", "工作轮次已登记"
+		if w.State == "skipped" {
+			receipt.Outcome, receipt.Detail = "skipped", w.Steps[0].Detail
+		}
+	} else {
+		v, e := s.submitComponent(ctx, c.SessionID, ComponentRequest{PluginID: c.PluginID, Action: c.Action, Arguments: c.Arguments, OperationKey: sc.ID + ":" + operation, Config: &c}, true)
+		if e != nil {
+			return receipt, e
+		}
+		receipt.RunID, receipt.Outcome, receipt.Detail = v.ID, "queued", "工具组件已排队，结果返回原会话"
+	}
 	// Advancing only after a durable intent makes retries recover the same invocation.
 	if !manual {
 		if e = sc.advance(at.UnixMilli()); e != nil {
@@ -176,6 +193,12 @@ func (s *Store) RunComponentConfig(ctx context.Context, session, key string) (an
 			return s.Route(ctx, m.ID, nil)
 		}
 		return m, nil
+	}
+	if w, managed, err := s.beginWorkflow(ctx, c, "manual:"+key, "manual", now()); managed || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		return s.workflowView(w), nil
 	}
 	return s.SubmitComponent(ctx, session, ComponentRequest{PluginID: c.PluginID, Action: c.Action, Arguments: c.Arguments, OperationKey: key, Config: &c})
 }

@@ -337,11 +337,68 @@ def prepare_component_worker(path):
                 db.execute(f"CREATE TRIGGER IF NOT EXISTS rollback_guard_component_{table}_{suffix} BEFORE {operation} ON {table} WHEN ({condition}) AND {live} BEGIN SELECT RAISE(ABORT,'component worker version required'); END")
 
 
+def prepare_workflow_worker(path):
+    db_path = DATA / 'workbench.sqlite'
+    if not db_path.exists():
+        return
+    marker = path / 'workflow-protocol'
+    supported = marker.is_file() and marker.read_text().strip() == '1'
+    with closing(sqlite3.connect(str(db_path), timeout=30)) as db, db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='workflow_runs'").fetchone():
+            return
+        triggers = ('schedule_insert', 'schedule_update', 'call_insert')
+        if supported:
+            for name in triggers:
+                db.execute('DROP TRIGGER IF EXISTS rollback_guard_workflow_' + name)
+            db.execute("""UPDATE runs SET state='queued',data=json_remove(json_set(data,'$.state','queued'),'$.workflowFrozen')
+                WHERE state='workflow_frozen' AND json_extract(data,'$.workflowFrozen')=1""")
+            db.execute("""UPDATE inbox SET state=json_extract(data,'$.workflowFrozen'),data=json_remove(
+                json_set(data,'$.state',json_extract(data,'$.workflowFrozen')),'$.workflowFrozen')
+                WHERE state='workflow_frozen' AND json_type(data,'$.workflowFrozen')='text'""")
+            db.execute("""UPDATE component_calls SET state=json_extract(data,'$.workflowFrozenState'),next_poll=0,
+                data=json_remove(json_set(data,'$.state',json_extract(data,'$.workflowFrozenState'),
+                '$.binding',json_extract(data,'$.workflowFrozenBinding')),'$.workflowFrozenState','$.workflowFrozenBinding')
+                WHERE state='workflow_frozen' AND json_type(data,'$.workflowFrozenState')='text'""")
+            db.execute("""UPDATE schedules SET enabled=1,data=json_remove(json_set(data,'$.enabled',json('true')),
+                '$.workflowFrozen','$.pausedReason') WHERE enabled=0 AND json_extract(data,'$.workflowFrozen')=1""")
+            return
+        run_scope = "coalesce(json_extract(data,'$.workflowId'),'')<>''"
+        if db.execute(f"SELECT 1 FROM runs WHERE {run_scope} AND state IN ('running','waiting','stopping')").fetchone():
+            raise RuntimeError('Workflow executors must finish cleanup before rollback')
+        db.execute(f"""UPDATE runs SET state='workflow_frozen',data=json_set(data,'$.state','workflow_frozen','$.workflowFrozen',1)
+            WHERE {run_scope} AND state='queued'""")
+        db.execute("""UPDATE inbox SET state='workflow_frozen',data=json_set(data,'$.state','workflow_frozen','$.workflowFrozen',state)
+            WHERE state IN ('queued','unrouted','routing') AND (coalesce(json_extract(data,'$.incoming.workflowId'),'')<>''
+                OR json_extract(data,'$.runId') IN (SELECT id FROM runs WHERE state='workflow_frozen'))""")
+        db.execute("""UPDATE component_calls SET state='workflow_frozen',data=json_set(data,'$.state','workflow_frozen',
+            '$.workflowFrozenState',state,'$.workflowFrozenBinding',json_extract(data,'$.binding'),'$.binding','')
+            WHERE coalesce(json_extract(data,'$.workflowId'),'')<>'' AND state IN ('ready','queued','running','unknown','submitting')""")
+        def scope(prefix):
+            return f"""coalesce(json_extract({prefix}data,'$.component.mode'),'')<>'expert'
+                AND json_extract({prefix}data,'$.component.action') IN ('sync_contexts','activity_catalog')
+                AND EXISTS(SELECT 1 FROM component_plugins p WHERE p.id=json_extract({prefix}data,'$.component.pluginId')
+                    AND json_extract(p.data,'$.component.key')='context.operations')"""
+        db.execute(f"""UPDATE schedules SET enabled=0,data=json_set(data,'$.enabled',json('false'),
+            '$.workflowFrozen',1,'$.pausedReason','旧版无法继续工作轮次，已暂停')
+            WHERE enabled=1 AND ({scope('schedules.')})""")
+        for suffix, operation in (('insert', 'INSERT'), ('update', 'UPDATE')):
+            condition = f"({scope('NEW.')})"
+            if suffix == 'update':
+                condition += f" OR ({scope('OLD.')})"
+            db.execute(f"""CREATE TRIGGER IF NOT EXISTS rollback_guard_workflow_schedule_{suffix} BEFORE {operation} ON schedules
+                WHEN NEW.enabled=1 AND ({condition}) BEGIN SELECT RAISE(ABORT,'workflow worker version required'); END""")
+        db.execute("""CREATE TRIGGER IF NOT EXISTS rollback_guard_workflow_call_insert BEFORE INSERT ON component_calls
+            WHEN EXISTS(SELECT 1 FROM workflow_runs w WHERE w.active_key=
+                json_extract(NEW.data,'$.projectId')||':'||json_extract(NEW.data,'$.action'))
+            BEGIN SELECT RAISE(ABORT,'existing workflow must be reconciled'); END""")
+
+
 def start(path, channels=True):
     prepare_gateway_worker(path)
     prepare_followup_worker(path)
     prepare_communication_worker(path)
     prepare_component_worker(path)
+    prepare_workflow_worker(path)
     point('current', path)
     set_runtime(path)
     run('systemctl', 'start', 'project-workbench')

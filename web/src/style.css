@@ -4081,3 +4081,16 @@ button:focus-visible, a:focus-visible { outline-color: #737373; }
 
 /* Batch review and retained history follow the existing plain workspace surface. */
 .component-reviews {margin:12px 0;min-width:0}.review-card {border:1px solid var(--border,#e5e5e5);border-radius:10px;padding:14px}.review-card summary {display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap;cursor:pointer}.review-card summary span {color:var(--muted,#666);font-size:13px}.review-preview {white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.review-preview {font-family:inherit;font-size:14px;line-height:1.7;max-height:360px;overflow:auto;background:var(--subtle,#fafafa);padding:12px;border-radius:6px}.review-card pre {max-width:100%;overflow:auto}.review-card .tool-actions {flex-wrap:wrap;gap:8px}
+
+.workflow-entry { margin: 12px 0; padding: 12px 14px; border: 1px solid var(--border, #e5e5e5); border-radius: 10px; min-width: 0; overflow-wrap: anywhere; }
+.workflow-entry summary { cursor: pointer; }
+.workflow-meta { display: block; color: var(--muted, #666); font-size: 13px; margin-top: 4px; }
+.workflow-entry > details > summary .workflow-meta { margin-inline-start: 16px; }
+.workflow-steps { padding-inline-start: 24px; }
+.workflow-steps > li { margin-top: 10px; }
+.workflow-steps p { margin: 4px 0; }
+.workflow-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.workflow-entry button { padding: 4px 8px; font-size: 13px; }
+.workflow-feedback { background: var(--subtle, #fafafa); }
+.workflow-feedback p { white-space: pre-wrap; }
+.chat-scroll:has(.workflow-entry, .component-result) .chat-welcome { display: none; }

@@ -7,7 +7,8 @@ import { useSurfaceGuard } from "./surface-ui";
 type Action = { name: string; description: string; requiresOwner?:boolean; readOnly?:boolean };
 type Spec = { key?:string; version: string; actions: Action[]; statusAction?: string; lookupAction?: string; cancelAction?: string; ownerReviewAction?:string; ownerNotifyConnectionId?:string };
 type Plugin = { id: string; projectId: string; name: string; description: string; url: string; enabled: boolean; hasSecrets: boolean; component: Spec };
-type Call = { id: string; pluginId: string; name: string; version: string; action: string; state: string; summary: string; createdAt?: number; error?: string; result?: unknown; jobRef?: string; arguments?:unknown };
+type Call = { id: string; pluginId: string; name: string; version: string; action: string; state: string; summary: string; createdAt?: number; error?: string; result?: unknown; jobRef?: string; arguments?:unknown; workflowId?: string; runId?: string; operationKey?: string };
+export type TimelineCall = { call: Call; card: React.ReactNode };
 const terminal = (s: string) => ["succeeded", "failed", "cancelled"].includes(s);
 const labels: Record<string, string> = { awaiting_owner:"待本人确认", ready:"待提交", submitting: "提交中", unknown: "需查回确认", queued: "排队中", running: "运行中", succeeded: "已完成", failed: "失败", cancelled: "已取消" };
 const callActionLabels: Record<string, string> = {
@@ -96,7 +97,7 @@ export function ToolComponents({ notify }: { notify: (s: string) => void }) {
   </section>;
 }
 
-export function SessionComponents({ sessionId, projectId, notify }: { sessionId: string; projectId: string; notify: (s: string) => void }) {
+export function SessionComponents({ sessionId, projectId, notify, children }: { sessionId: string; projectId: string; notify: (s: string) => void; children: (cards: TimelineCall[]) => React.ReactNode }) {
   const [plugins, setPlugins] = useState<Plugin[]>([]), [calls, setCalls] = useState<Call[]>([]), [open, setOpen] = useState(false);
   const [pluginId, setPluginId] = useState(""), [action, setAction] = useState(""), [input, setInput] = useState("{}"), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const operation = useRef(crypto.randomUUID()), epoch = useRef(0);
@@ -124,18 +125,18 @@ export function SessionComponents({ sessionId, projectId, notify }: { sessionId:
     try { const updated = await api<Call>(`/component-calls/${c.id}/${cancel ? "cancel" : "refresh"}`, {}); if (n === epoch.current) setCalls(old => old.map(x => x.id === c.id ? updated : x)); }
     catch (e) { if (n === epoch.current) setError((e as Error).message); } finally { if (n === epoch.current) setBusy(false); }
   };
-  if (!plugins.length && !calls.length && !error) return <ComponentReviews sessionId={sessionId} notify={notify}/>;
-  return <><ComponentReviews sessionId={sessionId} notify={notify}/><section className="session-components">
+  return <><ComponentReviews sessionId={sessionId} notify={notify}/>{(plugins.length > 0 || calls.length > 0 || error) && <section className="session-components">
     <ComponentRunConfiguration sessionId={sessionId} projectId={projectId} plugins={plugins} notify={notify}/>
     <button onClick={() => setOpen(!open)} aria-expanded={open}>工具组件{calls.filter(c => !terminal(c.state)).length ? ` · ${calls.filter(c => !terminal(c.state)).length}项待完成` : ""}</button>
     {open && <div className="tool-form"><label>组件<select value={pluginId} onChange={e => { setPluginId(e.target.value); setAction(""); }}><option value="">选择组件</option>{plugins.filter(p => p.enabled !== false).map(p => <option key={p.id} value={p.id}>{p.name} · {p.component.version}</option>)}</select></label><label>动作<select value={action} onChange={e => setAction(e.target.value)}><option value="">选择动作</option>{plugin?.component.actions.map(a => <option key={a.name} value={a.name}>{a.description || a.name}</option>)}</select></label><label>参数（JSON）<textarea rows={3} value={input} onChange={e => setInput(e.target.value)} /></label><button disabled={busy || !pluginId || !action} onClick={() => void run()}>执行组件</button><p className="muted">专家也可在当前对话中通过 list_components 和 call_component 调用。</p></div>}
     {error && <p role="alert">{error}</p>}
-    {calls.map(c => {
+  </section>}
+    {children(calls.map(c => {
       const created = callDate(c.createdAt);
       const receipt = publicationReceipt(c);
       const summary = c.summary.replace(/^(工具未完成：)?operation not granted$/, "此操作未获授权");
       const details = c.result !== undefined && <pre>{JSON.stringify(c.result, null, 2)}</pre>;
-      return <details key={c.id} className="component-result">
+      return {call:c, card:<details key={c.id} className="component-result">
         <summary className="component-result-summary">
           <strong>{callActionLabels[c.action] || c.name}</strong>
           {" · "}{labels[c.state] || c.state}
@@ -155,7 +156,7 @@ export function SessionComponents({ sessionId, projectId, notify }: { sessionId:
           {(c.state==='awaiting_owner'||c.state==='ready'||(c.jobRef&&plugins.find(p => p.id === c.pluginId)?.component.cancelAction)) && <button disabled={busy} onClick={() => { if (window.confirm("请求停止此组件任务？以组件返回结果为准。")) void refresh(c, true); }}>请求停止</button>}
         </div>}
         {receipt ? <details><summary>原始结果</summary>{details}</details> : details}
-      </details>;
-    })}
-  </section></>;
+      </details>};
+    }))}
+  </>;
 }

@@ -147,6 +147,7 @@ func (w *Worker) Start(ctx context.Context) {
 		defer ticker.Stop()
 		for ctx.Err() == nil {
 			_ = w.Store.fireDueSchedules(ctx, time.Now())
+			w.Store.pollWorkflows(ctx)
 			w.Store.dispatchDecisions()
 			select {
 			case <-ctx.Done():
@@ -378,6 +379,10 @@ func (w *Worker) execute(parent context.Context, r Run) {
 		w.executeArchive(ctx, r)
 		return
 	}
+	if r.Kind == workflowSummaryKind {
+		w.executeWorkflowSummary(ctx, r)
+		return
+	}
 	s := w.Store
 	_ = s.Emit(r.SessionID, r.ID, "run.updated", r)
 	var err error
@@ -498,6 +503,11 @@ func (w *Worker) execute(parent context.Context, r Run) {
 			}
 			if r.Gateway != nil && !s.gatewayRunLive(r) {
 				err = errors.New("客户会话已暂停或绑定已变更")
+			}
+			if err == nil && r.WorkflowID != "" {
+				var evidence string
+				evidence, err = s.workflowPrompt(r)
+				in.Prompt = evidence + in.Prompt
 			}
 			if err == nil {
 				result, err = w.Executor.Execute(ctx, in, hooks)

@@ -72,7 +72,8 @@ func sessionIdle(tx *sql.Tx, id string) error {
  (SELECT count(*) FROM inbox WHERE (session_id=? OR json_extract(data,'$.incoming.sessionId')=?) AND state IN ('unrouted','clarify'))+
  (SELECT count(*) FROM deliveries WHERE json_extract(data,'$.sessionId')=? AND state='sending')+
  (SELECT count(*) FROM component_calls WHERE session_id=? AND state NOT IN ('succeeded','failed','cancelled'))+
- (SELECT count(*) FROM component_reviews WHERE session_id=? AND state IN ('awaiting_owner','approved','dispatching','unknown'))`, id, id, id, id, id, id).Scan(&n)
+ (SELECT count(*) FROM component_reviews WHERE session_id=? AND state IN ('awaiting_owner','approved','dispatching','unknown'))+
+ (SELECT count(*) FROM workflow_runs WHERE session_id=? AND active_key IS NOT NULL)`, id, id, id, id, id, id, id).Scan(&n)
 	if e != nil {
 		return e
 	}

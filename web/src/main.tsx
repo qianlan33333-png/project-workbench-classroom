@@ -1,4 +1,5 @@
 import { ToolComponents, SessionComponents } from "./tool-components";
+import { WorkflowConversation, type Workflow } from "./workflow-conversation";
 import { CommunicationFeed, AgentOrigin } from "./session-communication";
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
@@ -299,6 +300,10 @@ function App() {
   const fileRequest = useRef(0);
   const expertGuard = useRef<(() => Promise<boolean>) | null>(null);
   const historyCursors = useRef<Record<string, string>>({});
+  const [workflowQuote, setWorkflowQuote] = useState<{sessionId: string; work: Workflow} | null>(null);
+  const activeQuote = workflowQuote?.sessionId === sessionId ? workflowQuote.work : null;
+  const chatPinned = useRef(true);
+  const scrollSession = useRef("");
   const chatEnd = useRef<HTMLDivElement>(null),
     projectRef = useRef(projectId),
     sessionRef = useRef(sessionId),
@@ -518,7 +523,11 @@ function App() {
     });
   }, [sessionId, auth, act]);
   useEffect(() => {
-    chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (scrollSession.current !== sessionId) {
+      scrollSession.current = sessionId;
+      chatPinned.current = true;
+    }
+    if (chatPinned.current) chatEnd.current?.scrollIntoView({ block: "end" });
   }, [sessionId, runs.length, events.length, submissions.items.length]);
   useEffect(() => {
     if (!toast) return;
@@ -945,12 +954,14 @@ function App() {
         attachments,
         references,
         capabilities,
+        workflowId: activeQuote?.id,
       })
     ) {
       setText("");
       setAttachments([]);
       setReferences([]);
       setCapabilities([]);
+      setWorkflowQuote(null);
     }
   };
   const versions = async () => {
@@ -1518,7 +1529,10 @@ function App() {
                   </ActionMenu>
                 </div>
               </header>
-              <div className="chat-scroll">
+              <div className="chat-scroll" onScroll={e => {
+                const el = e.currentTarget;
+                chatPinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+              }}>
                 {sessionRuns.length === 0 &&
                   pendingSubmissions.length === 0 && (
                     <div className="chat-welcome">
@@ -1578,10 +1592,19 @@ function App() {
                   sessionId={sessionId}
                   projectId={project!.id}
                   notify={notify}
-                />
-                {sessionRuns
-                  .filter((r) => r.kind !== "component_notice")
-                  .map((r) => (
+                >{cards => <WorkflowConversation
+                  sessionId={sessionId}
+                  cards={cards}
+                  runs={sessionRuns}
+                  notify={notify}
+                  followTail={() => {
+                    if (chatPinned.current) chatEnd.current?.scrollIntoView({block:"end"});
+                  }}
+                  quote={work => {
+                    setWorkflowQuote({sessionId, work});
+                    chatEnd.current?.parentElement?.parentElement?.querySelector("textarea")?.focus();
+                  }}
+                  renderRun={(r, tools) => (
                     <article
                       className="turn"
                       key={r.id}
@@ -1672,6 +1695,7 @@ function App() {
                             onFile={(p) => act(() => openLinkedFile(p))}
                           />
                         )}{" "}
+                        {tools}
                         {!r.result && r.state === "running" && (
                           <p className="thinking">
                             {activity.some(
@@ -1735,7 +1759,8 @@ function App() {
                           ))}
                       </div>
                     </article>
-                  ))}
+                  )}
+                />}</SessionComponents>
                 {pendingSubmissions.map((v) => (
                   <article
                     className="turn pending-turn"
@@ -1809,6 +1834,11 @@ function App() {
               </div>
               <div className="composer-wrap">
                 <div className="composer">
+                  {activeQuote && <div className="attachment-chips">
+                    <button type="button" onClick={() => setWorkflowQuote(null)} aria-label="移除工作轮次引用">
+                      引用：{activeQuote.name} · {stamp(activeQuote.at)} ×
+                    </button>
+                  </div>}
                   {references.length > 0 && (
                     <div className="attachment-chips">
                       {references.map((r, i) => (
