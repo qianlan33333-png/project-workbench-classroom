@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -38,18 +39,6 @@ func (s *Server) syncContexts(ctx context.Context, j job) (any, error) {
 			return nil, errors.New("清洗规则版本未安装，不能只改标签代替规则")
 		}
 	}
-	res, e := s.sourceRequest(ctx, "GET", s.Config.SourcePath, nil)
-	if e != nil {
-		return nil, e
-	}
-	defer res.Body.Close()
-	sourceDigest := sha256.New()
-	decoder := json.NewDecoder(io.TeeReader(io.LimitReader(res.Body, 256<<20), sourceDigest))
-	decoder.UseNumber()
-	first, e := decoder.Token()
-	if e != nil || first != json.Delim('{') {
-		return nil, errors.New("source snapshot must be an object")
-	}
 	metadata := map[string]any{}
 	aliases := map[string]string{}
 	generation := j.ID
@@ -73,8 +62,22 @@ func (s *Server) syncContexts(ctx context.Context, j job) (any, error) {
 		return nil, e
 	}
 	if current == generation || previous == generation {
+		e = settlePublishedSync(ctx, check, generation, time.Now().UnixMilli())
+		if e != nil {
+			check.Rollback()
+			return nil, e
+		}
+		return nil, check.Commit()
+	}
+	var pinned bool
+	e = check.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_activities
+		WHERE generation=? AND state NOT IN ('sent','completed_with_failures','cancelled'))`, generation).Scan(&pinned)
+	if e != nil || pinned {
 		check.Rollback()
-		return map[string]any{"generation": generation, "already_published": true, "published": true}, nil
+		if e != nil {
+			return nil, e
+		}
+		return nil, errors.New("existing context generation is pinned by an unfinished activity")
 	}
 	if _, e = check.ExecContext(ctx, "DELETE FROM context_records WHERE generation=?", generation); e != nil {
 		check.Rollback()
@@ -82,6 +85,18 @@ func (s *Server) syncContexts(ctx context.Context, j job) (any, error) {
 	}
 	if e = check.Commit(); e != nil {
 		return nil, e
+	}
+	res, e := s.sourceRequest(ctx, "GET", s.Config.SourcePath, nil)
+	if e != nil {
+		return nil, e
+	}
+	defer res.Body.Close()
+	sourceDigest := sha256.New()
+	decoder := json.NewDecoder(io.TeeReader(io.LimitReader(res.Body, 256<<20), sourceDigest))
+	decoder.UseNumber()
+	first, e := decoder.Token()
+	if e != nil || first != json.Delim('{') {
+		return nil, errors.New("source snapshot must be an object")
 	}
 	var tx *sql.Tx
 	var stmt *sql.Stmt
@@ -229,9 +244,6 @@ func (s *Server) syncContexts(ctx context.Context, j job) (any, error) {
 	if oldCount > 0 && count*100 < oldCount*80 {
 		return nil, errors.New("source count dropped more than20%; old publication retained")
 	}
-	if s.cancelled(ctx, j.ID) {
-		return nil, errors.New("cancelled before publication")
-	}
 	var epoch int64
 	var cancelled bool
 	var jobState string
@@ -269,14 +281,103 @@ func (s *Server) syncContexts(ctx context.Context, j job) (any, error) {
 	if e != nil {
 		return nil, e
 	}
+	result := map[string]any{"published": true, "generation": generation, "previous_generation": old, "users": count, "previous_users": oldCount, "source_metadata": metadata, "published_at": now}
+	updated, e := tx.ExecContext(ctx, `UPDATE plugin_jobs SET state='succeeded',result_json=?,error_text=NULL,updated_at=?,available_at=0 WHERE id=? AND state='running' AND lease_epoch=?`, encode(result), now, j.ID, s.epoch)
+	if e != nil {
+		return nil, fmt.Errorf("persist publication result: %w", e)
+	}
+	if n, e := updated.RowsAffected(); e != nil || n != 1 {
+		return nil, errors.New("publication job did not settle")
+	}
 	if e = tx.Commit(); e != nil {
 		return nil, e
 	}
 	tx = nil
-	// Keep current/previous snapshots; failed unpublished builds are retained until next successful run.
-	s.DB.ExecContext(ctx, "DELETE FROM context_records WHERE generation NOT IN (SELECT generation FROM context_state UNION SELECT previous_generation FROM context_state UNION SELECT generation FROM plugin_activities WHERE state NOT IN ('sent','completed_with_failures','cancelled')) AND generation IN(SELECT id FROM plugin_jobs WHERE state IN ('succeeded','failed','cancelled'))")
-	s.DB.ExecContext(ctx, "DELETE FROM context_aliases WHERE generation NOT IN(SELECT generation FROM context_state UNION SELECT previous_generation FROM context_state) AND generation IN(SELECT id FROM plugin_jobs WHERE state IN ('succeeded','failed','cancelled'))")
-	return map[string]any{"published": true, "generation": generation, "previous_generation": old, "users": count, "previous_users": oldCount, "source_metadata": metadata, "published_at": now}, nil
+	return result, nil
+}
+
+func settlePublishedSync(ctx context.Context, tx *sql.Tx, id string, now int64) error {
+	_, err := tx.ExecContext(ctx, `UPDATE plugin_jobs j JOIN context_state c
+		ON c.dataset='users' AND j.id IN (c.generation,c.previous_generation)
+		SET j.state='succeeded',j.error_text=NULL,j.updated_at=?,j.available_at=0,
+		j.result_json=CASE WHEN j.id=c.generation THEN JSON_OBJECT(
+			'published',TRUE,'already_published',TRUE,'generation',j.id,'users',c.record_count,
+			'previous_generation',c.previous_generation,'published_at',c.published_at,'source_metadata',c.source_json)
+		ELSE JSON_OBJECT('published',TRUE,'already_published',TRUE,'generation',j.id,
+			'users',(SELECT COUNT(*) FROM context_records r WHERE r.generation=j.id)) END
+		WHERE j.id=? AND j.kind='sync_contexts' AND j.state IN ('queued','running','failed','cancelled')`, now, id)
+	return err
+}
+
+func recoverPublishedSyncs(ctx context.Context, tx *sql.Tx, now int64) error {
+	var current, previous string
+	err := tx.QueryRowContext(ctx, "SELECT generation,previous_generation FROM context_state WHERE dataset='users' FOR UPDATE").Scan(&current, &previous)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, id := range []string{current, previous} {
+		if id != "" {
+			if err = settlePublishedSync(ctx, tx, id, now); err != nil {
+				return fmt.Errorf("reconcile published context job %s: %w", id, err)
+			}
+		}
+	}
+	return nil
+}
+
+// Reclaim old staging data without coupling it to publication or holding a
+// single large delete open. Recheck the pins on every committed batch.
+func (s *Server) pruneContexts(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+	defer cancel()
+	for _, table := range []string{"context_records", "context_aliases"} {
+		if err := s.pruneContextTable(ctx, table); err != nil && parent.Err() == nil {
+			log.Printf("tool plugin context cleanup (%s): %v", table, err)
+		}
+	}
+}
+
+func (s *Server) pruneContextTable(ctx context.Context, table string) error {
+	rows, err := s.DB.QueryContext(ctx, "SELECT DISTINCT generation FROM "+table)
+	if err != nil {
+		return err
+	}
+	var generations []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		generations = append(generations, id)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range generations {
+		for {
+			deleted, err := s.DB.ExecContext(ctx, "DELETE FROM "+table+` WHERE generation=?
+				AND EXISTS(SELECT 1 FROM plugin_jobs WHERE id=? AND state IN ('succeeded','failed','cancelled'))
+				AND NOT EXISTS(SELECT 1 FROM context_state WHERE generation=? OR previous_generation=?)
+				AND NOT EXISTS(SELECT 1 FROM plugin_activities WHERE generation=? AND state NOT IN ('sent','completed_with_failures','cancelled'))
+				LIMIT 500`, id, id, id, id, id)
+			if err != nil {
+				return err
+			}
+			n, err := deleted.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if n < 500 {
+				break
+			}
+		}
+	}
+	return nil
 }
 func (s *Server) query(ctx context.Context, a map[string]any) (any, error) {
 	var generation, metadata string

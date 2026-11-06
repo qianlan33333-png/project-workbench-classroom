@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -280,11 +281,10 @@ func (s *Server) Run(ctx context.Context) {
 		return
 	}
 	defer conn.ExecContext(context.Background(), "DO RELEASE_LOCK(?)", "plugin-worker:"+s.namespace)
-	s.DB.ExecContext(ctx, "INSERT INTO plugin_worker_epoch VALUES(1,1) ON DUPLICATE KEY UPDATE epoch=epoch+1")
-	if s.DB.QueryRowContext(ctx, "SELECT epoch FROM plugin_worker_epoch WHERE id=1").Scan(&s.epoch) != nil {
+	if e = s.recoverInterruptedJobs(ctx); e != nil {
+		log.Printf("tool plugin worker recovery: %v", e)
 		return
 	}
-	s.DB.ExecContext(ctx, `UPDATE plugin_jobs SET state=CASE WHEN kind='legacy_action' THEN 'unknown' ELSE 'queued' END,updated_at=? WHERE state='running'`, time.Now().UnixMilli())
 	s.active.Store(true)
 	defer s.active.Store(false)
 	ticker := time.NewTicker(time.Second)
@@ -301,7 +301,7 @@ func (s *Server) Run(ctx context.Context) {
 		if s.DB.QueryRowContext(ctx, "SELECT epoch FROM plugin_worker_epoch WHERE id=1").Scan(&actual) != nil || actual != s.epoch {
 			return
 		}
-		j, e := scanJob(s.DB.QueryRowContext(ctx, jobSelect+` WHERE state='queued' AND available_at<=? ORDER BY (kind='sync_contexts') DESC,updated_at LIMIT 1`, time.Now().UnixMilli()))
+		j, e := scanJob(s.DB.QueryRowContext(ctx, jobSelect+` WHERE state='queued' AND cancel_requested=FALSE AND available_at<=? ORDER BY (kind='sync_contexts') DESC,updated_at LIMIT 1`, time.Now().UnixMilli()))
 		if e == nil {
 			s.execute(ctx, j)
 			continue
@@ -314,6 +314,40 @@ func (s *Server) Run(ctx context.Context) {
 		}
 	}
 }
+
+func (s *Server) recoverInterruptedJobs(ctx context.Context) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "INSERT INTO plugin_worker_epoch VALUES(1,1) ON DUPLICATE KEY UPDATE epoch=epoch+1"); err != nil {
+		return err
+	}
+	var epoch int64
+	if err = tx.QueryRowContext(ctx, "SELECT epoch FROM plugin_worker_epoch WHERE id=1").Scan(&epoch); err != nil {
+		return err
+	}
+	now := time.Now().UnixMilli()
+	// Reconcile legacy split commits before recovering the queue. Only a job's
+	// own generation in the publication pointer proves it was published.
+	if err = recoverPublishedSyncs(ctx, tx, now); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE plugin_jobs SET state=CASE
+		WHEN kind='legacy_action' AND state='running' THEN 'unknown'
+		WHEN kind='activity_dispatch' AND cancel_requested THEN 'unknown'
+		WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END,updated_at=?
+		WHERE state='running' OR (state='queued' AND cancel_requested)`, now); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.epoch = epoch
+	return nil
+}
+
 func (s *Server) execute(parent context.Context, j job) {
 	tx, er := s.DB.BeginTx(parent, nil)
 	if er != nil {
@@ -355,6 +389,11 @@ func (s *Server) execute(parent context.Context, j job) {
 			e = errors.New("original grant removed")
 		} else {
 			result, e = s.syncContexts(parent, j)
+			if e == nil {
+				// The publication transaction already persisted the result.
+				s.pruneContexts(parent)
+				return
+			}
 		}
 	case "batch_generate":
 		result, e = s.generateBatch(parent, j)
@@ -398,16 +437,16 @@ func (s *Server) execute(parent context.Context, j job) {
 		state = "queued"
 		message = "执行器停止，下次继续"
 	}
-	published := false
-	if m, ok := result.(map[string]any); ok {
-		published, _ = m["published"].(bool)
-	}
-	if s.cancelled(context.Background(), j.ID) && j.Kind != "legacy_action" && !published {
+	if s.cancelled(context.Background(), j.ID) && j.Kind != "legacy_action" {
 		state = "cancelled"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	s.DB.ExecContext(ctx, `UPDATE plugin_jobs SET state=?,result_json=?,error_text=?,updated_at=?,available_at=? WHERE id=? AND lease_epoch=? AND EXISTS(SELECT 1 FROM plugin_worker_epoch WHERE id=1 AND epoch=?)`, state, encode(result), message, time.Now().UnixMilli(), availableAt, j.ID, s.epoch, s.epoch)
+	// If a publication committed but its acknowledgement was lost, its
+	// completed row must not be overwritten by this error path.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE plugin_jobs SET state=?,result_json=?,error_text=?,updated_at=?,available_at=? WHERE id=? AND state='running' AND lease_epoch=? AND EXISTS(SELECT 1 FROM plugin_worker_epoch WHERE id=1 AND epoch=?)`, state, encode(result), message, time.Now().UnixMilli(), availableAt, j.ID, s.epoch, s.epoch); err != nil {
+		log.Printf("tool plugin job %s (%s) settlement: %v", j.ID, j.Kind, err)
+	}
 }
 func (s *Server) batchResults(ctx context.Context, g Grant, a map[string]any) (any, error) {
 	j, e := scanJob(s.DB.QueryRowContext(ctx, jobSelect+` WHERE id=? AND project_id=? AND session_id=?`, taskRef(a), g.ProjectID, str(a, "session_id")))
