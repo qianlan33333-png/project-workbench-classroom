@@ -1,5 +1,7 @@
 # 个人工作台
 
+正式入口：[个人工作台](https://dsh.qianlan333.cloud)。当前版本 `native-20261108-01`。
+
 官方 Harness 管对话，Temporal 管执行，MySQL 管资源与业务事实。保留“今日”Personal Agent；项目通过允许列表引用自有/共享资源，专家 Skill 使用标准 MCP 工具。
 
 ```mermaid
@@ -14,6 +16,7 @@ flowchart LR
   W --> U
 ```
 
+- [使用与配置](native/docs/QUICKSTART.md)
 - [架构与 PRD](docs/plans/2026-11-07-native-workbench-prd.md)
 - [通用工具和 Skill 开发规范](native/docs/EXTENSIONS.md)
 - [当前实现与验收边界](docs/IMPLEMENTATION.md)
