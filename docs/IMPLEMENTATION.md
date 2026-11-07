@@ -416,8 +416,14 @@ Session 工具卡在折叠态显示动作、状态和北京时间，发布回执
 
 固定native-retire入口已完成：删除旧工作台两版、旧workbench_context库、旧数据目录/插件与镜像eb217999…，保留独立服务仍使用的6bfaebd5…镜像。首次新架构没有兼容的previous，旧代仅保留本机备份；以后继续同一current/previous与锁轮转。`.deploying`及迁移门禁已清除，四个新服务持续active。临时构建/候选与云端迁移备份在本机证明核对、无活跃引用后清理，不留第三个稳定环境。没有GitHub推送。
 
-## 2026-11-08 review-agent 完整复查与修复（发布准备）
+## 2026-11-08 review-agent 完整复查与修复（已上线）
 
 完整复查范围 e49c6d8..a244d34，共477条变更路径，确认并修复五项：提交前后台消费、固定回滚入口缺验收路径、常规清理遗漏rootless容器依赖、项目页漏维护资源、memory_save返回旧版本。修复计划见 `docs/plans/2026-11-08-review-release-hardening.md`。
 
 API启动与后台就绪分开；Worker只在部署提交且渠道就绪后消费。停止先收拢Worker再停依赖；待渠道的消息通过Temporal Timer继续原编号，unknown仅查回执，长活动保留心跳。真实独立MySQL/Temporal加实际Worker进程验证提交前零消费、等待时重启、放行后只发送一次，12.23秒；模型/渠道均为合成夹具，无客户消息。真实MCP未知发送核回、本人决定跨重启与6条合成手机确认回执通过，66.57秒。Go/vet、Node12项、发布控制器16项通过；真实MySQL core/api通过，含记忆1/2/3版本接续。Product Design桌面/390px验证见design-qa.md。
+
+最终产品修复与一次性发布操作脚本独立复审均为No findings。交付源码 `4bfb5d02a355eccea371c06daf70ccef09b9e2fc`，Linux制品SHA256为 `077e94632f3366a41e3463fd8796a02769d5e33ac42ba053d2f7a0a612560d48`，清单SHA256为 `6d79fc429e5005ab37d45baca4cacec0bf404b02955ce87693b34943546e2797`。原01版没有后台启动门禁，因此用同一已审查制品先建立成功02基线，再发布03；最终两版都包含修复。
+
+固定控制器完成正式模型、资源及认证页面验收后，06:06:30标准回滚03→02，06:08:10标准回滚02→03（北京时间），未传临时验收钩子。原定时、今日与通知目标已恢复，通知游标未回退。四项正式服务active，Worker API及后台均就绪；公网1440px/390px页面通过，无异常/横向溢出。今日新输入 `REVIEW-LIVE-0610` 实际调用 `mcp__workbench__resource_list`，编号 `call_00_zs8iehpiZbQlPOtswARR0287`，读回5个资源并完成。
+
+云端最终仅保留current=`native-20261108-03`与previous=`native-20261108-02`，旧01版、遗留迁移备份、临时候选/验证目录、四个隔离测试库与测试账号已清退。本机额外遗留归档均已校验摘要及完整可读性，旧SQLite完整性检查通过。独立资料服务active/enabled、原上下文中心与CRM保留；没有创建客户发送任务，没有GitHub推送。当前业务质量/实际发送边界见 `native/ACCEPTANCE.md`。
