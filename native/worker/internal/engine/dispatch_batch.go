@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/workflow"
+	"time"
 	"workbench-native/internal/core"
 )
 
@@ -87,7 +88,22 @@ func DispatchBatch(ctx workflow.Context, in DispatchBatchInput) (err error) {
 	return workflow.NewContinueAsNewError(ctx, DispatchBatch, in)
 }
 func SubmitMessage(ctx workflow.Context, id string) error {
-	return workflow.ExecuteActivity(activityContext(ctx, InteractiveQueue), "SendDelivery", id).Get(ctx, nil)
+	ctx = activityContext(ctx, InteractiveQueue)
+	for checks := 0; checks < 100; checks++ {
+		var receipt Receipt
+		if err := workflow.ExecuteActivity(ctx, "SendDelivery", id).Get(ctx, &receipt); err != nil {
+			return err
+		}
+		if receipt.State != "prepared" {
+			return nil
+		}
+		// No external call has been claimed. Timer-based waiting preserves the
+		// delivery identity and does not consume the Activity failure budget.
+		if err := workflow.Sleep(ctx, 30*time.Second); err != nil {
+			return err
+		}
+	}
+	return workflow.NewContinueAsNewError(ctx, SubmitMessage, id)
 }
 func (a *Activities) PrepareDispatchPage(ctx context.Context, id, after string) (DispatchPage, error) {
 	r, e := a.Store.ExecutionRun(ctx, id)

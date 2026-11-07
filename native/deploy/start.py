@@ -35,6 +35,9 @@ if role == 'host':
                '--patch', str(release / 'runtime/harness/cordis.patch.yml'), '--no-open',
                '--host', '127.0.0.1', '--port', str(settings.get('port', 3082))]
 elif role == 'worker':
+    # The installed controller owns this path; private standalone acceptance
+    # may inject a fixture into the binary without touching a live deployment.
+    env['WORKBENCH_DEPLOYMENT_MARKER'] = '/opt/project-workbench/.deploying'
     command = [str(release / 'bin/workbench-worker'), *sys.argv[2:]]
 elif role == 'channels':
     command = [node, str(release / 'runtime/connectors/server.mjs')]

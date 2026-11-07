@@ -96,6 +96,7 @@ window.__ModuleLoader__.load({
         (r) =>
           !projectFilter ||
           r.ownerProject === projectFilter ||
+          r.maintainerProject === projectFilter ||
           grants.some(
             (g) => g.resourceId === r.id && g.projectId === projectFilter,
           ),
@@ -380,7 +381,7 @@ window.__ModuleLoader__.load({
                 onSubmit: (e) => {
                   e.preventDefault();
                   act(async () => {
-                    for (const p of catalog.projects)
+                    for (const p of catalog.projects.filter(p=>p.id!==sharing.ownerProject&&p.id!==sharing.maintainerProject))
                       await api("/grants", {
                         resourceId: sharing.id,
                         projectId: p.id,
@@ -391,8 +392,9 @@ window.__ModuleLoader__.load({
                 },
               },
               h("h2", null, "允许哪些项目读取「" + sharing.name + "」"),
+              h("p", {className:"wb-muted"}, "所属项目和维护项目始终可使用该资源；这里仅设置其他项目的只读范围。调整维护方请编辑资源。"),
               ...catalog.projects
-                .filter((p) => p.id !== sharing.ownerProject)
+                .filter((p) => p.id !== sharing.ownerProject && p.id !== sharing.maintainerProject)
                 .map((p) =>
                   h(
                     "fieldset",

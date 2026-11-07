@@ -228,7 +228,11 @@ func (a *Server) moreTools(s *mcp.Server, bound core.Principal) {
 	mcp.AddTool(s, &mcp.Tool{Name: "memory_save", Description: "Save, correct or forget a personal memory with its source and expected revision; cannot mark an inference as owner-confirmed."}, func(ctx context.Context, _ *mcp.CallToolRequest, in core.Memory) (*mcp.CallToolResult, core.Memory, error) {
 		in.Confirmed = false
 		e := a.Store.PutMemory(ctx, bound, in)
-		return nil, in, e
+		if e != nil {
+			return nil, core.Memory{}, e
+		}
+		saved, e := a.Store.Memory(ctx, bound, in.ID)
+		return nil, saved, e
 	})
 	mcp.AddTool(s, &mcp.Tool{Name: "run_resume", Description: "Explicitly continue failed items of the original batch. Succeeded items are reused. Does not retry unknown external sends."}, func(ctx context.Context, _ *mcp.CallToolRequest, in ResumeRequest) (*mcp.CallToolResult, RunRef, error) {
 		r, e := a.Store.Run(ctx, bound, in.RunID)

@@ -63,7 +63,14 @@ func TestMySQLMCPUnknownSendIsReconciledWithoutResending(t *testing.T) {
 		return nil, Receipt{State: "unknown", Receipt: "platform-task"}, nil
 	})
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return toolServer }, &mcp.StreamableHTTPOptions{Stateless: true})
-	server := httptest.NewServer(handler)
+	var available atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !available.Load() {
+			http.Error(w, "temporarily unavailable", 503)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	defer server.Close()
 	t.Setenv("WORKBENCH_CONNECTOR_TEST", strings.Repeat("x", 40))
 	must(store.PutTransport(ctx, owner, core.Transport{ID: id, Name: "fixture", Endpoint: server.URL, TokenEnv: "WORKBENCH_CONNECTOR_TEST", Projects: []string{id}, Enabled: true}))
@@ -71,6 +78,14 @@ func TestMySQLMCPUnknownSendIsReconciledWithoutResending(t *testing.T) {
 	must(store.SaveRun(ctx, run))
 	must(store.PutDelivery(ctx, run, core.Delivery{ID: id, RunID: id, ItemID: "one", ConnectionID: id, Target: map[string]string{"actorId": "fixture"}, Text: "Synthetic only"}))
 	activities := Activities{Store: store}
+	waiting, e := activities.SendDelivery(ctx, id)
+	must(e)
+	saved, e := store.Delivery(ctx, id)
+	must(e)
+	if waiting.State != "prepared" || saved.State != "prepared" || sends.Load() != 0 {
+		t.Fatal("unavailable connector consumed delivery", waiting, saved, sends.Load())
+	}
+	available.Store(true)
 	first, e := activities.SendDelivery(ctx, id)
 	must(e)
 	if first.State != "unknown" {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	"net/http"
@@ -32,14 +32,38 @@ func (a connectorAuth) RoundTrip(r *http.Request) (*http.Response, error) {
 	copy.Header.Set("Authorization", "Bearer "+a.token)
 	return http.DefaultTransport.RoundTrip(copy)
 }
-func callConnector(ctx context.Context, c core.Transport, name string, input any) (Receipt, error) {
+func connectConnector(ctx context.Context, c core.Transport) (*mcp.ClientSession, error) {
 	token := os.Getenv(c.TokenEnv)
 	if len(token) < 32 {
-		return Receipt{}, fmt.Errorf("connector token not configured")
+		return nil, temporal.NewNonRetryableApplicationError("connector token not configured", "Invalid", nil)
 	}
 	httpClient := &http.Client{Timeout: 35 * time.Second, Transport: connectorAuth{token}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	client := mcp.NewClient(&mcp.Implementation{Name: "workbench-worker", Version: "0.1.0"}, nil)
-	session, e := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: c.Endpoint, HTTPClient: httpClient}, nil)
+	return client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: c.Endpoint, HTTPClient: httpClient}, nil)
+}
+
+// A read-only MCP initialize is safe to wait for before prepared is claimed.
+// A channel that has not started must not become an unknown external send.
+func connectorReady(ctx context.Context, c core.Transport) (bool, error) {
+	probe, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	session, err := connectConnector(probe, c)
+	if err == nil {
+		_ = session.Close()
+		return true, nil
+	}
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	var app *temporal.ApplicationError
+	if errors.As(err, &app) && app.NonRetryable() {
+		return false, err
+	}
+	return false, nil
+}
+
+func callConnector(ctx context.Context, c core.Transport, name string, input any) (Receipt, error) {
+	session, e := connectConnector(ctx, c)
 	if e != nil {
 		return Receipt{}, e
 	}
@@ -67,6 +91,10 @@ func callConnector(ctx context.Context, c core.Transport, name string, input any
 func SendMessage(ctx workflow.Context, id string) error { return SubmitMessage(ctx, id) }
 
 func (a *Activities) SendDelivery(ctx context.Context, id string) (Receipt, error) {
+	if activity.IsActivity(ctx) {
+		stop := keepAlive(ctx)
+		defer stop()
+	}
 	d, e := a.Store.Delivery(ctx, id)
 	if e != nil {
 		return Receipt{}, e
@@ -74,6 +102,19 @@ func (a *Activities) SendDelivery(ctx context.Context, id string) (Receipt, erro
 	r, e := a.Store.ExecutionRun(ctx, d.RunID)
 	if e != nil {
 		return Receipt{}, failure(e)
+	}
+	if d.State == "prepared" {
+		transport, err := a.Store.Transport(ctx, r.Principal, d.ConnectionID)
+		if err != nil {
+			return Receipt{}, failure(err)
+		}
+		ready, err := connectorReady(ctx, transport)
+		if err != nil {
+			return Receipt{}, err
+		}
+		if !ready {
+			return Receipt{State: "prepared"}, nil
+		}
 	}
 	d, claimed, e := a.Store.ClaimDelivery(ctx, id)
 	if e != nil {
@@ -93,6 +134,10 @@ func (a *Activities) SendDelivery(ctx context.Context, id string) (Receipt, erro
 	return a.recordReceipt(ctx, r, d, receipt)
 }
 func (a *Activities) ReconcileDelivery(ctx context.Context, id string) (Receipt, error) {
+	if activity.IsActivity(ctx) {
+		stop := keepAlive(ctx)
+		defer stop()
+	}
 	d, e := a.Store.Delivery(ctx, id)
 	if e != nil {
 		return Receipt{}, e

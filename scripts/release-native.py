@@ -67,8 +67,16 @@ def health(c):
     raise RuntimeError('Native Host/Worker/Temporal did not become ready')
 
 def stop(c):
-    c.run('systemctl','stop',*UNITS,check=False)
-    if c.run('systemctl','is-active','--quiet',*UNITS,check=False).returncode==0:raise RuntimeError('A workbench service did not stop')
+    # Drain activities while their Host and transport are still available.
+    # Starting/stopping are also live states, not evidence of a stopped process.
+    for names in [('project-workbench-worker',),tuple(x for x in UNITS if x!='project-workbench-worker')]:
+        c.run('systemctl','stop',*names,check=False)
+        for name in names:
+            result=c.run('systemctl','show',name,'--property=LoadState','--property=ActiveState',capture=True,check=False)
+            state=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
+            if (state.get('ActiveState') not in ('inactive','failed') or state.get('LoadState') not in ('loaded','not-found')
+                or (result.returncode and state.get('LoadState')!='not-found')):
+                raise RuntimeError('Workbench service did not stop: '+name)
 
 def start(c,path,channels=False):
     configure_units(c,path)
@@ -91,26 +99,37 @@ def cleanup(c):
     keep={x for x in (current,previous) if x}
     removing=[path for path in (c.BASE/'releases').iterdir() if path not in keep]
     check_retirement_dependencies(json.loads(Path('/etc/project-workbench/native.json').read_text()),[*removing,c.BASE/'incoming'])
+    check_container_dependencies(c,[*removing,c.BASE/'incoming'])
     for path in removing:c.remove(path,keep)
     # Container images and old data are retired separately after the local backup
     # and the new generation's production acceptance. Never global-prune here.
     c.remove(c.BASE/'incoming',keep)
 
 def restore_channels(c,state):
+    if not state.get('committed') and not state.get('restoring'):raise RuntimeError('Cannot start background work before commit')
     c.run('systemctl','enable','project-workbench')
-    if not state.get('channels'):return
-    c.run('systemctl','enable','project-workbench-channels')
-    c.run('systemctl','start','project-workbench-channels')
     cfg=json.loads(Path('/etc/project-workbench/native.json').read_text())
-    token=cfg.get('common',{}).get('WORKBENCH_CONNECTOR_TOKEN') or cfg['channels']['env']['WORKBENCH_CONNECTOR_TOKEN']
-    for attempt in range(60):
+    if state.get('channels'):
+        c.run('systemctl','enable','project-workbench-channels')
+        c.run('systemctl','start','project-workbench-channels')
+        token=cfg.get('common',{}).get('WORKBENCH_CONNECTOR_TOKEN') or cfg['channels']['env']['WORKBENCH_CONNECTOR_TOKEN']
+        for attempt in range(60):
+            try:
+                request=urllib.request.Request('http://127.0.0.1:7383/health',headers={'Authorization':'Bearer '+token})
+                with urllib.request.urlopen(request,timeout=2) as res:
+                    if json.load(res).get('ready'):break
+            except (OSError,ValueError):pass
+            time.sleep(1)
+        else:raise RuntimeError('Committed native connector is not ready; old consumer must remain stopped')
+    state['backgroundEnabled']=True;write_state(c,state)
+    if json.loads((c.pointer('current')/'native-release.json').read_text()).get('workerStartupGate')!=1:return
+    for _ in range(60):
         try:
-            request=urllib.request.Request('http://127.0.0.1:7383/health',headers={'Authorization':'Bearer '+token})
-            with urllib.request.urlopen(request,timeout=2) as res:
-                if json.load(res).get('ready'):return
+            with urllib.request.urlopen('http://127.0.0.1:7381/health',timeout=2) as res:
+                if json.load(res).get('backgroundReady'):return
         except (OSError,ValueError):pass
         time.sleep(1)
-    raise RuntimeError('Committed native connector is not ready; old consumer must remain stopped')
+    raise RuntimeError('Committed native background workers did not start')
 
 def recover(c,state):
     old=c.release(state['old_current'],exists=not state.get('committed')) if state.get('old_current') else None
@@ -131,9 +150,14 @@ def recover(c,state):
         cleanup(c)
     else:
         stop(c)
+        # The old version is already a successful release. Let a gate-aware
+        # rollback target boot while the candidate's gate remains closed.
+        state['restoring']=True;state['backgroundEnabled']=False;write_state(c,state)
         if old:
             if state.get('old_plugin_active'):c.run('systemctl','start','workbench-context-plugin')
-            start(c,old,channels=state.get('channels',False))
+            start(c,old,channels=False)
+            if is_native(old):restore_channels(c,state)
+            elif state.get('channels'):c.run('systemctl','start','project-workbench-channels')
         else:c.point('current',None)
         c.point('previous',prev)
         if candidate not in (old,prev):c.remove(candidate,{x for x in (old,prev) if x})
@@ -165,6 +189,12 @@ def deploy(c,candidate):
     old,previous=c.pointer('current'),c.pointer('previous')
     guard={}
     if candidate==old:raise RuntimeError('Candidate is already current')
+    acceptance=os.environ.get('PW_ACCEPTANCE_SCRIPT')
+    if candidate==previous:
+        if json.loads((candidate/'native-release.json').read_text()).get('workerStartupGate')!=1:
+            raise RuntimeError('Previous version lacks the safe background startup gate; controlled recovery is required')
+    elif not acceptance:raise RuntimeError('Native cutover requires the reviewed acceptance hook')
+    if acceptance:acceptance=str(Path(acceptance).resolve(strict=True))
     if os.environ.get('PW_EXPECTED_PREVIOUS') and str(old)!=os.environ['PW_EXPECTED_PREVIOUS']:raise RuntimeError('Current baseline changed')
     if old and not is_native(old):
         # Local backup/restore verification must precede this incompatible cutover.
@@ -187,9 +217,7 @@ def deploy(c,candidate):
             c.run('systemctl','stop','workbench-context-plugin')
             legacy_quiet(c)
         start(c,candidate,channels=False)
-        acceptance=os.environ.get('PW_ACCEPTANCE_SCRIPT')
-        if not acceptance:raise RuntimeError('Native cutover requires the reviewed acceptance hook')
-        c.run(str(Path(acceptance).resolve(strict=True)))
+        if acceptance:c.run(acceptance)
         # First native generation has no compatible previous. Old program and data
         # remain recoverable until the final local-only retirement step.
         c.point('previous',old if is_native(old) else None)

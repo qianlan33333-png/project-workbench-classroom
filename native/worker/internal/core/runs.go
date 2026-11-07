@@ -450,6 +450,30 @@ func (s *Store) Memories(ctx context.Context, p Principal) ([]Memory, error) {
 	}
 	return out, nil
 }
+
+// Memory returns the canonical revision, including a just-forgotten entry.
+func (s *Store) Memory(ctx context.Context, p Principal, id string) (Memory, error) {
+	if p.Kind != "owner" && p.Kind != "personal" {
+		return Memory{}, ErrDenied
+	}
+	var raw []byte
+	var v Memory
+	if e := s.DB.QueryRowContext(ctx, `SELECT body,revision FROM wb_memory WHERE id=?`, id).Scan(&raw, &v.Revision); e != nil {
+		return v, e
+	}
+	revision := v.Revision
+	if e := json.Unmarshal(raw, &v); e != nil {
+		return v, e
+	}
+	v.Revision = revision
+	if e := AuthorizeAll(ctx, s, p, v.Sources); e != nil {
+		return Memory{}, e
+	}
+	if e := s.RememberRead(ctx, p, v.Sources); e != nil {
+		return Memory{}, e
+	}
+	return v, nil
+}
 func (s *Store) PutMemory(ctx context.Context, p Principal, v Memory) error {
 	if p.Kind != "owner" && p.Kind != "personal" {
 		return ErrDenied

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -139,7 +140,33 @@ func run() error {
 	}
 	bridge := modelBridge{URL: env("HARNESS_BRIDGE_URL", "http://127.0.0.1:7382"), Token: os.Getenv("WORKBENCH_HOST_TOKEN"), Client: &http.Client{Timeout: 150 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	a := &engine.Activities{Store: s, Model: bridge, Host: bridge, Temporal: c}
-	bw := worker.New(c, engine.BatchQueue, worker.Options{MaxConcurrentActivityExecutionSize: 4})
+	address := env("WORKBENCH_LISTEN", "127.0.0.1:7381")
+	host, _, e := net.SplitHostPort(address)
+	if e != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
+		return errors.New("worker HTTP must bind loopback")
+	}
+	var backgroundReady atomic.Bool
+	apiServer := &api.Server{Store: s, Temporal: c, Token: os.Getenv("WORKBENCH_HOST_TOKEN"), Host: bridge, BackgroundReady: backgroundReady.Load}
+	server := &http.Server{Addr: address, Handler: apiServer.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	errCh := make(chan error, 1)
+	listener, e := net.Listen("tcp", address)
+	if e != nil {
+		return e
+	}
+	go func() { errCh <- server.Serve(listener) }()
+	defer func() {
+		stop, done := context.WithTimeout(context.Background(), 15*time.Second)
+		defer done()
+		_ = server.Shutdown(stop)
+	}()
+	if e = waitForDeployment(ctx, env("WORKBENCH_DEPLOYMENT_MARKER", "/opt/project-workbench/.deploying"), errCh); e != nil {
+		if errors.Is(e, context.Canceled) {
+			return nil
+		}
+		return e
+	}
+
+	bw := worker.New(c, engine.BatchQueue, worker.Options{MaxConcurrentActivityExecutionSize: 4, WorkerStopTimeout: 30 * time.Second})
 	bw.RegisterWorkflow(engine.Batch)
 	bw.RegisterWorkflow(engine.Sync)
 	bw.RegisterWorkflow(engine.WriteTask)
@@ -150,7 +177,7 @@ func run() error {
 		return e
 	}
 	defer bw.Stop()
-	iw := worker.New(c, engine.InteractiveQueue, worker.Options{MaxConcurrentActivityExecutionSize: 2})
+	iw := worker.New(c, engine.InteractiveQueue, worker.Options{MaxConcurrentActivityExecutionSize: 2, WorkerStopTimeout: 40 * time.Second})
 	iw.RegisterWorkflow(engine.Followup)
 	iw.RegisterWorkflow(engine.Daily)
 	iw.RegisterWorkflow(engine.Dispatch)
@@ -177,21 +204,11 @@ func run() error {
 		return e
 	}
 
-	address := env("WORKBENCH_LISTEN", "127.0.0.1:7381")
-	host, _, e := net.SplitHostPort(address)
-	if e != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-		return errors.New("worker HTTP must bind loopback")
-	}
-	apiServer := &api.Server{Store: s, Temporal: c, Token: os.Getenv("WORKBENCH_HOST_TOKEN"), Host: bridge}
+	backgroundReady.Store(true)
 	go apiServer.DeliverSignals(ctx)
-	server := &http.Server{Addr: address, Handler: apiServer.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
-	errCh := make(chan error, 1)
-	go func() { errCh <- server.ListenAndServe() }()
 	select {
 	case <-ctx.Done():
-		stop, done := context.WithTimeout(context.Background(), 15*time.Second)
-		defer done()
-		return server.Shutdown(stop)
+		return nil
 	case e = <-errCh:
 		if e == http.ErrServerClosed {
 			return nil

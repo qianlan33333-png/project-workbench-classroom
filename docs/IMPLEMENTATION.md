@@ -415,3 +415,9 @@ Session 工具卡在折叠态显示动作、状态和北京时间，发布回执
 旧云端清退依赖检查发现独立资料服务的user unit仍引用旧工具目录；实际容器已迁出但原unit处于失败重试。已保留原unit到本机，并让同一unit使用迁出容器的已核实命令、环境文件与目录。审查发现的停止失败会截断恢复路径已修复，4类隔离恢复分支通过并复审No findings。真实重启后Image/Env/Mounts/安全参数、MCP目录与同一查询3条来源ID/hash一致，unit active/enabled；不修改该服务业务资料。
 
 固定native-retire入口已完成：删除旧工作台两版、旧workbench_context库、旧数据目录/插件与镜像eb217999…，保留独立服务仍使用的6bfaebd5…镜像。首次新架构没有兼容的previous，旧代仅保留本机备份；以后继续同一current/previous与锁轮转。`.deploying`及迁移门禁已清除，四个新服务持续active。临时构建/候选与云端迁移备份在本机证明核对、无活跃引用后清理，不留第三个稳定环境。没有GitHub推送。
+
+## 2026-11-08 review-agent 完整复查与修复（发布准备）
+
+完整复查范围 e49c6d8..a244d34，共477条变更路径，确认并修复五项：提交前后台消费、固定回滚入口缺验收路径、常规清理遗漏rootless容器依赖、项目页漏维护资源、memory_save返回旧版本。修复计划见 `docs/plans/2026-11-08-review-release-hardening.md`。
+
+API启动与后台就绪分开；Worker只在部署提交且渠道就绪后消费。停止先收拢Worker再停依赖；待渠道的消息通过Temporal Timer继续原编号，unknown仅查回执，长活动保留心跳。真实独立MySQL/Temporal加实际Worker进程验证提交前零消费、等待时重启、放行后只发送一次，12.23秒；模型/渠道均为合成夹具，无客户消息。真实MCP未知发送核回、本人决定跨重启与6条合成手机确认回执通过，66.57秒。Go/vet、Node12项、发布控制器16项通过；真实MySQL core/api通过，含记忆1/2/3版本接续。Product Design桌面/390px验证见design-qa.md。

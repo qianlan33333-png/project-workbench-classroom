@@ -23,11 +23,12 @@ import (
 )
 
 type Server struct {
-	Store      *core.Store
-	Temporal   client.Client
-	Token      string
-	personalMu sync.Mutex
-	Host       engine.AgentHost
+	Store           *core.Store
+	Temporal        client.Client
+	Token           string
+	personalMu      sync.Mutex
+	Host            engine.AgentHost
+	BackgroundReady func() bool
 }
 type principalKey struct{}
 
@@ -55,7 +56,8 @@ func (a *Server) Handler() http.Handler {
 				return
 			}
 		}
-		write(w, map[string]any{"ready": true})
+		backgroundReady := a.BackgroundReady == nil || a.BackgroundReady()
+		write(w, map[string]any{"ready": true, "backgroundReady": backgroundReady})
 	})
 	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return a.MCP(principal(r.Context())) }, &mcp.StreamableHTTPOptions{Stateless: true}))
 	mux.HandleFunc("GET /resources", func(w http.ResponseWriter, r *http.Request) {

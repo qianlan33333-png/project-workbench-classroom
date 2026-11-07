@@ -7,7 +7,7 @@ spec=importlib.util.spec_from_file_location('native_release',Path(__file__).with
 n=importlib.util.module_from_spec(spec);spec.loader.exec_module(n)
 class Controller:
  def __init__(self,root):
-  self.BASE=root;self.DATA=root/'data';self.DATA.mkdir();self.USER='test';self.RESERVE=0;self.calls=[];self.pointers={};self.active=set();self.failed_hook=False
+  self.BASE=root;self.DATA=root/'data';self.DATA.mkdir();self.USER='test';self.RESERVE=0;self.calls=[];self.pointers={};self.active=set();self.failed_hook=False;self.states={}
  def pointer(self,name):return self.pointers.get(name)
  def point(self,name,path):self.pointers[name]=path
  def release(self,path,exists=True):return Path(path)
@@ -20,6 +20,7 @@ class Controller:
   if args[0]=='systemctl':
    op=args[1];units=args[2:]
    if op=='is-active':return types.SimpleNamespace(returncode=0 if any(u in self.active for u in units) else 3)
+   if op=='show':return types.SimpleNamespace(returncode=0,stdout='LoadState=loaded\nActiveState='+self.states.get(units[0],'active' if units[0] in self.active else 'inactive')+'\n')
    if op=='stop':self.active.difference_update(units)
    if op=='start':
     if 'project-workbench-channels' in units:
@@ -43,7 +44,7 @@ class RecoveryTest(unittest.TestCase):
   if state['channels']:c.run('systemctl','start','project-workbench-channels')
  def test_acceptance_failure_restores_old_before_any_new_receiving(self):
   self.c.failed_hook=True
-  with patch.object(n,'verify'),patch.object(n,'start',self.start),patch.object(n,'health'),patch.object(n,'cleanup'),patch.dict(n.os.environ,{'PW_ACCEPTANCE_SCRIPT':'/acceptance'}),patch.object(n.Path,'resolve',lambda path,strict=False:path):
+  with patch.object(n,'verify'),patch.object(n,'start',self.start),patch.object(n,'health'),patch.object(n,'cleanup'),patch.object(n,'restore_channels',self.channels),patch.dict(n.os.environ,{'PW_ACCEPTANCE_SCRIPT':'/acceptance'}),patch.object(n.Path,'resolve',lambda path,strict=False:path):
    with self.assertRaises(RuntimeError):n.deploy(self.c,self.candidate)
   self.assertEqual(self.c.pointer('current'),self.old)
   self.assertFalse((self.c.BASE/'.deploying').exists())
@@ -63,7 +64,7 @@ class RecoveryTest(unittest.TestCase):
  def test_uncommitted_restart_restores_previous_and_plugin(self):
   state={'kind':'native','candidate':str(self.candidate),'old_current':str(self.old),'old_previous':None,'channels':True,'old_plugin_active':True,'committed':False}
   self.c.point('current',self.candidate);self.c.write(self.c.BASE/'.deploying',json.dumps(state))
-  with patch.object(n,'start',self.start),patch.object(n,'cleanup'):n.recover(self.c,state)
+  with patch.object(n,'start',self.start),patch.object(n,'cleanup'),patch.object(n,'restore_channels',self.channels):n.recover(self.c,state)
   self.assertEqual(self.c.pointer('current'),self.old)
   self.assertIn('workbench-context-plugin',self.c.active)
   self.assertFalse((self.c.BASE/'.deploying').exists())
@@ -97,6 +98,27 @@ class RecoveryTest(unittest.TestCase):
    n.deploy(self.c,self.candidate)
   self.assertEqual(self.c.pointer('current'),self.candidate)
   self.assertNotIn('project-workbench-channels',self.c.active);self.assertNotIn('workbench-context-plugin',self.c.active)
+ def test_standard_rollback_uses_the_verified_previous_without_extra_hook(self):
+  self.c.point('previous',self.candidate)
+  (self.candidate/'native-release.json').write_text('{"workerStartupGate":1}')
+  with patch.object(n,'verify'),patch.object(n,'start',self.start),patch.object(n,'health'),patch.object(n,'cleanup'),patch.object(n,'restore_channels',self.channels),patch.dict(n.os.environ,{},clear=True):
+   n.deploy(self.c,self.candidate)
+  self.assertEqual(self.c.pointer('current'),self.candidate);self.assertEqual(self.c.pointer('previous'),self.old)
+ def test_unsafe_old_generation_is_rejected_before_stopping_current(self):
+  self.c.point('previous',self.candidate)
+  with patch.object(n,'verify'),patch.dict(n.os.environ,{},clear=True):
+   with self.assertRaisesRegex(RuntimeError,'lacks the safe background'):n.deploy(self.c,self.candidate)
+  self.assertFalse(any(call[:2]==('systemctl','stop') for call in self.c.calls))
+ def test_new_candidate_still_requires_acceptance(self):
+  with patch.object(n,'verify'),patch.object(n,'start',self.start),patch.object(n,'health'),patch.object(n,'cleanup'),patch.object(n,'restore_channels',self.channels),patch.dict(n.os.environ,{},clear=True):
+   with self.assertRaisesRegex(RuntimeError,'requires the reviewed acceptance hook'):n.deploy(self.c,self.candidate)
+  self.assertEqual(self.c.pointer('current'),self.old)
+ def test_stop_drains_worker_before_dependencies_and_rejects_deactivating(self):
+  n.stop(self.c)
+  stops=[call for call in self.c.calls if call[:2]==('systemctl','stop')]
+  self.assertEqual(stops[0],('systemctl','stop','project-workbench-worker'))
+  self.c.states['project-workbench-worker']='deactivating'
+  with self.assertRaisesRegex(RuntimeError,'did not stop'):n.stop(self.c)
 class HealthTest(unittest.TestCase):
  def probe(self,index_status,bridge_ready=True):
   def request(url,**kwargs):
@@ -115,6 +137,16 @@ class HealthTest(unittest.TestCase):
    with self.subTest(status=status,ready=ready),self.assertRaisesRegex(RuntimeError,'did not become ready'):
     self.probe(status,ready)
 class DependencyTest(unittest.TestCase):
+ def test_normal_rotation_preserves_an_independent_container_dependency(self):
+  with tempfile.TemporaryDirectory() as temp:
+   root=Path(temp);c=Controller(root);releases=root/'releases';releases.mkdir()
+   current=releases/'current-release';current.mkdir();(current/'native-release.json').write_text('{}');c.point('current',current)
+   retired=releases/'retired-release';retired.mkdir()
+   def command(*args,**kwargs):return types.SimpleNamespace(stdout='independent\n' if args[1]=='ps' else json.dumps([{'Name':'external-service','Mounts':[{'Source':str(retired/'tools')}]}]))
+   c.as_user=command
+   with patch.object(n,'check_retirement_dependencies'),patch.object(n.Path,'read_text',return_value='{}'):
+    with self.assertRaisesRegex(RuntimeError,'external-service'):n.cleanup(c)
+   self.assertFalse(any(call[0]=='remove' for call in c.calls))
  def test_stopped_container_bind_blocks_retirement(self):
   calls=[]
   def command(*args,**kwargs):
