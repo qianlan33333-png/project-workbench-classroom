@@ -1,0 +1,23 @@
+[Unit]
+Description=Personal Workbench native host
+After=network-online.target project-workbench-worker.service
+Wants=network-online.target project-workbench-worker.service
+
+[Service]
+Type=simple
+User=projectwb
+Group=projectwb
+WorkingDirectory=/opt/project-workbench/current
+Environment=HOME=/home/projectwb
+ExecStart=/usr/bin/python3 /opt/project-workbench/current/deploy/start.py host
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+KillMode=control-group
+UMask=0077
+MemoryMax=750M
+LimitNOFILE=65536
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1 @@
+{"name":"@local/workbench-message-connectors","private":true,"version":"0.1.0","type":"module","scripts":{"start":"node server.mjs","check":"node --check server.mjs && node --check channels.mjs","test":"node --test channels.test.mjs"},"dependencies":{"@modelcontextprotocol/sdk":"1.32.2","@larksuiteoapi/node-sdk":"1.76.0","zod":"4.3.6"}}

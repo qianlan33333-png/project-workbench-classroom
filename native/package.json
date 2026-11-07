@@ -1,0 +1,24 @@
+{
+  "name": "personal-workbench-native-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.2-rc.1",
+    "@local/personal-workbench": "file:./harness",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@larksuiteoapi/node-sdk": "1.76.0",
+    "p-queue": "10.0.0",
+    "zod": "4.3.6"
+  },
+  "allowScripts": {
+    "koffi@3.1.1": true,
+    "node-pty@1.2.0-beta.15": true,
+    "protobufjs@7.6.6": true,
+    "@google/genai": false,
+    "@deepseek-ai/dsh-subprocess-local@0.2.2-rc.1": true
+  }
+}

@@ -4,6 +4,7 @@ import argparse
 from contextlib import closing
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -67,8 +68,9 @@ def release(path, exists=True):
     if (path.parent != BASE / 'releases' or path.name in ('.', '..') or path.is_symlink()
             or not re.fullmatch(r'[a-zA-Z0-9._-]+', path.name)):
         raise RuntimeError(f'Not a direct release directory: {path}')
-    if exists and not (path.is_dir() and (path / 'bin/workbench').is_file()
-                       and (path / 'web/dist/index.html').is_file()):
+    native = (path / 'native-release.json').is_file() and (path / 'bin/workbench-worker').is_file()
+    if exists and not (path.is_dir() and (native or ((path / 'bin/workbench').is_file()
+                       and (path / 'web/dist/index.html').is_file()))):
         raise RuntimeError(f'Incomplete release: {path}')
     return path
 
@@ -411,9 +413,9 @@ def remove(path, keep):
     """Only called for explicit project-owned roots, never arbitrary CLI paths."""
     if not path.exists() and not path.is_symlink():
         return
-    protected = [DATA, CONFIG, CONFIG.parent, Path('/var/lib/project-workbench-purge-ledger'),
+    protected = [DATA, CONFIG, CONFIG.parent, Path('/var/lib/project-workbench-native'), Path('/var/lib/project-workbench-purge-ledger'),
                  Path('/srv/qianlan-company'), *keep]
-    cfg = json.loads(CONFIG.read_text())
+    cfg = json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
     protected += [Path(v).resolve() for v in cfg.values() if isinstance(v, str) and v.startswith('/')]
     if any(path == p or path in p.parents for p in protected):
         raise RuntimeError(f'Refusing to delete a current data/config/dependency root: {path}')
@@ -713,6 +715,8 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('deploy').add_argument('release')
     sub.add_parser('rollback')
+    sub.add_parser('native-retire')
+    p = sub.add_parser('native-install'); p.add_argument('archive'); p.add_argument('name')
     sub.add_parser('cleanup').add_argument('--legacy', action='store_true')
     p = sub.add_parser('install'); p.add_argument('archive'); p.add_argument('name')
     args = parser.parse_args()
@@ -728,6 +732,31 @@ def main():
         if os.fstat(fd).st_ino != own.st_ino or os.fstat(fd).st_dev != own.st_dev:
             raise RuntimeError('Inherited descriptor does not refer to the release lock')
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Native generations share this lock, pointers and .deploying record.
+        state_path=BASE/'.deploying'
+        state=json.loads(state_path.read_text()) if state_path.exists() else {}
+        current=pointer('current')
+        native_current=current is not None and (current/'native-release.json').is_file()
+        if args.command in ('native-install','native-retire') or native_current or state.get('kind')=='native':
+            spec=importlib.util.spec_from_file_location('release_native',Path(__file__).with_name('release-native.py'))
+            native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+            controller=sys.modules[__name__]
+            if args.command=='native-retire':
+                native.retire(controller,state);return
+            if state.get('kind')=='native':
+                native.recover(controller,state)
+                if state_path.exists():raise RuntimeError('Finish incompatible-generation retirement before another release')
+            elif state:
+                recover()
+            if args.command=='native-install':native.install(controller,args.archive,args.name)
+            elif args.command=='deploy':native.deploy(controller,release(args.release))
+            elif args.command=='rollback':
+                previous=pointer('previous')
+                if not native.is_native(previous):raise RuntimeError('No compatible native previous version')
+                native.deploy(controller,previous)
+            elif args.command=='cleanup' and not args.legacy:native.cleanup(controller)
+            else:raise RuntimeError('Use the native release operation for this generation')
+            return
         if args.command == 'install':
             initialize_install()
         recover()

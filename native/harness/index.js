@@ -1,0 +1,513 @@
+import { createServer } from "node:http";
+import { Readable } from "node:stream";
+import { timingSafeEqual, createHash, randomUUID } from "node:crypto";
+import { mkdir, realpath } from "node:fs/promises";
+import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
+import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
+import { attachmentText } from "./attachment-text.js";
+import { deliveryProjection } from "./delivery-state.js";
+import { modelCapacity, admittedStream } from './model-capacity.js';
+import { toolNamespace, namespaceOfTool } from './tool-namespace.js';
+import { installPersonalMemory } from './personal-memory.js';
+
+export const inject = [
+  "agents",
+  "attachments",
+  "sessions",
+  "sessionProjections",
+  "sessionPersistence",
+  "agentPresets",
+  "workspaceRegistry",
+  "webServer",
+  "connection",
+  "llm",
+  "tools",
+];
+const owner = { kind: "owner", projectId: "", sessionId: "owner-ui" };
+const idOf = (path) =>
+  "p_" + createHash("sha256").update(path).digest("hex").slice(0, 24);
+function json(res, status, value) {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(value));
+}
+function requestError(message,status=400){return Object.assign(new Error(message),{status});}
+async function body(req) {
+  let bytes = 0,
+    parts = [];
+  for await (const p of req) {
+    bytes += p.length;
+    if (bytes > 8 * 1024 * 1024) throw requestError("request too large");
+    parts.push(p);
+  }
+  return JSON.parse(Buffer.concat(parts).toString("utf8") || "{}");
+}
+
+export async function apply(ctx, config) {
+  const admitModel=modelCapacity();
+  const token = process.env.WORKBENCH_HOST_TOKEN;
+  if (!token || token.length < 32)
+    throw new Error("WORKBENCH_HOST_TOKEN is required");
+  const worker = new URL(config.workerUrl);
+  if (worker.hostname !== "127.0.0.1" || worker.protocol !== "http:")
+    throw new Error("worker must use loopback");
+  if (!config.personalWorkspace)
+    throw new Error("personalWorkspace is required");
+  await mkdir(config.personalWorkspace, { recursive: true });
+  const personalPath = await realpath(config.personalWorkspace);
+  ctx.on('llm/stream',(options,next)=>{
+    if(!options.sessionId)return next();
+    const session=ctx.sessions.get(options.sessionId);
+    const lane=session?.header.cwd===personalPath?'owner':'interactive';
+    return admittedStream(admitModel,lane,options.signal||new AbortController().signal,next);
+  });
+  const personalWorkspace = await ctx.workspaceRegistry.create(
+    personalPath,
+    "今日",
+  );
+  const headers = (p) => ({
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+    "X-Workbench-Kind": p.kind,
+    "X-Workbench-Project": p.projectId,
+    "X-Workbench-Session": p.sessionId,
+  });
+  const call = async (path, p = owner, data, signal) => {
+    const response = await fetch(new URL(path, worker), {
+      method: data === undefined ? "GET" : "POST",
+      headers: headers(p),
+      body: data === undefined ? undefined : JSON.stringify(data),
+      signal: signal ?? AbortSignal.timeout(30000),
+    });
+    if (!response.ok)
+      throw new Error(
+        `worker ${response.status}: ${(await response.text()).slice(0, 300)}`,
+      );
+    return response.json();
+  };
+  const projectCache=new Map();
+  async function syncProjects() {
+    const projects = [];
+    for (const w of ctx.workspaceRegistry.list()) {
+      if (w.path === personalPath) continue;
+      const p = { id: idOf(w.path), name: w.title, workspace: w.path };
+      if(projectCache.get(p.id)!==JSON.stringify(p)) {
+        await call("/projects", owner, p);
+        projectCache.set(p.id,JSON.stringify(p));
+      }
+      projects.push({ ...p, workspaceId: w.id, sessionIds:w.sessionIds??[] });
+    }
+    return projects;
+  }
+  await syncProjects();
+  const delivery = await ctx.sessionProjections.register(deliveryProjection);
+  function identity(agent) {
+    const path = agent.session.header.cwd;
+    if (!path) throw new Error("Session has no fixed workspace");
+    return {
+      kind: path === personalPath ? "personal" : "project",
+      projectId: path === personalPath ? "" : idOf(path),
+      sessionId: agent.id,
+    };
+  }
+  const owned = new Map();
+  async function attach(agent) {
+    if (owned.has(agent.id)) return;
+    const p = identity(agent);
+    await syncProjects();
+    const boundary = await call('/session/check',p);
+    if (p.kind === "personal") await call("/personal/session", p, {});
+    installPersonalMemory(agent,p,call);
+    agent.ctx.on("agent/pre-step", async (payload, next) => {
+      await call("/session/check", p, undefined, payload.signal);
+      return next();
+    });
+    // Only global tools are masked. The scoped official MCP client supplies capabilities.
+    const dispose = agent.ctx.effect(
+      () => agent.ctx.tools.restrict({ deny: ["working_directory"] }),
+      "workbench: resource boundary",
+    );
+    owned.set(agent.id, dispose);
+    const extensions=[];
+    let workbenchMcp;
+    try {
+      const namespaces=new Set(['workbench']),externalSources=new Map();
+      // Optional standard MCP servers are owner-installed plugins. Customer
+      // object Sessions intentionally receive only the fixed message tools.
+      for(const server of (config.toolServers||[])) {
+        if(boundary.objectSession||!(p.kind==='personal'?server.personal:server.projects?.includes(p.projectId)))continue;
+        toolNamespace(server.name);if(namespaces.has(server.name))throw Error('Duplicate MCP namespace');
+        const url=new URL(server.url);
+        if(url.username||url.password||url.search||url.hash||(url.protocol!=='https:'&&(url.protocol!=='http:'||url.hostname!=='127.0.0.1')))throw Error('Invalid MCP endpoint');
+        if(!/^WORKBENCH_MCP_[A-Z0-9_]+$/.test(server.tokenEnv)||!process.env[server.tokenEnv])throw Error('MCP connector credential is not configured');
+        if(!Array.isArray(server.sources)||!server.sources.length)throw Error('MCP connector must declare registered source references');
+        externalSources.set(server.name,structuredClone(server.sources));
+        const plugin=await agent.ctx.plugin(mcpClient,{serverName:server.name,transport:'streamable-http',url:url.href,headers:{authorization:'Bearer '+process.env[server.tokenEnv],'X-Workbench-Kind':p.kind,'X-Workbench-Project':p.projectId,'X-Workbench-Session':p.sessionId},toolCallTimeoutMs:60000,failOnStartupError:true});
+        extensions.push(plugin);namespaces.add(server.name);
+      }
+      agent.ctx.on('tools/execute',async(exec,next)=>{
+        const name=namespaceOfTool(exec.name);
+        if(!externalSources.has(name))return next();
+        // Conservatively record before dispatch, including failed/partial calls.
+        // Recheck after return so a concurrent revocation cannot reveal a result.
+        const refs=externalSources.get(name);
+        await call('/session/external-sources',p,refs,exec.signal);
+        const result=await next();
+        await call('/session/external-sources',p,refs,exec.signal);
+        return result;
+      });
+      const mcpOwner = await agent.ctx.plugin(mcpClient, {
+        serverName: "workbench",
+        transport: "streamable-http",
+        url: new URL("/mcp", worker).href,
+        headers: headers(p),
+        toolCallTimeoutMs: 60000,
+        failOnStartupError: true,
+      });
+      workbenchMcp=mcpOwner;
+      const mask = dispose;
+      owned.set(agent.id, () => {
+        mask();
+        for(const extension of extensions)extension.dispose();
+        return mcpOwner.dispose();
+      });
+      agent.ctx.tools.guard((exec) => {
+        if(exec.name!=='skill'&&![...namespaces].some(name=>exec.name.startsWith('mcp__'+name+'__')))return '此工作台通过资源和标准 MCP 工具执行；未配置的工具不可调用。';
+        if (!delivery.stateOf(agent.session).feedback) return;
+        const readOnly = new Set([
+          "attachment_list", "resource_list",
+          "resource_read", "resource_search", "resource_excerpt",
+          "project_list",
+          "run_get", "run_steps",
+          "run_list",
+          "decision_list",
+          "run_items", "message_batch_read",
+          "memory_list",
+        ]);
+        if (!readOnly.has(exec.name.replace(/^mcp__workbench__/, "")))
+          return "任务反馈轮只读；继续业务需要本人在对话中明确提出。";
+      });
+      agent.ctx.systemPrompt.section({
+        name: "workbench:method",
+        order: 80,
+        text:
+          p.kind === "personal"
+            ? "你是“今日”Personal Agent。本人已明确要求的派发和只读核实应直接执行，不反复征询确认。旧轮次报错不等于本轮失败；必须以本轮实际工具结果汇报。目标项目内部再次派发的错误不代表今日的初次派发失败。先读最新项目目录和任务摘要，按需读取资源。可跨项目理解、安排、持续跟进、等待本人决定。资源读取不代表默认加载全部资料。task_delegate默认省略instructions，由宿主转交本人最近原话；不要主动重写本人已经明确的要求。只有目标项目允许读取当前所有来源时才可改写instructions。来源范围拒绝时可用本人原话重试，不要要求扩大项目权限。不得自行确认发送。"
+            : "你在固定项目内工作。专家 Skill 负责判断，标准工具负责执行。资料仅通过已授权资源读取；批量传引用，不逐人塞入主对话。先选择板块与方法，再提交任务。状态、数据发布、内容生成和实际送达必须区分。",
+      });
+    } catch (e) {
+      for(const extension of extensions)extension.dispose();
+      workbenchMcp?.dispose();
+      dispose();
+      owned.delete(agent.id);
+      throw e;
+    }
+  }
+  ctx.on("agent/created", ({ agent }) => attach(agent));
+  ctx.on("agent/disposed", ({ agent }) => {
+    owned.get(agent.id)?.();
+    owned.delete(agent.id);
+  });
+  ctx.effect(
+    () => () => {
+      for (const dispose of owned.values()) dispose();
+      owned.clear();
+    },
+    "workbench: scoped lifecycle",
+  );
+  for (const agent of ctx.agents.list()) await attach(agent);
+  const agentHandles=new Map();
+  async function ensureSession(sessionId,path) {
+    let agent=ctx.agents.get(sessionId);
+    if(!agent){
+      const persisted=await ctx.sessionPersistence.stat(sessionId);
+      const options={provider:config.provider,model:config.model,reasoningEffort:'off',maxTokens:4000};
+      const setup=agentCtx=>ctx.agentPresets.mount(agentCtx,'workbench').then(()=>undefined);
+      const handle=persisted
+       ? await ctx.agents.resume({resumeSessionId:sessionId,agentOptions:options,setup})
+       : await ctx.agents.create({sessionId,meta:{cwd:path,agentPreset:'workbench'},agentOptions:options,setup});
+      agentHandles.set(sessionId,handle);agent=handle.agent;
+    }
+    if(agent.session.header.cwd!==path)throw requestError('Session workspace mismatch',403);
+    if(!await ctx.sessions.flush(agent.session))throw Error('Session was not persisted');
+    return agent;
+  }
+  ctx.effect(()=>async()=>{for(const handle of agentHandles.values())await handle.dispose()},'workbench: owned sessions');
+  // Today's daily schedule exists even before the first browser conversation.
+  // Workspace session order is mutable (the UI may create another blank chat).
+  // Today's identity must survive that ordering and Host restarts.
+  const todayId='today_'+createHash('sha256').update(personalPath).digest('hex').slice(0,24);
+  await ensureSession(todayId,personalPath);
+  let deliveryCursor=0, reportCursor="";
+  let polling = false,
+    stopped = false;
+  async function deliver() {
+    if (polling || stopped) return;
+    polling = true;
+    try {
+      const reports=await call('/delegation/pending?after='+encodeURIComponent(reportCursor));
+      for(const run of reports) {
+        reportCursor=run.id;
+        if(stopped)break;
+        try {
+          const w=ctx.workspaceRegistry.list().find(w=>idOf(w.path)===run.principal.projectId&&w.path!==personalPath);
+          if(!w)continue;
+          // Rebuild the projection from the native persisted Session after restart.
+          const agent=await ensureSession(run.principal.sessionId,w.path);
+          const report=delivery.stateOf(agent.session).report;
+          if(report?.runId===run.id) {
+            if(!await ctx.sessions.flush(agent.session))throw Error('Report was not persisted');
+            await call('/delegation/report',identity(agent),report);
+          }
+        } catch(e) { ctx.logger.warn(`Project report ${run.id} remains pending: ${e.message}`); }
+      }
+      if(reports.length<50)reportCursor='';
+      const pending=await call(`/events/pending?after=${deliveryCursor}`);
+      for (const event of pending) {
+        deliveryCursor=event.sequence;
+        if (stopped) break;
+        try {
+          let agent = ctx.agents.get(event.sessionId);
+          if (!agent)
+            agent = (
+              await ctx.agents.resume({ resumeSessionId: event.sessionId })
+            ).agent;
+          if (delivery.stateOf(agent.session).through < event.sequence) {
+            const text = `执行结果 · ${new Date(event.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}\n任务 ${event.runId} · 阶段 ${event.kind}\n${event.text}\n${JSON.stringify(event.details ?? {})}\n${event.kind==='project.reported'?'上文是目标项目助手的文字汇报；模型表述不等于业务事实，若与工具回执冲突，先查询原任务核对，不能凭汇报推翻已有接收回执。':`这是后台任务 ${event.runId} 的真实回执。`}不是让你回顾最近一轮聊天。只针对这个任务说明已做工作、结果与下一步，不把其他聊天的工具调用算入本任务。${event.kind==='personal.daily'?'上文是本次已生成的今日安排，请以该安排为主要反馈；引用的其他项目状态只是汇总依据，不能说这些工作被你重新执行了。':''}只核对原任务，不重跑业务。`;
+            agent.followup(
+              createUserMessage({
+                content: [{ type: "text", text }],
+                source: { kind: "workbench-result", sequence: event.sequence },
+              }),
+            );
+          }
+          if (!(await ctx.sessions.flush(agent.session)))
+            throw new Error("Session result was not persisted");
+          await call("/events/ack", owner, { id: event.id });
+        } catch (e) {
+          ctx.logger.warn(`Result ${event.id} remains pending: ${e.message}`);
+        }
+      }
+      if(pending.length<100)deliveryCursor=0;
+    } catch (e) {
+      ctx.logger.warn("workbench feedback delivery deferred: " + e.message);
+    } finally {
+      polling = false;
+    }
+  }
+  const timer = setInterval(deliver, 5000);
+  ctx.effect(
+    () => () => {
+      stopped = true;
+      clearInterval(timer);
+    },
+    "workbench: durable result outbox",
+  );
+
+  // Browser identity is the native single-owner cookie; the secret Host token never reaches JS.
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: "prefix",
+        path: "/workbench-api",
+        handler: async (req, res) => {
+          const admission = ctx.connection.admit(req);
+          if ("rejection" in admission) {
+            res.writeHead(admission.rejection);
+            res.end();
+            return;
+          }
+          try {
+            const u = new URL(req.url, "http://localhost");
+            const path = u.pathname.slice("/workbench-api".length);
+            if (req.method === "GET" && path === "/catalog") {
+              json(res, 200, {
+                projects: await syncProjects(),
+                resources: await call("/resources"),
+                personalWorkspaceId: personalWorkspace.id,
+                personalSessionId: todayId,
+              });
+              return;
+            }
+            if(req.method==='GET'&&path==='/resource-export'){
+              const response=await fetch(new URL(path+u.search,worker),{headers:headers(owner)});
+              if(!response.ok)throw Error('资料导出失败，请核对读取范围和发布版本');
+              res.writeHead(200,{'content-type':response.headers.get('content-type'),'content-disposition':response.headers.get('content-disposition')});
+              const stream=Readable.fromWeb(response.body);stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);return;
+            }
+            const readPaths = new Set(["/resource-page", "/schedules", "/notification-targets",
+              "/resources",
+              "/connections",
+              "/grants",
+              "/memory",
+              "/runs",
+              "/decisions",
+              "/personal/settings",
+              "/notifications",
+            ]);
+            const writePaths = new Set(["/schedules/pause",
+              "/resources",
+              "/connections",
+              "/grants",
+              "/memory",
+              "/decisions/answer",
+              "/personal/settings",
+              "/notifications",
+            ]);
+            if (req.method === "GET" && readPaths.has(path)) {
+              json(res, 200, await call(path + u.search));
+              return;
+            }
+            if (req.method === "POST" && writePaths.has(path)) {
+              const origin = req.headers.origin;
+              if (!origin || new URL(origin).host !== req.headers.host) {
+                json(res, 403, { error: "origin rejected" });
+                return;
+              }
+              json(res, 200, await call(path, owner, await body(req)));
+              return;
+            }
+            if(req.method==='POST' && ['/session/start','/workspace/create'].includes(path)) {
+              const origin=req.headers.origin;
+              if(!origin||new URL(origin).host!==req.headers.host){json(res,403,{error:'origin rejected'});return}
+              const input=await body(req);
+              if(path==='/workspace/create') {
+                if(typeof input.path!=='string'||typeof input.name!=='string')throw Error('Invalid project');
+                await mkdir(input.path,{recursive:true});
+                const w=await ctx.workspaceRegistry.create(await realpath(input.path),input.name);
+                await syncProjects();json(res,200,{workspaceId:w.id,projectId:idOf(w.path)});return;
+              }
+              const w=ctx.workspaceRegistry.list().find(w=>w.id===input.workspaceId);
+              if(!w)throw Error('Workspace unavailable');
+              const id=input.sessionId||randomUUID();
+              const agent=await ensureSession(id,w.path);
+              if(input.text){agent.followup(createUserMessage({content:[{type:'text',text:input.text}],source:{kind:'user'}}));await ctx.sessions.flush(agent.session)}
+              json(res,200,{sessionId:id});return;
+            }
+            json(res, 404, { error: "unknown operation" });
+          } catch (e) {
+            json(res, 400, { error: e.message });
+          }
+        },
+      }),
+    "workbench: owner API",
+  );
+
+  // Worker calls the official Harness model service, not a second provider implementation.
+  const server = createServer(async (req, res) => {
+    const provided = Buffer.from(
+      (req.headers.authorization ?? "").replace(/^Bearer /, ""),
+    );
+    const expected = Buffer.from(token);
+    if (
+      provided.length !== expected.length ||
+      !timingSafeEqual(provided, expected)
+    ) {
+      json(res, 401, { error: "unauthorized" });
+      return;
+    }
+    if(req.method==='GET'&&req.url==='/health'){json(res,200,{ready:true});return;}
+    if(req.method==='POST'&&req.url==='/attachments') {
+      try {
+        const input=await body(req),p=input.principal;
+        const w=p.kind==='personal'?personalWorkspace:ctx.workspaceRegistry.list().find(w=>idOf(w.path)===p.projectId&&w.path!==personalPath);
+        if(!w||!['personal','project'].includes(p.kind))throw Error('Unknown Session');
+        const persisted=await ctx.sessionPersistence.stat(p.sessionId);if(!persisted)throw Error('Unknown Session');
+        const agent=await ensureSession(p.sessionId,w.path);
+        const actual=identity(agent);if(actual.kind!==p.kind||actual.projectId!==p.projectId||actual.sessionId!==p.sessionId)throw Error('Session identity mismatch');
+        await call('/session/check',p);
+        const files=delivery.stateOf(agent.session).files;
+        if(!input.attachmentId){json(res,200,files);return;}
+        const ref=files.find(f=>f.attachmentId===input.attachmentId);if(!ref)throw Error('Attachment is not in this Session');
+        json(res,200,[{...ref,text:await attachmentText(ctx.attachments,ref,AbortSignal.timeout(30000))}]);
+      }catch(e){json(res,400,{error:e.message})}
+      return;
+    }
+    if(req.method==='POST' && ['/owner-request','/dispatch'].includes(req.url)) {
+      try {
+        const input=await body(req);
+        if(req.url==='/owner-request'){
+          if(input.kind!=='personal'||typeof input.sessionId!=='string'||!input.sessionId)throw requestError('Personal Session required');
+          const agent=await ensureSession(input.sessionId,personalPath);
+          json(res,200,delivery.stateOf(agent.session).ownerRequest);return;
+        }
+        if(!input.principal||typeof input.id!=='string'||!input.id||typeof input.principal.sessionId!=='string'||!input.principal.sessionId)throw requestError('Invalid dispatch identity');
+        const incoming=input.operation==='incoming';
+        const isOwner=incoming&&input.principal.kind==='personal';
+        const w=isOwner?personalWorkspace:ctx.workspaceRegistry.list().find(w=>idOf(w.path)===input.principal.projectId&&w.path!==personalPath);
+        if(!w||(!isOwner&&input.principal.kind!=='project')||typeof input.goal!=='string')throw requestError('Target project unavailable',403);
+        const agent=await ensureSession(input.principal.sessionId,w.path);
+        if(!delivery.stateOf(agent.session).dispatches.includes(input.id)) {
+          agent.followup(createUserMessage({content:[{type:'text',text:(!incoming?'这是一项已经由今日派发到本项目的任务。当前会话就是目标项目会话，派发这一步已完成。请直接执行本人原话中的目标业务，不要重复执行其中针对今日的转交或task_delegate指令。\n\n本人原话：\n':'')+input.goal+'\n\n本次已绑定的资料引用：'+JSON.stringify([...(input.sources||[]),...(input.lineage||[])])}],source:{kind:isOwner?'workbench-owner':incoming?'workbench-incoming':'workbench-delegation',runId:input.id}}));
+          if(!await ctx.sessions.flush(agent.session))throw Error('Project task was not persisted');
+        }
+        json(res,200,{accepted:true,sessionId:agent.id});
+      }catch(e){json(res,e.status||(e instanceof SyntaxError?400:503),{error:e.status?e.message:'Host delivery unavailable'})}
+      return;
+    }
+    if (req.url !== "/model" || req.method !== "POST") {
+      json(res, 404, {});
+      return;
+    }
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 140000);
+    res.on("close", () => {
+      if (!res.writableEnded) abort.abort();
+    });
+    try {
+      const input = await body(req);
+      const method = input.method;
+      if (
+        !method?.instructions ||
+        Buffer.byteLength(JSON.stringify(input.input)) >
+          (method.maxInputBytes || 24000)
+      )
+        throw new Error("invalid model input");
+      const result = await admitModel(input.lane, abort.signal, async () => {
+      const prepared = await ctx.llm.prepareCall(
+        {
+          provider: config.provider,
+          model: config.model,
+          maxTokens: Math.min(method.maxOutputTokens || 1200, 8192),
+          reasoningEffort: method.reasoningEffort || "off",
+        },
+        abort.signal,
+      );
+      const assembler = new BlockAssembler();
+      for await (const chunk of prepared.stream({
+        ...prepared.config,
+        system: method.instructions,
+        messages: [
+          createUserMessage({
+            content: [{ type: "text", text: JSON.stringify(input.input) }],
+            source: { kind: "user" },
+          }),
+        ],
+        purpose: "workbench-generation",
+        signal: abort.signal,
+      }))
+        assembler.push(chunk);
+      if (assembler.finish?.kind !== "stop")
+        throw new Error(
+          "model did not finish successfully: " +
+            JSON.stringify(assembler.finish),
+        );
+      const text = assembler
+        .blocks()
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("\n");
+      return { text, usage: assembler.usage ?? {} };
+      });
+      if (!res.destroyed) json(res, 200, result);
+    } catch (e) {
+      if (!res.destroyed) json(res, 502, { error: e.message });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(config.bridgePort, "127.0.0.1", resolve);
+  });
+  ctx.effect(() => () => server.close(), "workbench: private model bridge");
+}

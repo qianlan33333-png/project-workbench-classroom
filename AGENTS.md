@@ -1,6 +1,6 @@
 # 项目专家工作台
 
-独立个人云端应用，Go/igo + React + DeepSeek Harness。所有项目正文是普通文件。
+独立个人应用：官方 DeepSeek Harness + 标准 MCP + Temporal + MySQL。新实现仅在 `native/`；会话和项目文件使用 Harness 原生存储，业务数据与执行状态不使用 SQLite。
 
 ## 不变式
 - 一个应用对话稳定对应一个 Harness 会话；对话 project_id 不可改。
@@ -12,10 +12,13 @@
 - 不修改其他服务器项目；正式切换必须通过真实 Harness 和渠道验收。
 
 ## 验证
-- Go: go test ./...，go vet ./...。
-- Web: npm run check，npm run build。
+- Go: 在 `native/worker` 执行 `go test ./...`、`go vet ./...`；真实 MySQL/Temporal 测试只使用隔离库。
+- Host/连接器：`node --test native/harness/*.test.js native/connectors/*.test.mjs`。
+- 前端沿用 Harness 原生界面及 Cordis 扩展；涉及界面调整先用 Product Design。用隔离 Playwright 验证桌面/手机及真实会话，不另建一套聊天前端。
 - 对入口路由、重复投递、文件修订、崩溃恢复提供行为测试。
 - 每个实现阶段更新 docs/IMPLEMENTATION.md，明确真实验证与未验证项。
+- 数据库、知识文件及衍生产物均经资源允许列表；宿主绑定项目身份。通用工具协议和 Skill 规则见 `native/docs/EXTENSIONS.md`。
+- 定时/并发/恢复使用官方 Temporal SDK；不引入专项活动生成器、自制编排语言或权限平台。
 
 ## 发布、回滚与空间治理
 
