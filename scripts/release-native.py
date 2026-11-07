@@ -2,7 +2,7 @@
 """Native format support for the existing workbench release lock/controller.
 No CLI and no independent lock: release-common.py owns the transaction.
 """
-import hashlib, json, os, re, shutil, sqlite3, subprocess, tarfile, time, urllib.request
+import hashlib, json, os, pwd, re, shutil, sqlite3, subprocess, tarfile, time, urllib.request
 from pathlib import Path
 
 UNITS=('project-workbench-channels','project-workbench','project-workbench-worker','project-workbench-temporal')
@@ -281,6 +281,31 @@ def check_retirement_dependencies(config,roots,old_uuid=None):
     if not registry.is_file():raise RuntimeError('Native workspace registry must be checked before retirement')
     walk(json.loads(registry.read_text()))
 
+def check_container_dependencies(c,roots,definition_roots=None):
+    # Host findmnt cannot see rootless containers' private mount namespaces.
+    # Stopped containers also matter: a later start must not use deleted files.
+    roots=[p.resolve() for p in roots]
+    ids=c.as_user('podman','ps','--all','--quiet','--no-trunc',capture=True).stdout.split()
+    if ids:
+        containers=json.loads(c.as_user('podman','inspect',*ids,capture=True).stdout)
+        for container in containers:
+            for mount in container.get('Mounts',[]):
+                source=Path(mount['Source']).resolve()
+                if any(source==root or root in source.parents for root in roots):
+                    raise RuntimeError('Container still depends on retiring files: '+container['Name'])
+    if definition_roots is None:
+        home=Path(pwd.getpwnam(c.USER).pw_dir)
+        definition_roots=[Path('/etc/systemd/system'),Path('/etc/systemd/user'),Path('/etc/containers/systemd'),Path('/usr/share/containers/systemd'),home/'.config/systemd/user',home/'.config/containers/systemd']
+    for directory in definition_roots:
+        if not directory.exists():continue
+        for file in directory.rglob('*'):
+            if not file.is_file():continue
+            # This exact stopped unit is removed by retire itself.
+            if file.resolve()==Path('/etc/systemd/system/workbench-context-plugin.service'):continue
+            text=file.read_text(errors='replace')
+            if any(re.search(re.escape(str(root))+r'''(?=/|[\s:'"=]|$)''',text) for root in roots):
+                raise RuntimeError('Startup definition still references retiring files: '+str(file))
+
 def retire(c,state):
     """Finish the explicitly authorized incompatible generation, under the same lock.
     This uses only the existing temporary deployment record; no cleanup ledger.
@@ -326,13 +351,14 @@ def retire(c,state):
         state.update(retirementStarted=True,oldImages=sorted(set(images)),oldPluginInstance={'host':database.group(3),'port':database.group(4),'user':database.group(1),'database':database.group(5),'uuid':old_uuid});write_state(c,state)
     # Reject mounts before DROP/rmtree. Never traverse a shared bind mount or
     # unmount an unrelated consumer as a side effect of retirement.
+    deleting=[*roots,*retiring_releases,c.BASE/'incoming']
+    check_container_dependencies(c,deleting)
     mount_result=subprocess.run(['findmnt','--json','--output','TARGET'],capture_output=True,text=True)
     if mount_result.returncode:raise RuntimeError('Cannot inspect mount boundaries')
     def mounts(nodes):
         for item in nodes:
             yield Path(item['target']).resolve()
             yield from mounts(item.get('children',[]))
-    deleting=[*roots,*retiring_releases,c.BASE/'incoming']
     for target in mounts(json.loads(mount_result.stdout)['filesystems']):
         if any(target==root.resolve() or root.resolve() in target.parents for root in deleting):raise RuntimeError('Retiring path contains a mount; inspect the consumer before cleanup')
     for proc in Path('/proc').iterdir():

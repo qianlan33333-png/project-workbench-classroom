@@ -97,4 +97,24 @@ class RecoveryTest(unittest.TestCase):
    n.deploy(self.c,self.candidate)
   self.assertEqual(self.c.pointer('current'),self.candidate)
   self.assertNotIn('project-workbench-channels',self.c.active);self.assertNotIn('workbench-context-plugin',self.c.active)
+class DependencyTest(unittest.TestCase):
+ def test_stopped_container_bind_blocks_retirement(self):
+  calls=[]
+  def command(*args,**kwargs):
+   calls.append(args)
+   return types.SimpleNamespace(stdout='container1\n' if args[1]=='ps' else json.dumps([{'Name':'external-service','State':{'Running':False},'Mounts':[{'Source':'/retiring/tools'}]}]))
+  with self.assertRaisesRegex(RuntimeError,'external-service'):
+   n.check_container_dependencies(types.SimpleNamespace(as_user=command),[Path('/retiring')],[])
+  self.assertIn('--all',calls[0])
+ def test_startup_definition_blocks_even_without_container(self):
+  with tempfile.TemporaryDirectory() as temp:
+   path=Path(temp);(path/'external.container').write_text('Volume=/retiring/tools:/tools:ro\n')
+   c=types.SimpleNamespace(as_user=lambda *args,**kwargs:types.SimpleNamespace(stdout=''))
+   with self.assertRaisesRegex(RuntimeError,'Startup definition'):
+    n.check_container_dependencies(c,[Path('/retiring')],[path])
+ def test_moved_resource_and_similar_prefix_are_preserved(self):
+  with tempfile.TemporaryDirectory() as temp:
+   path=Path(temp);(path/'native.service').write_text('WorkingDirectory=/retiring-native\n')
+   def command(*args,**kwargs):return types.SimpleNamespace(stdout='moved\n' if args[1]=='ps' else json.dumps([{'Name':'external','Mounts':[{'Source':'/integrations/tools'}]}]))
+   n.check_container_dependencies(types.SimpleNamespace(as_user=command),[Path('/retiring')],[path])
 if __name__=='__main__':unittest.main()
