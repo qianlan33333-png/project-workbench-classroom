@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Release recovery behavior, including crashes at the external-consumer boundary."""
-import importlib.util,json,tempfile,types,unittest
+import importlib.util,io,json,tempfile,types,unittest,urllib.error
 from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('native_release',Path(__file__).with_name('release-native.py'))
@@ -97,6 +97,23 @@ class RecoveryTest(unittest.TestCase):
    n.deploy(self.c,self.candidate)
   self.assertEqual(self.c.pointer('current'),self.candidate)
   self.assertNotIn('project-workbench-channels',self.c.active);self.assertNotIn('workbench-context-plugin',self.c.active)
+class HealthTest(unittest.TestCase):
+ def probe(self,index_status,bridge_ready=True):
+  def request(url,**kwargs):
+   address=url if isinstance(url,str) else url.full_url
+   if address=='http://127.0.0.1:3082/':
+    if index_status!=200:raise urllib.error.HTTPError(address,index_status,'fixture',{},io.BytesIO(b'unauthorized'))
+    return io.BytesIO(b'<html></html>')
+   return io.BytesIO(json.dumps({'ready':bridge_ready if ':7382/' in address else True}).encode())
+  c=types.SimpleNamespace(run=lambda *args,**kwargs:types.SimpleNamespace(returncode=0))
+  with patch.object(n.Path,'read_text',return_value=json.dumps({'common':{'WORKBENCH_HOST_TOKEN':'fixture'}})),patch.object(n.urllib.request,'urlopen',request),patch.object(n.time,'sleep'):
+   n.health(c)
+ def test_protected_native_index_is_ready_for_authenticated_acceptance(self):
+  self.probe(401)
+ def test_other_http_errors_or_unready_plugin_do_not_pass(self):
+  for status,ready in [(403,True),(500,True),(401,False)]:
+   with self.subTest(status=status,ready=ready),self.assertRaisesRegex(RuntimeError,'did not become ready'):
+    self.probe(status,ready)
 class DependencyTest(unittest.TestCase):
  def test_stopped_container_bind_blocks_retirement(self):
   calls=[]

@@ -2,7 +2,7 @@
 """Native format support for the existing workbench release lock/controller.
 No CLI and no independent lock: release-common.py owns the transaction.
 """
-import hashlib, json, os, pwd, re, shutil, sqlite3, subprocess, tarfile, time, urllib.request
+import hashlib, json, os, pwd, re, shutil, sqlite3, subprocess, tarfile, time, urllib.error, urllib.request
 from pathlib import Path
 
 UNITS=('project-workbench-channels','project-workbench','project-workbench-worker','project-workbench-temporal')
@@ -53,7 +53,14 @@ def health(c):
             with urllib.request.urlopen('http://127.0.0.1:7381/health',timeout=2) as res:assert json.load(res)['ready']
             request=urllib.request.Request('http://127.0.0.1:7382/health',headers={'Authorization':'Bearer '+token})
             with urllib.request.urlopen(request,timeout=2) as res:assert json.load(res)['ready']
-            urllib.request.urlopen('http://127.0.0.1:3082/',timeout=2).close()
+            try:
+                urllib.request.urlopen('http://127.0.0.1:3082/',timeout=2).close()
+            except urllib.error.HTTPError as error:
+                # Native Harness protects its index even on loopback. A bare
+                # probe must receive 401; the mandatory acceptance hook checks
+                # the authenticated page and catalog before committing.
+                if error.code!=401:raise
+                error.close()
             if c.run('systemctl','is-active','--quiet','project-workbench-worker','project-workbench-temporal',check=False).returncode:raise OSError('service inactive')
             return
         except (OSError,ValueError,KeyError,AssertionError):time.sleep(1)
