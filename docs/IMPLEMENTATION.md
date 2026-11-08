@@ -483,3 +483,14 @@ CRM 原安装仍启用且未改动设置（revision 3 / generation 1）。恢复
 最终隔离 Harness / MySQL / Temporal 使用真实模型及语料完成8种问题：问候、普通业务、26条之外的比较、同Session追问均回复；当前退款推断、个人实时结果及未知问题转人工；索要他人隐私被拒绝。问候3.03秒、比较18.08秒、追问15.07秒；较复杂普通问题54.18秒且多轮查证，不能视为统一延迟或并发容量承诺。渠道仅为隔离接收器，未发送真实客户。其他项目403、撤销引用后403、恢复后200；9份知识文件hash与来源指纹相同，原校验/检索业务脚本未变。结构化与旧字符串输入结果一致。
 
 Go test/vet、24项Node测试通过；使用真实08 Worker与08样式启动配置，先恢复旧专家配置后验证可回复，再恢复新配置。独立review-agent反复复审至No findings。新配置在固定控制器提交成功后单独激活，发布提交前保持08可用的原路由；主动退08须先用同一发布锁恢复旧 expertSkill/knowledge，不能只退程序。唯一旧路由保存在 `/var/lib/project-workbench-integrations/huangxiaocan/operations/native-answer-previous/routing.json`，不含密钥；必要的两份旧MCP协议文件与其同目录，均兼容新版和原调用方式。正式发布/读回另记。
+
+
+#### 本次回答方法与语料恢复的正式读回
+
+已通过固定控制器提交 `native-20261108-09`，程序来源 `f6b68b7901175f9a0150cd2e5055312a2f4de281`，Worker SHA256 `1acc117c7944c008030d92b69ecd2ef21f4616815cd48daa1ed15da8849bc33a`；保留08为唯一回滚版，07已轮换，无未完成发布。提交前保持旧路由并通过同包真实模型与原Session验收；提交后启用 `huangxiaocan-wecom-qa` + `restored-answer-corpus` 固定引用，配置revision=3。原本人客户Session和autoReply revision=5保持，发送白名单仍仅本人。
+
+首次配置准备发现原资料服务unit停止后遗留同名容器；兼容协议失败即恢复原文件，工作台仍为08和旧路由，未提前切专家。核实遗留容器原image/mount及两个进程均不存在后清除其元数据；同一unit补Podman官方生命周期的显式stop和stop-post，不删卷/镜像，不改变启动镜像、环境和挂载。实际启动与再次重启后均读回3项原工具，结构化/旧字符串校验结果一致。操作脚本增量经独立review-agent复审至No findings。
+
+独立读回：四项工作台服务、原语料服务active，Worker API/backgroundReady均true，语料数量与指纹不变。隔离库、namespace、临时Host/Worker/接收器及兼容测试容器退场，验收证据保存在本机私有目录；只移除本轮合成接管/审计行，保留实际业务记录。原上下文中心、CRM及现有客户会话不改。
+
+渠道边界：托管企微账号本次最后读回为offline/sendEnabled=false。8条最终问答使用真实模型和原语料，发送只到隔离接收器；本次新专家在正式微信上的新问题收发尚未完成，不能把程序与资料服务在线当作企微在线。需托管账号恢复在线后再用本人新消息联测，未开放其他客户。未启用旧每日采集，也没有GitHub推送。
