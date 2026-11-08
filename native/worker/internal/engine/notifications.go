@@ -16,7 +16,39 @@ import (
 // This scheduled delivery step only reads durable events and submits ordinary
 // message workflows. Failure/retry cannot invoke the original business task.
 func NotificationSweep(ctx workflow.Context) error {
+	if workflow.GetVersion(ctx, "conversation-mode-notifications", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		if err := workflow.ExecuteActivity(activityContext(ctx, InteractiveQueue), "QueueModeNotifications").Get(ctx, nil); err != nil {
+			return err
+		}
+	}
 	return workflow.ExecuteActivity(activityContext(ctx, InteractiveQueue), "QueueNotifications").Get(ctx, nil)
+}
+
+func (a *Activities) QueueModeNotifications(ctx context.Context) error {
+	// Bounded drain of only control events; business chatter cannot block handoff.
+	for page := 0; page < 10; page++ {
+		events, err := a.Store.PendingModeEvents(ctx)
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			run, e := a.Store.QueueModeNotification(ctx, event)
+			if e != nil {
+				return e
+			}
+			_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: run.ID, TaskQueue: InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY}, SendMessage, run.ID)
+			if e != nil && !temporal.IsWorkflowExecutionAlreadyStartedError(e) {
+				return e
+			}
+			if e = a.Store.MarkModeQueued(ctx, event.ID); e != nil {
+				return e
+			}
+		}
+		if len(events) < 100 {
+			return nil
+		}
+	}
+	return nil
 }
 func (a *Activities) QueueNotifications(ctx context.Context) error {
 	settings, e := a.Store.NotificationSettings(ctx)
@@ -50,7 +82,7 @@ func (a *Activities) QueueNotifications(ctx context.Context) error {
 				return e
 			}
 		}
-		if source.Operation == "notification" || source.ParentRunID != "" || (source.Operation == "reply" && event.Kind != "message.unknown" && event.Kind != "message.failed") {
+		if source.Operation == "notification" || source.Operation == "control_notification" || source.ParentRunID != "" || (source.Operation == "reply" && event.Kind != "message.unknown" && event.Kind != "message.failed") {
 			if e = a.Store.AdvanceNotifications(ctx, event.Sequence); e != nil {
 				return e
 			}

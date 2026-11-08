@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -77,6 +78,9 @@ func (s *Store) deliveryGate(ctx context.Context, tx *sql.Tx, d Delivery) error 
 	if e != nil {
 		return e
 	}
+	if d.Target["kind"] == "conversation.mode.changed" && r.Operation != "control_notification" {
+		return ErrDenied
+	}
 	c, e := scanJSON[Transport](tx.QueryRowContext(ctx, `SELECT body FROM wb_transports WHERE id=? FOR SHARE`, d.ConnectionID))
 	if e != nil {
 		return e
@@ -87,8 +91,13 @@ func (s *Store) deliveryGate(ctx context.Context, tx *sql.Tx, d Delivery) error 
 			allowed = true
 		}
 	}
-	if !c.Enabled || !allowed {
+	if r.Operation != "control_notification" && (!c.Enabled || !allowed) {
 		return ErrDenied
+	}
+	if r.Operation == "reply" || r.Operation == "message" || r.Operation == "dispatch_batch" {
+		if e = s.modeDeliveryGate(ctx, tx, c, d); e != nil {
+			return e
+		}
 	}
 	rows, e := tx.QueryContext(ctx, `SELECT resource_id,version,section_id FROM wb_run_sources WHERE run_id=?`, r.ID)
 	if e != nil {
@@ -115,6 +124,19 @@ func (s *Store) deliveryGate(ctx context.Context, tx *sql.Tx, d Delivery) error 
 		return e
 	}
 	switch r.Operation {
+	case "control_notification":
+		event, err := scanJSON[RunEvent](tx.QueryRowContext(ctx, `SELECT body FROM wb_events WHERE id=?`, r.OriginMessage))
+		if err != nil || r.Principal.Kind != "owner" || event.Kind != "conversation.mode.changed" || d.Target["kind"] != event.Kind || d.Target["eventId"] != event.ID {
+			return ErrDenied
+		}
+		raw, err := json.Marshal(event.Details)
+		if err != nil || string(raw) != d.Text || r.Goal != d.Text {
+			return ErrDenied
+		}
+		var change ModeChange
+		if json.Unmarshal(raw, &change) != nil || change.ConnectionID != d.ConnectionID {
+			return ErrDenied
+		}
 	case "dispatch_batch":
 		if r.Dispatch == nil {
 			return ErrInvalid

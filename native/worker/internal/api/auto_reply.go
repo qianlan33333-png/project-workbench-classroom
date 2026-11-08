@@ -12,6 +12,40 @@ import (
 )
 
 func (a *Server) replyRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /conversation-control", func(w http.ResponseWriter, r *http.Request) {
+		var in core.ConversationControl
+		if decode(w, r, &in) {
+			out, err := a.Store.ControlConversation(r.Context(), principal(r.Context()), in)
+			if err == nil {
+				write(w, out)
+				return
+			}
+			status, code := http.StatusServiceUnavailable, "unavailable"
+			switch {
+			case core.IsMissing(err):
+				status, code = 404, "not_bound"
+			case errors.Is(err, core.ErrDenied):
+				status, code = 403, "forbidden"
+			case errors.Is(err, core.ErrInvalid):
+				status, code = 400, "invalid_request"
+			case errors.Is(err, core.ErrConflict):
+				status, code = 409, "stale_version"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			write(w, map[string]string{"error": code})
+		}
+	})
+	mux.HandleFunc("POST /connector-state/compare", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			ID       string         `json:"id"`
+			Expected map[string]any `json:"expected"`
+			Value    map[string]any `json:"value"`
+		}
+		if decode(w, r, &in) {
+			respond(w, map[string]bool{"ok": true}, a.Store.CompareConnectorState(r.Context(), principal(r.Context()), in.ID, in.Expected, in.Value))
+		}
+	})
 	mux.HandleFunc("GET /reply-channel-history", func(w http.ResponseWriter, r *http.Request) {
 		v, e := a.Store.ChannelHistory(r.Context(), principal(r.Context()), r.URL.Query().Get("sessionId"))
 		respond(w, v, e)

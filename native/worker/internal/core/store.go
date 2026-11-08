@@ -89,6 +89,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 	}
 	for _, column := range []struct{ name, definition string }{
+		{"external_user_id", "VARCHAR(191) COLLATE utf8mb4_0900_bin GENERATED ALWAYS AS (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(body,'$.externalUserId')),'')) STORED"},
 		{"project_id", "VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (JSON_UNQUOTE(JSON_EXTRACT(body,'$.principal.projectId'))) STORED"},
 		{"auto_reply", "BOOLEAN GENERATED ALWAYS AS (JSON_EXTRACT(body,'$.autoReply')=TRUE) STORED"},
 		{"display_name", "VARCHAR(191) GENERATED ALWAYS AS (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(body,'$.displayName')),'')) STORED"},
@@ -104,7 +105,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			}
 		}
 	}
-	for name, columns := range map[string]string{"wb_routes_recent": "project_id,last_activity DESC,id DESC", "wb_routes_paused": "project_id,auto_reply,last_activity DESC,id DESC"} {
+	for name, columns := range map[string]string{"wb_routes_actor": "connection_id,actor_id", "wb_routes_external": "connection_id,external_user_id", "wb_routes_recent": "project_id,last_activity DESC,id DESC", "wb_routes_paused": "project_id,auto_reply,last_activity DESC,id DESC"} {
 		var count int
 		if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='wb_message_routes' AND index_name=?`, name).Scan(&count); e != nil {
 			return e
@@ -139,6 +140,15 @@ func (s *Store) Migrate(ctx context.Context) error {
 			if _, e := s.DB.ExecContext(ctx, "CREATE INDEX "+name+" ON wb_messages ("+columns+")"); e != nil {
 				return e
 			}
+		}
+	}
+	var kindColumn int
+	if e = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='wb_events' AND column_name='event_kind'`).Scan(&kindColumn); e != nil {
+		return e
+	}
+	if kindColumn == 0 {
+		if _, e = s.DB.ExecContext(ctx, `ALTER TABLE wb_events ADD COLUMN event_kind VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (JSON_UNQUOTE(JSON_EXTRACT(body,'$.kind'))) STORED, ADD INDEX wb_events_kind(event_kind,sequence)`); e != nil {
+			return e
 		}
 	}
 	return nil

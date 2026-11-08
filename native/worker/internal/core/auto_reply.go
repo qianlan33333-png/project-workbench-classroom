@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"github.com/google/uuid"
 	"strings"
 	"time"
@@ -156,7 +157,7 @@ func (s *Store) EnsureReplyRoute(ctx context.Context, m IncomingMessage) (Messag
 	}
 	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte("object/"+m.ConnectionID+"/"+m.ConversationID+"/"+m.ActorID)).String()
 	p := Principal{Kind: "project", ProjectID: cfg.ProjectID, SessionID: "object-" + id}
-	route := MessageRoute{ID: id, ConnectionID: m.ConnectionID, ConversationID: m.ConversationID, ActorID: m.ActorID, Principal: p, Enabled: true, AutoReply: true, Revision: 1, DisplayName: m.DisplayName}
+	route := MessageRoute{ID: id, ConnectionID: m.ConnectionID, ConversationID: m.ConversationID, ActorID: m.ActorID, ExternalUserID: m.ExternalUserID, Principal: p, Enabled: true, AutoReply: true, Revision: 1, DisplayName: m.DisplayName}
 	if e = s.PutRoute(ctx, Principal{Kind: "owner", SessionID: "connector-binding"}, route); e != nil && !IsConflict(e) {
 		return route, e
 	}
@@ -351,6 +352,9 @@ func (s *Store) ChangeReplyMode(ctx context.Context, p Principal, id string, rev
 		if e = pausePending(ctx, tx, id); e != nil {
 			return v, e
 		}
+	}
+	if e = modeChangedTx(ctx, tx, &v); e != nil {
+		return v, e
 	}
 	_, e = tx.ExecContext(ctx, `UPDATE wb_message_routes SET body=? WHERE id=?`, jsonText(v), id)
 	if e != nil {
@@ -586,7 +590,7 @@ func (s *Store) ExpireReplyDraft(ctx context.Context, id string) (bool, error) {
 	if e == nil {
 		return false, nil
 	}
-	if e != ErrDenied && e != ErrConflict {
+	if !errors.Is(e, ErrDenied) && !errors.Is(e, ErrConflict) {
 		return false, e
 	}
 	if _, e = tx.ExecContext(ctx, `UPDATE wb_messages SET body=JSON_SET(body,'$.state','reply_failed') WHERE connection_id=? AND event_id=? AND message_state='reply_queued'`, d.ConnectionID, d.Target["replyTo"]); e != nil {

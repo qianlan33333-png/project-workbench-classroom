@@ -13,14 +13,17 @@ import (
 // A transport is a standard MCP server. Business routing and approvals live
 // here; platform authentication and wire formats remain in the connector.
 type Transport struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	Endpoint string   `json:"endpoint"`
-	TokenEnv string   `json:"tokenEnv"`
-	Projects []string `json:"projects"`
-	Enabled  bool     `json:"enabled"`
+	ModeConnectionID string   `json:"modeConnectionId,omitempty"`
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	Endpoint         string   `json:"endpoint"`
+	TokenEnv         string   `json:"tokenEnv"`
+	Projects         []string `json:"projects"`
+	Enabled          bool     `json:"enabled"`
 }
 type MessageRoute struct {
+	ExternalUserID string      `json:"externalUserId,omitempty"`
+	ModeChangedAt  time.Time   `json:"modeChangedAt,omitempty"`
 	Revision       int64       `json:"revision"`
 	DisplayName    string      `json:"displayName,omitempty"`
 	LastMessageAt  string      `json:"lastMessageAt"`
@@ -79,6 +82,9 @@ type Delivery struct {
 func (s *Store) PutTransport(ctx context.Context, p Principal, v Transport) error {
 	if !p.IsOwner() {
 		return ErrDenied
+	}
+	if v.ModeConnectionID != "" && !ValidID(v.ModeConnectionID) {
+		return ErrInvalid
 	}
 	u, e := url.Parse(v.Endpoint)
 	if !ValidID(v.ID) || v.Name == "" || e != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && (u.Scheme != "http" || u.Hostname() != "127.0.0.1")) || !strings.HasPrefix(v.TokenEnv, "WORKBENCH_CONNECTOR_") {
@@ -180,6 +186,11 @@ func (s *Store) PutRoute(ctx context.Context, p Principal, v MessageRoute) error
 			return ErrConflict
 		}
 		if v.Principal.Kind == "project" {
+			if v.ExternalUserID != "" && old.ExternalUserID != "" && v.ExternalUserID != old.ExternalUserID {
+				return ErrConflict
+			}
+			v.ExternalUserID = old.ExternalUserID
+			v.ModeChangedAt = old.ModeChangedAt
 			if v.Revision != old.Revision {
 				return ErrConflict
 			}
@@ -213,7 +224,7 @@ func (s *Store) Route(ctx context.Context, id string) (MessageRoute, error) {
 	return scanJSON[MessageRoute](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_message_routes WHERE id=?`, id))
 }
 func (s *Store) AcceptMessage(ctx context.Context, v IncomingMessage) (StoredMessage, error) {
-	if !ValidID(v.ConnectionID) || v.EventID == "" || len(v.EventID) > 191 || len(v.Text) > 64000 || v.ActorID == "" || len(v.ActorID) > 191 || v.ConversationID == "" || len(v.ConversationID) > 191 || len(v.DisplayName) > 191 || (v.Kind != "" && v.Kind != "human") {
+	if !ValidID(v.ConnectionID) || v.EventID == "" || len(v.EventID) > 191 || len(v.Text) > 64000 || v.ActorID == "" || len(v.ActorID) > 191 || v.ConversationID == "" || len(v.ConversationID) > 191 || len(v.DisplayName) > 191 || len(v.ExternalUserID) > 191 || (v.Kind != "" && v.Kind != "human") {
 		return StoredMessage{}, ErrInvalid
 	}
 	// Duplicate transport events must not depend on today's mutable resource configuration.
@@ -227,12 +238,13 @@ func (s *Store) AcceptMessage(ctx context.Context, v IncomingMessage) (StoredMes
 	}
 	// Resolve trusted identities before the route transaction; no model input is used.
 	route, routeErr := scanJSON[MessageRoute](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_message_routes WHERE connection_id=? AND conversation_id=? AND actor_id=?`, v.ConnectionID, v.ConversationID, v.ActorID))
+	identityConflict := routeErr == nil && route.ExternalUserID != "" && v.ExternalUserID != "" && route.ExternalUserID != v.ExternalUserID
 	var knowledge []Ref
 	var contextRefs []RecordRef
 	var skill string
 	var settingsRevision int64
 	var inputErr error
-	if routeErr == nil && route.Enabled && route.AutoReply && v.Kind != "human" {
+	if routeErr == nil && !identityConflict && route.Enabled && route.AutoReply && v.Kind != "human" {
 		var e error
 		knowledge, contextRefs, skill, settingsRevision, e = s.replyInputs(ctx, route, v)
 		if e != nil {
@@ -269,7 +281,26 @@ func (s *Store) AcceptMessage(ctx context.Context, v IncomingMessage) (StoredMes
 		return existing, e
 	}
 	message := StoredMessage{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(v.ConnectionID+"/"+v.EventID)).String(), IncomingMessage: v, CreatedAt: time.Now().UTC(), State: "unrouted"}
+	if routeErr == nil && route.ExternalUserID != "" && v.ExternalUserID != "" && route.ExternalUserID != v.ExternalUserID {
+		// A trusted contact changing external identity is not a silent remap.
+		// Preserve the input as unrouted, outside the old customer's Session.
+		route.AutoReply = false
+		route.Revision = routeRevision(route) + 1
+		if e = pausePending(ctx, tx, route.ID); e != nil {
+			return message, e
+		}
+		if e = modeChangedTx(ctx, tx, &route); e != nil {
+			return message, e
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE wb_message_routes SET body=? WHERE id=?`, jsonText(route), route.ID); e != nil {
+			return message, e
+		}
+		routeErr = ErrDenied
+	}
 	if routeErr == nil && route.Enabled {
+		if route.ExternalUserID == "" {
+			route.ExternalUserID = v.ExternalUserID
+		}
 		message.RouteID = route.ID
 		message.Principal = route.Principal
 		message.RouteRevision = routeRevision(route)
@@ -291,12 +322,18 @@ func (s *Store) AcceptMessage(ctx context.Context, v IncomingMessage) (StoredMes
 			if e = handoffEvent(ctx, tx, message); e != nil {
 				return message, e
 			}
+			if e = modeChangedTx(ctx, tx, &route); e != nil {
+				return message, e
+			}
 		}
 		if v.Kind == "human" {
 			message.State = "human"
 			route.AutoReply = false
 			route.Revision = routeRevision(route) + 1
 			if e = pausePending(ctx, tx, route.ID); e != nil {
+				return message, e
+			}
+			if e = modeChangedTx(ctx, tx, &route); e != nil {
 				return message, e
 			}
 		}
@@ -392,6 +429,9 @@ func (s *Store) MessageDisposition(ctx context.Context, p Principal, connection,
 			if e = handoffEvent(ctx, tx, m); e != nil {
 				return e
 			}
+			if e = modeChangedTx(ctx, tx, &route); e != nil {
+				return e
+			}
 			if _, e = tx.ExecContext(ctx, `UPDATE wb_message_routes SET body=? WHERE id=?`, jsonText(route), route.ID); e != nil {
 				return e
 			}
@@ -474,7 +514,11 @@ func (s *Store) PutDelivery(ctx context.Context, r Run, v Delivery) error {
 	if v.Text == "" || len(v.Text) > 16000 || len(v.Target) == 0 || !ValidID(v.ID) || v.RunID != r.ID || v.ItemID == "" {
 		return ErrInvalid
 	}
-	if _, e := s.Transport(ctx, r.Principal, v.ConnectionID); e != nil {
+	if r.Operation == "control_notification" {
+		if _, e := scanJSON[Transport](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_transports WHERE id=?`, v.ConnectionID)); e != nil {
+			return e
+		}
+	} else if _, e := s.Transport(ctx, r.Principal, v.ConnectionID); e != nil {
 		return e
 	}
 	v.State = "prepared"

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import {createGateway} from './wecom-gateway.mjs';
+import {createConversationControl} from './conversation-control.mjs';
 import * as lark from '@larksuiteoapi/node-sdk';
 
 export function parseWechatJSON(text){return JSON.parse(text,(key,value,context)=>key==='message_id'&&typeof value==='number'&&context?.source?context.source:value)}
@@ -17,6 +18,14 @@ export async function ingestFeishu(c,{sender,message:m},workerCall){
 const unknown=receipt=>({state:'unknown',receipt:receipt||'',error:'结果未明确；连接器不会自动重发。'});
 export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
  const clients=new Map(),tokens=new Map();
+ const controls=new Map();
+ for(const c of config.filter(c=>c.crm&&c.crm.enabled!==false)){
+  const control=createConversationControl(c,workerCall,fetcher);
+  for(const id of new Set([c.id,c.crm.hookId].filter(Boolean))){
+   if(!/^[a-zA-Z0-9_-]{1,96}$/.test(id)||controls.has(id))throw Error('Duplicate or invalid CRM hook identity');
+   controls.set(id,control);
+  }
+ }
  const gateways=new Map(config.filter(c=>c.enabled&&c.kind==='wecom-gateway').map(c=>[c.id,createGateway(c,workerCall,fetcher)]));
  const entry=id=>{const c=config.find(c=>c.id===id&&c.enabled);if(!c)throw Error('Connector unavailable');return c};
  const platformWechat=async(c,endpoint,data,signal)=>{
@@ -34,6 +43,7 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
  };
  const feishu=c=>{if(feishuFactory)return feishuFactory(c);if(!clients.has(c.id))clients.set(c.id,new lark.Client({appId:c.appId,appSecret:c.appSecret,appType:lark.AppType.SelfBuild,domain:lark.Domain.Feishu,loggerLevel:lark.LoggerLevel.error}));return clients.get(c.id)};
  async function send({connectionId,idempotencyKey,target,text}){
+  if(target.kind==='conversation.mode.changed')return controls.has(connectionId)?controls.get(connectionId).notify({target,text}):{state:'failed',error:'CRM control is not configured'};
   const c=entry(connectionId);if(!text||text.length>16000)throw Error('Invalid message');
   if(gateways.has(c.id))return gateways.get(c.id).send({connectionId,idempotencyKey,target,text});
   if(c.kind==='wechat'){
@@ -66,7 +76,10 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   }
   throw Error('Unsupported connector');
  }
- async function receipt({connectionId,receipt,target,state}){
+ async function receipt({connectionId,receipt,target,state,text}){
+  // Only state.changed is idempotent at the receiver. Customer sends never
+  // enter this branch and are never retried as a receipt query.
+  if(target.kind==='conversation.mode.changed')return controls.has(connectionId)?controls.get(connectionId).notify({target,text}):{state:'failed',error:'CRM control is not configured'};
   const c=entry(connectionId);
   if(gateways.has(c.id))return gateways.get(c.id).receipt({receipt,target,state});
   if(!receipt)return unknown();
@@ -111,5 +124,5 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   const dispatcher=new lark.EventDispatcher({}).register({'im.message.receive_v1':event=>ingestFeishu(c,event,workerCall)});
   await ws.start({eventDispatcher:dispatcher});if(!signal.aborted)await new Promise(r=>signal.addEventListener('abort',r,{once:true}));ws.close({force:true});
  }
- return{send,receipt,ingestGateway:async(id,raw,headers)=>{const g=gateways.get(id);if(!g)throw Error('Unknown gateway');return g.ingest(raw,headers)},start:async signal=>Promise.all(config.filter(c=>c.enabled&&c.receive).map(c=>c.kind==='wechat'?pollWechat(c,signal):c.kind==='feishu'?pollFeishu(c,signal):c.kind==='wecom-gateway'&&c.receiveMode==='poll'?gateways.get(c.id).poll(signal):Promise.resolve()))};
+ return{send,receipt,ingestControl:async(id,raw,headers)=>{const c=controls.get(id);if(!c)throw Object.assign(Error('not_bound'),{status:404,code:'not_bound'});return c.handle(raw,headers)},ingestGateway:async(id,raw,headers)=>{const g=gateways.get(id);if(!g)throw Error('Unknown gateway');return g.ingest(raw,headers)},start:async signal=>Promise.all(config.filter(c=>c.enabled&&c.receive).map(c=>c.kind==='wechat'?pollWechat(c,signal):c.kind==='feishu'?pollFeishu(c,signal):c.kind==='wecom-gateway'&&c.receiveMode==='poll'?gateways.get(c.id).poll(signal):Promise.resolve()))};
 }

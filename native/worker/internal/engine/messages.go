@@ -113,7 +113,7 @@ func (a *Activities) SendDelivery(ctx context.Context, id string) (Receipt, erro
 				return Receipt{State: "failed", Error: "自动回复未提交：配置或会话已失效。"}, nil
 			}
 		}
-		transport, err := a.Store.Transport(ctx, r.Principal, d.ConnectionID)
+		transport, err := a.Store.PreparingTransport(ctx, r, d.ConnectionID)
 		if err != nil {
 			return Receipt{}, failure(err)
 		}
@@ -162,7 +162,11 @@ func (a *Activities) ReconcileDelivery(ctx context.Context, id string) (Receipt,
 	if e != nil {
 		return Receipt{}, failure(e)
 	}
-	receipt, e := callConnector(ctx, c, "message_receipt", map[string]any{"connectionId": c.ID, "idempotencyKey": d.ID, "receipt": d.Receipt, "target": d.Target, "state": d.State})
+	input := map[string]any{"connectionId": c.ID, "idempotencyKey": d.ID, "receipt": d.Receipt, "target": d.Target, "state": d.State}
+	if r.Operation == "control_notification" {
+		input["text"] = d.Text
+	}
+	receipt, e := callConnector(ctx, c, "message_receipt", input)
 	if e != nil {
 		return Receipt{}, e
 	}
@@ -173,7 +177,7 @@ func (a *Activities) recordReceipt(ctx context.Context, r core.Run, d core.Deliv
 	if e != nil {
 		return Receipt{}, failure(e)
 	}
-	if r.Operation == "dispatch_batch" {
+	if r.Operation == "dispatch_batch" || r.Operation == "control_notification" {
 		return Receipt{saved.State, saved.Receipt, saved.Error}, nil
 	}
 	labels := map[string]string{"accepted": "渠道已受理，尚无真实送达凭据。", "pending_confirmation": "已创建手机待发送任务，等待手机端确认。", "sent": "渠道回执确认已发送。", "delivered": "渠道回执确认已送达。", "failed": "渠道明确返回失败。", "unknown": "发送结果未明确，已停止重发，需要核对。"}

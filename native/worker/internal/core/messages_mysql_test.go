@@ -54,7 +54,7 @@ func TestMySQLMessageDedupIsolationAndOneSendClaim(t *testing.T) {
 	}
 	r := Run{ID: id + "run", Principal: p, Operation: "message", Title: "fixture"}
 	must(s.SaveRun(ctx, r))
-	d := Delivery{ID: r.ID, RunID: r.ID, ItemID: "one", ConnectionID: id, Target: map[string]string{"actorId": "one"}, Text: "hello"}
+	d := Delivery{ID: r.ID, RunID: r.ID, ItemID: "one", ConnectionID: id, Target: map[string]string{"actorId": "unpaused-recipient"}, Text: "hello"}
 	must(s.PutDelivery(ctx, r, d))
 	must(s.PutDelivery(ctx, r, d))
 	var claims atomic.Int32
