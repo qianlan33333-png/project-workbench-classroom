@@ -188,3 +188,73 @@ func TestMySQLCustomerToolsOnlyReadBoundSubjectAndSelectedKnowledge(t *testing.T
 		}
 	}
 }
+
+func TestMySQLOwnerMessageRemainsAcceptedWhenTemporalIsUnavailable(t *testing.T) {
+	dsn := os.Getenv("WORKBENCH_TEST_DSN")
+	if dsn == "" {
+		t.Skip("isolated MySQL not configured")
+	}
+	if !strings.Contains(dsn, "/workbench_native_acceptance") {
+		t.Fatal("isolated database required")
+	}
+	ctx := t.Context()
+	s, e := core.Open(ctx, dsn)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.DB.Close()
+	if e = s.Migrate(ctx); e != nil {
+		t.Fatal(e)
+	}
+	id := "manual" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	owner := core.Principal{Kind: "owner", SessionID: id + "owner"}
+	must := func(e error) {
+		t.Helper()
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	must(s.PutProject(ctx, owner, core.Project{ID: id, Name: "manual outage fixture"}))
+	must(s.PutTransport(ctx, owner, core.Transport{ID: id, Name: "sink", Endpoint: "http://127.0.0.1:9999/mcp", TokenEnv: "WORKBENCH_CONNECTOR_TEST", Projects: []string{id}, Enabled: true}))
+	_, e = s.PutReplySettings(ctx, owner, core.ReplySettings{ProjectID: id, ConnectionID: id, ExpertSkill: "qa", Enabled: true})
+	must(e)
+	in := core.IncomingMessage{ConnectionID: id, ConversationID: "person", ActorID: "person", EventID: "question", Text: "Synthetic question"}
+	route, e := s.EnsureReplyRoute(ctx, in)
+	must(e)
+	_, e = s.AcceptMessage(ctx, in)
+	must(e)
+	token := strings.Repeat("o", 40)
+	server := httptest.NewServer((&Server{Store: s, Token: token}).Handler())
+	defer server.Close()
+	request := core.OwnerMessage{SessionID: route.Principal.SessionID, Key: "one-intent", Text: "Exact owner response", Revision: route.Revision}
+	var first string
+	for attempt := 0; attempt < 2; attempt++ {
+		body, _ := json.Marshal(request)
+		req, _ := http.NewRequest("POST", server.URL+"/reply-manual", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Workbench-Kind", "owner")
+		req.Header.Set("X-Workbench-Session", owner.SessionID)
+		res, e := http.DefaultClient.Do(req)
+		must(e)
+		var out struct {
+			RunID string `json:"runId"`
+			State string `json:"state"`
+		}
+		must(json.NewDecoder(res.Body).Decode(&out))
+		res.Body.Close()
+		if res.StatusCode != 202 || out.State != "recovering" || out.RunID == "" {
+			t.Fatal("durable owner intent appeared rejected", res.StatusCode, out)
+		}
+		if attempt == 0 {
+			first = out.RunID
+		} else if out.RunID != first {
+			t.Fatal("recovery created a new intent")
+		}
+	}
+	var count int
+	must(s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM wb_deliveries WHERE run_id=?`, first).Scan(&count))
+	if count != 1 {
+		t.Fatal("duplicate durable delivery", count)
+	}
+}

@@ -33,6 +33,7 @@ with tempfile.TemporaryDirectory(prefix='workbench-native-build-',dir=a.output.p
     shutil.copytree(root/'deploy',stage/'deploy',ignore=shutil.ignore_patterns('__pycache__'))
     shutil.copytree(root/'skills',stage/'skills')
     shutil.copytree(root/'docs',stage/'docs')
+    shutil.copytree(root/'components',stage/'components',ignore=shutil.ignore_patterns('__pycache__','*.test.mjs','test_*.py'))
     # The native preset intentionally has no arbitrary filesystem reader. Ship
     # the developer Skill self-contained, generated from the one contract source.
     skill=stage/'skills/workbench-tool-development/SKILL.md'

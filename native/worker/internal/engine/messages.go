@@ -42,6 +42,41 @@ func connectConnector(ctx context.Context, c core.Transport) (*mcp.ClientSession
 	return client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: c.Endpoint, HTTPClient: httpClient}, nil)
 }
 
+type ConnectionAccount struct {
+	AccountID    string `json:"accountId"`
+	Name         string `json:"name"`
+	Status       string `json:"status"`
+	SendEnabled  bool   `json:"sendEnabled"`
+	ConnectionID string `json:"connectionId"`
+	Error        string `json:"error,omitempty"`
+}
+
+func DescribeConnection(ctx context.Context, c core.Transport) (ConnectionAccount, error) {
+	session, e := connectConnector(ctx, c)
+	if e != nil {
+		return ConnectionAccount{}, e
+	}
+	defer session.Close()
+	result, e := session.CallTool(ctx, &mcp.CallToolParams{Name: "connection_describe", Arguments: map[string]string{"connectionId": c.ID}})
+	if e != nil {
+		return ConnectionAccount{}, e
+	}
+	if result.IsError {
+		return ConnectionAccount{}, errors.New("account lookup failed")
+	}
+	raw, e := json.Marshal(result.StructuredContent)
+	if e != nil {
+		return ConnectionAccount{}, e
+	}
+	var v ConnectionAccount
+	e = json.Unmarshal(raw, &v)
+	v.ConnectionID = c.ID
+	if v.AccountID == "" || v.Name == "" {
+		return v, errors.New("account metadata missing")
+	}
+	return v, e
+}
+
 // A read-only MCP initialize is safe to wait for before prepared is claimed.
 // A channel that has not started must not become an unknown external send.
 func connectorReady(ctx context.Context, c core.Transport) (bool, error) {
@@ -181,6 +216,11 @@ func (a *Activities) recordReceipt(ctx context.Context, r core.Run, d core.Deliv
 		return Receipt{saved.State, saved.Receipt, saved.Error}, nil
 	}
 	labels := map[string]string{"accepted": "渠道已受理，尚无真实送达凭据。", "pending_confirmation": "已创建手机待发送任务，等待手机端确认。", "sent": "渠道回执确认已发送。", "delivered": "渠道回执确认已送达。", "failed": "渠道明确返回失败。", "unknown": "发送结果未明确，已停止重发，需要核对。"}
+	if r.Operation == "owner_message" {
+		if e = a.Store.Emit(ctx, core.RunEvent{ID: d.ID + "-owner-history-" + saved.State, SessionID: r.Principal.SessionID, Kind: "message.history", Text: "本人通过工作台回复（" + labels[saved.State] + "）\n" + d.Text, Details: map[string]any{"deliveryId": d.ID, "state": saved.State}}); e != nil {
+			return Receipt{}, e
+		}
+	}
 	if e = a.Store.Emit(ctx, core.RunEvent{ID: d.ID + "-" + saved.State, SessionID: r.Principal.SessionID, RunID: r.ID, Kind: "message." + saved.State, Text: labels[saved.State], Details: map[string]any{"deliveryId": saved.ID, "state": saved.State, "receipt": saved.Receipt}}); e != nil {
 		return Receipt{}, e
 	}

@@ -21,7 +21,7 @@ func ReceiptSweep(ctx workflow.Context) error {
 	return workflow.ExecuteActivity(ctx, "SummarizeBatchReceipts").Get(ctx, nil)
 }
 func (a *Activities) QueueReceiptChecks(ctx context.Context) error {
-	prepared, e := a.Store.DB.QueryContext(ctx, `SELECT d.id FROM wb_deliveries d JOIN wb_runs r ON r.id=d.run_id WHERE d.state='prepared' AND JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.operation'))='reply' ORDER BY JSON_UNQUOTE(JSON_EXTRACT(d.body,'$.updatedAt')),d.id LIMIT 100`)
+	prepared, e := a.Store.DB.QueryContext(ctx, `SELECT d.id FROM wb_deliveries d JOIN wb_runs r ON r.id=d.run_id WHERE d.state='prepared' AND JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.operation')) IN ('reply','owner_message') ORDER BY JSON_UNQUOTE(JSON_EXTRACT(d.body,'$.updatedAt')),d.id LIMIT 100`)
 	if e != nil {
 		return e
 	}
@@ -42,6 +42,12 @@ func (a *Activities) QueueReceiptChecks(ctx context.Context) error {
 	}
 	for _, id := range idsToStart {
 		expired, err := a.Store.ExpireReplyDraft(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !expired && err == nil {
+			expired, err = a.Store.ExpireOwnerDraft(ctx, id)
+		}
 		if err != nil {
 			return err
 		}

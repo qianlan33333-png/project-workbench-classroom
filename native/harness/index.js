@@ -10,6 +10,9 @@ import { deliveryProjection } from "./delivery-state.js";
 import { modelCapacity, admittedStream } from './model-capacity.js';
 import { toolNamespace, namespaceOfTool } from './tool-namespace.js';
 import { installPersonalMemory } from './personal-memory.js';
+import { replyEvidenceProjection } from './reply-evidence.js';
+import { resourceDocuments } from './resource-documents.js';
+import { ownerSkillCatalog } from './owner-catalog.js';
 
 export const inject = [
   "agents",
@@ -80,9 +83,7 @@ export async function apply(ctx, config) {
       signal: signal ?? AbortSignal.timeout(30000),
     });
     if (!response.ok)
-      throw new Error(
-        `worker ${response.status}: ${(await response.text()).slice(0, 300)}`,
-      );
+      throw requestError(`worker ${response.status}: ${(await response.text()).slice(0, 300)}`,response.status);
     return response.json();
   };
   const projectCache=new Map();
@@ -101,6 +102,8 @@ export async function apply(ctx, config) {
   }
   await syncProjects();
   const delivery = await ctx.sessionProjections.register(deliveryProjection);
+  const replyEvidence = await ctx.sessionProjections.register(replyEvidenceProjection);
+  const skillCatalog = ownerSkillCatalog(ctx);
   function identity(agent) {
     const path = agent.session.header.cwd;
     if (!path) throw new Error("Session has no fixed workspace");
@@ -142,8 +145,9 @@ export async function apply(ctx, config) {
         if(url.username||url.password||url.search||url.hash||(url.protocol!=='https:'&&(url.protocol!=='http:'||url.hostname!=='127.0.0.1')))throw Error('Invalid MCP endpoint');
         if(!/^WORKBENCH_MCP_[A-Z0-9_]+$/.test(server.tokenEnv)||!process.env[server.tokenEnv])throw Error('MCP connector credential is not configured');
         if(!Array.isArray(server.sources)||!server.sources.length)throw Error('MCP connector must declare registered source references');
-        externalSources.set(server.name,structuredClone(server.sources));
-        const plugin=await agent.ctx.plugin(mcpClient,{serverName:server.name,transport:'streamable-http',url:url.href,headers:{authorization:'Bearer '+process.env[server.tokenEnv],'X-Workbench-Kind':p.kind,'X-Workbench-Project':p.projectId,'X-Workbench-Session':p.sessionId},toolCallTimeoutMs:60000,failOnStartupError:true});
+        const declared=structuredClone(server.sources);
+        externalSources.set(server.name,declared);
+        const plugin=await agent.ctx.plugin(mcpClient,{serverName:server.name,transport:'streamable-http',url:url.href,headers:{authorization:'Bearer '+process.env[server.tokenEnv],'X-Workbench-Kind':p.kind,'X-Workbench-Project':p.projectId,'X-Workbench-Session':p.sessionId,...(!boundary.objectSession?{'X-Workbench-Sources':JSON.stringify(declared)}:{})},toolCallTimeoutMs:60000,failOnStartupError:true});
         extensions.push(plugin);namespaces.add(server.name);
       }
       agent.ctx.on('tools/execute',async(exec,next)=>{
@@ -152,7 +156,7 @@ export async function apply(ctx, config) {
         if(boundary.objectSession){const server=config.toolServers.find(s=>s.name===name);const tool=exec.name.replace('mcp__'+name+'__','');if(!server.customerTools.includes(tool))throw Error('Customer tool is not allowed')}
         // Conservatively record before dispatch, including failed/partial calls.
         // Recheck after return so a concurrent revocation cannot reveal a result.
-        const refs=externalSources.get(name);
+        const refs=boundary.objectSession?await call('/session/resolve-sources',p,externalSources.get(name),exec.signal):externalSources.get(name);
         await call('/session/external-sources',p,refs,exec.signal);
         const result=await next();
         await call('/session/external-sources',p,refs,exec.signal);
@@ -337,6 +341,24 @@ export async function apply(ctx, config) {
           try {
             const u = new URL(req.url, "http://localhost");
             const path = u.pathname.slice("/workbench-api".length);
+            if(req.method==='GET'&&path==='/resource-documents'){
+              const projectId=u.searchParams.get('projectId'),resourceId=u.searchParams.get('resourceId');
+              if(!(await syncProjects()).some(p=>p.id===projectId))throw requestError('项目不存在',404);
+              json(res,200,await resourceDocuments(config,call,projectId,resourceId,u.searchParams.get('uri')||undefined));return;
+            }
+            if(req.method==='GET'&&path==='/reply-experts'){
+              const project=(await syncProjects()).find(p=>p.id===u.searchParams.get('projectId'));
+              if(!project)throw requestError('项目不存在',404);
+              json(res,200,await skillCatalog(project.workspace,u.searchParams.get('name')||undefined));return;
+            }
+            if(req.method==='GET'&&path==='/reply-evidence'){
+              const sessionId=u.searchParams.get('sessionId');
+              const route=await call('/reply-session?sessionId='+encodeURIComponent(sessionId));
+              const project=(await syncProjects()).find(p=>p.id===route.principal.projectId);
+              if(!project)throw requestError('会话不可用',404);
+              const agent=await ensureSession(sessionId,project.workspace);
+              json(res,200,replyEvidence.stateOf(agent.session).rounds.find(r=>r.runId===u.searchParams.get('runId'))||{calls:[]});return;
+            }
             if (req.method === "GET" && path === "/catalog") {
               json(res, 200, {
                 projects: await syncProjects(),
@@ -352,7 +374,7 @@ export async function apply(ctx, config) {
               res.writeHead(200,{'content-type':response.headers.get('content-type'),'content-disposition':response.headers.get('content-disposition')});
               const stream=Readable.fromWeb(response.body);stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);return;
             }
-            const readPaths = new Set(["/reply-resources","/transports","/reply-projects","/reply-settings","/message-routes","/reply-session","/reply-channel-history","/resource-page", "/schedules", "/notification-targets",
+            const readPaths = new Set(["/reply-states","/reply-timeline","/reply-accounts","/reply-resources","/transports","/reply-projects","/reply-settings","/message-routes","/reply-session","/reply-channel-history","/resource-page", "/schedules", "/notification-targets",
               "/resources",
               "/connections",
               "/grants",
@@ -362,7 +384,7 @@ export async function apply(ctx, config) {
               "/personal/settings",
               "/notifications",
             ]);
-            const writePaths = new Set(["/reply-settings","/message-routes","/reply-projects","/schedules/pause",
+            const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/reply-projects","/schedules/pause",
               "/resources",
               "/connections",
               "/grants",
@@ -419,7 +441,7 @@ export async function apply(ctx, config) {
             }
             json(res, 404, { error: "unknown operation" });
           } catch (e) {
-            json(res, 400, { error: e.message });
+            json(res, e.status||(e instanceof SyntaxError?400:503), { error: e.message });
           }
         },
       }),

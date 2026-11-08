@@ -124,6 +124,8 @@ func (s *Store) deliveryGate(ctx context.Context, tx *sql.Tx, d Delivery) error 
 		return e
 	}
 	switch r.Operation {
+	case "owner_message":
+		return ownerMessageGate(ctx, tx, r, d)
 	case "control_notification":
 		event, err := scanJSON[RunEvent](tx.QueryRowContext(ctx, `SELECT body FROM wb_events WHERE id=?`, r.OriginMessage))
 		if err != nil || r.Principal.Kind != "owner" || event.Kind != "conversation.mode.changed" || d.Target["kind"] != event.Kind || d.Target["eventId"] != event.ID {

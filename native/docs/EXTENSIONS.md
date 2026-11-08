@@ -89,3 +89,19 @@ toolServers:
 专项配置与使用见 [AUTO-REPLY.md](AUTO-REPLY.md)。网关只做协议与可信身份转换；默认专家方法是 `customer-reply`，可替换为其他 Skill。MCP仍为现有 message_context、resource_search、resource_excerpt、message_reply、message_disposition、message_receipt，不增加业务专用生成器。
 
 人工接管递增现有路由版本；项目配置也有独立递增版本。两者任一改变均阻断未提交旧草稿。队列与提交均按同客户顺序处理，直到前条真实请求返回受理/失败/未知；不等客户已读，未知结果不重发。明确未提交的 prepared 任务可恢复原编号，已提交的任务只核原回执。
+
+## MCP 资料来源与自动应答展示
+
+本人可将标准 MCP 工具注册为资料来源连接（仅 owner 配置）：
+
+```json
+{"id":"source-example","name":"资料维护","kind":"mcp","location":"http://127.0.0.1:7390/mcp","secretEnv":"WORKBENCH_SOURCE_EXAMPLE","sourceTool":"refresh"}
+```
+
+官方 MCP CallTool 输入只有宿主生成的 `operationKey`；实现返回 `structuredContent: {watermark,records:[{id,fields}]}`，最多2,000条控制记录、2MiB，总体资料可由不可变快照引用表达。复用现有资源刷新、Schema校验、Stage/Publish、Temporal Schedule和写入围栏，不新增另一套任务引擎。来源必须按原编号可恢复、停止时收拢整个进程组。模型不能指定地址、命令、密钥或项目身份。
+
+自动应答每条新消息固定当前发布快照，后续工具调用按本条消息的 Knowledge 解析版本；标准扩展接收可信宿主身份并核实时共享范围。普通非客户 Session 的 `toolServers.sources` 仍代表本人明确声明的固定版本，显式修改配置换版，不暗中追current。资源查看则固定本次打开时的当前发布版，通过标准 MCP Resources读实际文档；取消共享后返回失败。
+
+客户页面是原 Session 的渠道记录视图：默认展示真实入站、固定发送正文和真实回执；模型文字总结不当作已发送内容。处理明细是有界原生 Session 工具投影，不提供另一个可误触发外发的专家输入框。页面输入框是本人直接向该客户提交的人工回复；同幂等键、路由版本和真实接收人由宿主绑定。登记后队列暂不可用返回原runId，由原prepared恢复扫描继续，不得换键重发。人工正文与回执写回原Session历史；恢复AI后仍能衔接。
+
+读取客户档案开关控制已可信关联的档案记录，不按昵称猜人，也不把公共语料当作个人档案；无关联记录时返回空资料。设置选语料只默认选一个明确板块，可在资料明细勾选，最多8个，不默认全开一个库的全部板块。

@@ -42,6 +42,10 @@ func (s *Store) PutConnection(ctx context.Context, p Principal, v Connection) er
 		return ErrInvalid
 	}
 	switch v.Kind {
+	case "mcp":
+		if !validMCPEndpoint(v.Location) || !ValidID(v.SourceTool) || !ValidID(v.SecretEnv) || !strings.HasPrefix(v.SecretEnv, "WORKBENCH_SOURCE_") {
+			return ErrInvalid
+		}
 	case "mysql":
 		if !ValidID(v.SecretEnv) || !strings.HasPrefix(v.SecretEnv, "WORKBENCH_SOURCE_") {
 			return ErrInvalid
@@ -174,6 +178,20 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 		return nil
 	}
 	switch conn.Kind {
+	case "mcp":
+		result, err := readMCPSource(ctx, conn, r)
+		if err != nil {
+			return snap, err
+		}
+		snap.SourceWatermark = result.Watermark
+		if e = s.BeginSnapshot(ctx, r.Principal, snap); e != nil {
+			return snap, e
+		}
+		for _, record := range result.Records {
+			if e = accept(record); e != nil {
+				return snap, e
+			}
+		}
 	case "http-json":
 		if resource.JSONSource == nil {
 			return snap, ErrInvalid

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/google/uuid"
+	"sort"
 	"strings"
 	"time"
 )
@@ -19,6 +20,7 @@ type ReplySettings struct {
 	ExpertSkill  string          `json:"expertSkill"`
 	Knowledge    []Ref           `json:"knowledge"`
 	Subject      *SubjectBinding `json:"subject,omitempty"`
+	ReadProfile  *bool           `json:"readProfile,omitempty"`
 	Notify       bool            `json:"notify"`
 	Enabled      bool            `json:"enabled"`
 	Revision     int64           `json:"revision"`
@@ -191,8 +193,12 @@ func (s *Store) replyInputs(ctx context.Context, route MessageRoute, m IncomingM
 		}
 		knowledge = append(knowledge, ref)
 	}
-	contextRefs := append([]RecordRef{}, route.Context...)
-	if cfg.Subject != nil {
+	readProfile := cfg.ReadProfile == nil || *cfg.ReadProfile
+	contextRefs := []RecordRef{}
+	if readProfile {
+		contextRefs = append(contextRefs, route.Context...)
+	}
+	if readProfile && cfg.Subject != nil {
 		r, e := s.Resource(ctx, cfg.Subject.ResourceID)
 		if e != nil {
 			return nil, nil, "", 0, e
@@ -424,23 +430,61 @@ func (s *Store) MessageHistory(ctx context.Context, p Principal, connection, eve
 	if e != nil {
 		return nil, e
 	}
-	defer rows.Close()
-	out := []IncomingMessage{}
+	type entry struct {
+		at      time.Time
+		message IncomingMessage
+	}
+	all := []entry{}
 	for rows.Next() {
-		v, e := scanJSON[StoredMessage](rows)
-		if e != nil {
-			return nil, e
+		v, err := scanJSON[StoredMessage](rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
 		}
-		if v.EventID == event {
+		if v.EventID != event {
+			all = append(all, entry{v.CreatedAt, v.IncomingMessage})
+		}
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return nil, e
+	}
+	// An API sender need not echo a self_sent event. Read authenticated owner
+	// deliveries from the same Session, including the actual state annotation.
+	rows, e = s.DB.QueryContext(ctx, `SELECT d.body FROM wb_deliveries d JOIN wb_runs r ON r.id=d.run_id WHERE r.session_id=? AND JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.operation'))='owner_message' AND d.state<>'prepared' AND CAST(LEFT(REPLACE(REPLACE(JSON_UNQUOTE(JSON_EXTRACT(d.body,'$.createdAt')),'T',' '),'Z',''),26) AS DATETIME(6))<=? ORDER BY JSON_UNQUOTE(JSON_EXTRACT(d.body,'$.createdAt')) DESC LIMIT 10`, m.Principal.SessionID, m.CreatedAt)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	labels := map[string]string{"accepted": "渠道已受理，未证明送达", "submitting": "提交结果待核实", "unknown": "结果未知，不能视为已发出", "sent": "已发送", "delivered": "已送达", "failed": "发送失败，未证明已发出", "pending_confirmation": "等待手机确认"}
+	for rows.Next() {
+		d, err := scanJSON[Delivery](rows)
+		if err != nil {
+			return nil, err
+		}
+		if d.CreatedAt.After(m.CreatedAt) {
 			continue
 		}
-		r := []rune(v.Text)
-		if len(r) > 1200 {
-			v.Text = string(r[:1200]) + "（截取，原消息仍保留）"
-		}
-		out = append(out, v.IncomingMessage)
+		at := d.CreatedAt
+		all = append(all, entry{at, IncomingMessage{Kind: "human", ConnectionID: connection, ConversationID: m.ConversationID, ActorID: m.ActorID, EventID: "owner-" + d.ID, Text: "本人通过工作台回复（" + labels[d.State] + "）：\n" + d.Text, OccurredAt: &at}})
 	}
-	return out, rows.Err()
+	if e = rows.Err(); e != nil {
+		return nil, e
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].at.After(all[j].at) })
+	out := []IncomingMessage{}
+	for _, v := range all {
+		r := []rune(v.message.Text)
+		if len(r) > 1200 {
+			v.message.Text = string(r[:1200]) + "（截取，原消息仍保留）"
+		}
+		out = append(out, v.message)
+		if len(out) == 10 {
+			break
+		}
+	}
+	return out, nil
 }
 
 func pausePending(ctx context.Context, tx *sql.Tx, id string) error {

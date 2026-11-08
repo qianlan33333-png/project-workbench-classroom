@@ -49,3 +49,12 @@ test('isolated contact list is applied before receiving and before sending',asyn
 test('only text incoming messages start inference; non-text human replies still pause',async()=>{
  const calls=[];const g=createGateway(config,async(path,body)=>calls.push(body));const v=event();v.data.message.type='unsupported';await g.ingest(...signed(v));assert.equal(calls.length,0);v.type='message.self_sent';await g.ingest(...signed(v));assert.equal(calls[0].kind,'human');
 });
+
+test('account metadata uses paged provider records and refreshed account state, never the static label',async()=>{
+ const urls=[];const g=createGateway({...config,name:'待联测'},async()=>{},async url=>{urls.push(String(url));let value;if(String(url).includes('/accounts/account'))value={accountId:'account',name:'Actual account',tenantId:'tenant',status:'offline',sendEnabled:false};else value=String(url).includes('cursor=next')?{items:[{accountId:'account',name:'Old name'}]}:{items:[{accountId:'other',name:'Other'}],nextCursor:'next'};return{ok:true,json:async()=>value}});
+ const v=await g.describe();assert.equal(v.accountId,'account');assert.equal(v.name,'Actual account');assert.equal(v.status,'offline');assert.equal(v.sendEnabled,false);assert.equal(urls.length,3);
+});
+test('account description rejects a repeated catalogue cursor or mismatched refreshed identity',async()=>{
+ const repeated=createGateway(config,async()=>{},async()=>({ok:true,json:async()=>({items:[],nextCursor:'repeat'})}));await assert.rejects(repeated.describe());
+ const changed=createGateway(config,async()=>{},async url=>({ok:true,json:async()=>String(url).includes('/accounts/account')?{accountId:'other',name:'Wrong',tenantId:'tenant'}:{items:[{accountId:'account',name:'Actual'}]}}));await assert.rejects(changed.describe());
+});

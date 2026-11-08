@@ -16,6 +16,14 @@ import (
 )
 
 func (a *Server) configRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /session/resolve-sources", func(w http.ResponseWriter, r *http.Request) {
+		var refs []core.Ref
+		if decode(w, r, &refs) {
+			v, e := a.Store.ResolveExternalSources(r.Context(), principal(r.Context()), refs)
+			respond(w, v, e)
+		}
+	})
+
 	mux.HandleFunc("GET /delegation/pending", func(w http.ResponseWriter, r *http.Request) {
 		v, e := a.Store.PendingDelegations(r.Context(), principal(r.Context()), r.URL.Query().Get("after"))
 		respond(w, v, e)

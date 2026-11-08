@@ -12,7 +12,7 @@ import (
 
 func Sync(ctx workflow.Context, id string) (err error) {
 	defer reportFailure(ctx, id, &err)()
-	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{TaskQueue: BatchQueue, StartToCloseTimeout: 2 * time.Hour, HeartbeatTimeout: 45 * time.Second, WaitForCancellation: true, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 3, NonRetryableErrorTypes: []string{"Denied", "Invalid", "Conflict"}}})
+	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{TaskQueue: BatchQueue, StartToCloseTimeout: 4 * time.Hour, HeartbeatTimeout: 45 * time.Second, WaitForCancellation: true, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 3, NonRetryableErrorTypes: []string{"Denied", "Invalid", "Conflict"}}})
 	defer finishWrite(ctx, id, workflow.GetInfo(ctx).WorkflowExecution.RunID, &err)()
 	var fence core.WriteFence
 	if e := workflow.ExecuteActivity(activityContext(ctx, InteractiveQueue), "BeginWrite", id, workflow.GetInfo(ctx).WorkflowExecution.RunID).Get(ctx, &fence); e != nil {

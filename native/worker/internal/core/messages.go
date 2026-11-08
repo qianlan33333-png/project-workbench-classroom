@@ -484,6 +484,13 @@ func (s *Store) MessageContext(ctx context.Context, p Principal, connection, eve
 	if e != nil || !route.Enabled || route.Principal != p {
 		return nil, ErrDenied
 	}
+	cfg, err := s.ReplySettingsForConnection(ctx, connection)
+	if err != nil && !IsMissing(err) {
+		return nil, err
+	}
+	if err == nil && cfg.ReadProfile != nil && !*cfg.ReadProfile {
+		return []Record{}, nil
+	}
 	var records []Record
 	for _, ref := range m.Context {
 		allowed := false

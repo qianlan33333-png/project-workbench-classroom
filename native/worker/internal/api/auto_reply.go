@@ -12,6 +12,98 @@ import (
 )
 
 func (a *Server) replyRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /reply-states", func(w http.ResponseWriter, r *http.Request) {
+		var keys []string
+		if json.Unmarshal([]byte(r.URL.Query().Get("keys")), &keys) != nil {
+			respond(w, nil, core.ErrInvalid)
+			return
+		}
+		v, e := a.Store.ChannelStates(r.Context(), principal(r.Context()), r.URL.Query().Get("sessionId"), keys)
+		respond(w, v, e)
+	})
+
+	mux.HandleFunc("GET /reply-timeline", func(w http.ResponseWriter, r *http.Request) {
+		v, e := a.Store.ChannelTimeline(r.Context(), principal(r.Context()), r.URL.Query().Get("sessionId"), r.URL.Query().Get("before"))
+		respond(w, v, e)
+	})
+
+	mux.HandleFunc("GET /reply-accounts", func(w http.ResponseWriter, r *http.Request) {
+		p := principal(r.Context())
+		project := r.URL.Query().Get("projectId")
+		if !p.IsOwner() || !core.ValidID(project) {
+			respond(w, nil, core.ErrDenied)
+			return
+		}
+		rows, err := a.Store.DB.QueryContext(r.Context(), `SELECT body FROM wb_transports ORDER BY id`)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		configs := []core.Transport{}
+		for rows.Next() {
+			var raw []byte
+			var c core.Transport
+			if err = rows.Scan(&raw); err != nil {
+				break
+			}
+			if err = json.Unmarshal(raw, &c); err != nil {
+				break
+			}
+			for _, id := range c.Projects {
+				if id == project && c.Enabled {
+					configs = append(configs, c)
+					break
+				}
+			}
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		rows.Close()
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		out := []engine.ConnectionAccount{}
+		for _, c := range configs {
+			v, e := engine.DescribeConnection(r.Context(), c)
+			if e != nil {
+				v = engine.ConnectionAccount{ConnectionID: c.ID, Status: "unknown", Error: "无法读取网关账号，请检查连接后重试。"}
+			}
+			out = append(out, v)
+		}
+		respond(w, out, nil)
+	})
+	mux.HandleFunc("POST /reply-manual", func(w http.ResponseWriter, r *http.Request) {
+		var in core.OwnerMessage
+		if !decode(w, r, &in) {
+			return
+		}
+		run, err := a.Store.PrepareOwnerMessage(r.Context(), principal(r.Context()), in)
+		if err != nil {
+			if errors.Is(err, core.ErrInvalid) || errors.Is(err, core.ErrDenied) || errors.Is(err, core.ErrConflict) || core.IsMissing(err) {
+				respond(w, nil, err)
+			} else {
+				http.Error(w, "发送登记结果待核实；请使用原请求编号重试。", 503)
+			}
+			return
+		}
+		state := "recovering"
+		if a.Temporal != nil {
+			_, err = a.Temporal.ExecuteWorkflow(r.Context(), client.StartWorkflowOptions{ID: run.ID, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.SendMessage, run.ID)
+			if accepted(err) == nil {
+				state = "queued"
+			}
+		}
+		// The immutable intent is already durable. A queue outage must never
+		// masquerade as a rejected send and cause a new client idempotency key.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		write(w, struct {
+			RunID string `json:"runId"`
+			State string `json:"state"`
+		}{run.ID, state})
+	})
 	mux.HandleFunc("POST /conversation-control", func(w http.ResponseWriter, r *http.Request) {
 		var in core.ConversationControl
 		if decode(w, r, &in) {

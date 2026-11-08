@@ -56,8 +56,9 @@ type Connection struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
 	// SecretEnv names a server environment variable; credentials never enter tool results.
-	SecretEnv string `json:"secretEnv,omitempty"`
-	Location  string `json:"location,omitempty"`
+	SecretEnv  string `json:"secretEnv,omitempty"`
+	Location   string `json:"location,omitempty"`
+	SourceTool string `json:"sourceTool,omitempty"`
 }
 type Resource struct {
 	JSONSource         *JSONSource    `json:"jsonSource,omitempty"`

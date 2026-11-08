@@ -42,6 +42,20 @@ export function createGateway(c,workerCall,fetcher=fetch){
       await workerCall('/messages',{connectionId:c.id,eventId:'msg-'+m.messageId,actorId:contactId,conversationId:contactId,externalUserId:m.externalUserId||m.sender?.externalUserId||'',displayName:m.sender?.name||m.contactId,text:m.content?.text||'',occurredAt:m.sentAt||event.occurredAt,...(event.type==='message.self_sent'?{kind:'human'}:{})});
   }
   return{
+    async describe(){
+      let cursor='',found;const seen=new Set();
+      for(let page=0;page<100;page++){
+        const result=await request('GET','/accounts?'+new URLSearchParams({limit:'200',...(cursor?{cursor}:{})}));
+        if(!Array.isArray(result.items))throw Error('Invalid account directory');
+        found=result.items.find(a=>(a.accountId||a.id)===c.accountId);if(found)break;
+        if(!result.nextCursor)break;
+        if(seen.has(result.nextCursor))throw Error('Account cursor did not advance');seen.add(result.nextCursor);cursor=result.nextCursor;
+      }
+      if(!found)throw Error('Bound account is not in the gateway directory');
+      const account=await request('GET','/accounts/'+encodeURIComponent(c.accountId));
+      if((account.accountId||account.id)!==c.accountId||account.tenantId&&account.tenantId!==c.tenantId)throw Error('Wrong account identity');
+      return{accountId:c.accountId,name:account.name||account.displayName||found.name||found.displayName||c.accountId,status:account.status,sendEnabled:account.sendEnabled===true};
+    },
     async ingest(raw,headers){return ingestEvent(verifyGateway(c,raw,headers))},
     async poll(signal){
       const stateKey='gateway-'+c.id;
