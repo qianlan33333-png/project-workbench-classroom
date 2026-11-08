@@ -429,7 +429,7 @@ API启动与后台就绪分开；Worker只在部署提交且渠道就绪后消�
 云端最终仅保留current=`native-20261108-03`与previous=`native-20261108-02`，旧01版、遗留迁移备份、临时候选/验证目录、四个隔离测试库与测试账号已清退。本机额外遗留归档均已校验摘要及完整可读性，旧SQLite完整性检查通过。独立资料服务active/enabled、原上下文中心与CRM保留；没有创建客户发送任务，没有GitHub推送。当前业务质量/实际发送边界见 `native/ACCEPTANCE.md`。
 
 
-## 2026-11-08 自动应答专项（待部署）
+## 2026-11-08 自动应答专项（已上线，真实企微联测延期）
 
 隔离工作树standard-auto-reply、分支codex/standard-auto-reply，基线4de2615；原工作区未提交的今日跟进改动保持原样。业务流程与范围见plans/2026-11-08-auto-reply-minimal.md，配置说明见native/docs/AUTO-REPLY.md。复用普通项目、原生Session/Skill、MCP、Temporal与MySQL，仅增加专项视图、薄网关适配和原路由版本化停答。
 
@@ -444,3 +444,7 @@ review-agent发现并修复读取检查短路、资料错误毒化入站、恢�
 当前旧网关托管账号读回offline/sendEnabled=false；没有收到本人本次联测原文，旧回调未改。用户明确要求跳过本次真实企微联测、先完成上线；正式自动应答保持停用，晚点完成真实收发、人工接管/恢复与回执验收再启用。原上下文中心、CRM及既有工作台渠道继续运行。发布后保留一个已成功验证且支持本次协议的回滚版本。
 
 最终状态边界复查额外修复：撤销来源后，incoming状态收尾只读原Run绑定元数据，不重读受撤权业务资料；限定incoming操作并核对OriginMessage和Principal。实际派发/资料/发送门禁不变。Host逐客户隔离收尾错误，避免某个客户阻断其他项目与今日反馈。补充真实MySQL验证业务Run仍拒绝读取但owner settle成功；修复独立/re为No findings。正式库新能力尚未启用，未存在受此问题影响的客户会话。
+
+正式交付：代码提交9d76d5f3d220b2eae04716b43db19588821cf8ab（树69cfa685aa32a2e4ae6057a5af5494b936deecc8），制品清单SHA256 a90301c21b7aee449ea65ecc94ac9e23afff26588e5e68dae0a602d1b981e308。固定控制器建立成功06基线、轮转07，最终仅current=native-20261108-07、previous=native-20261108-06，两版清单相同并均含状态收尾修复。04/05中间版本已清除。迁移前一致性MySQL备份保留一份；临时MySQL库、账号、Temporal namespace及本次上传包已清退。
+
+两版均在提交前通过真实模型4结果、原5资源发布版本、今日09:00配置、原2通知目标及最终端口桌面/390/320页面验收；浏览器收据绑定每轮独立attemptId。公网dsh.qianlan333.cloud已独立读回并创建唯一自动应答项目，默认customer-reply专家与浅蓝托管账号已预填，公共知识和个人资料未擅自开放，autoReply主开关=false，客户会话0。标准薄网关装载在既有连接器，只读事件轮询保留旧回调，收发白名单仅本人联系人；原微信/飞书配置保留，4项服务active、后台ready。账号真实入站、外发、人工接管/恢复与真实回执仍明确待本人后续联测，没有以合成记录冒充通过。配置脚本重启后认证health+unit检查通过，失败恢复路径独立/re No findings。没有GitHub推送。
