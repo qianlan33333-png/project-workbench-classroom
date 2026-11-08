@@ -44,3 +44,4 @@
         personalWorkspace: !!js process.env.WORKBENCH_PERSONAL_WORKSPACE
         provider: !!js process.env.WORKBENCH_MODEL_PROVIDER || 'deepseek-official'
         model: !!js process.env.WORKBENCH_MODEL || 'deepseek-flash'
+        toolServers: !!js JSON.parse(process.env.WORKBENCH_TOOL_SERVERS || '[]')

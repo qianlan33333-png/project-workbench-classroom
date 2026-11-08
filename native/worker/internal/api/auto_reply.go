@@ -237,7 +237,7 @@ func (a *Server) replyRoutes(mux *http.ServeMux) {
 }
 
 func (a *Server) startIncoming(ctx context.Context, message core.StoredMessage) error {
-	goal := message.Text + "\n\n本消息connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。先用message_context读取资料及历史，再用resource_search/resource_excerpt核实公共知识。仅通过message_reply或message_disposition提交本条消息的处理结果，普通聊天正文不会自动发给客户。"
+	goal := message.Text + "\n\n本消息connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。先用message_context读取本客户允许资料和历史；本条原文以宿主本轮输入为准。是否检索、怎样检索及使用哪个已授权工具，按已加载专家方法决定，不要求每条消息都检索；业务事实须有可核实依据。仅通过message_reply或message_disposition提交本条消息的处理结果，普通聊天正文不会自动发给客户。"
 	if message.ExpertSkill != "" {
 		goal = "先调用skill加载专家方法：" + message.ExpertSkill + "。\n" + goal
 	}

@@ -41,7 +41,7 @@ func (a *Server) messageTools(s *mcp.Server, p core.Principal) {
 		History        []core.IncomingMessage `json:"history"`
 		HistoryLimited bool                   `json:"historyLimited"`
 	}
-	mcp.AddTool(s, &mcp.Tool{Name: "message_context", Description: "Read only this incoming customer's fixed profile records, allowed knowledge references and recent channel history. Search knowledge with resource_search and read sources with resource_excerpt. Human history can have missing text; never invent it."}, func(ctx context.Context, _ *mcp.CallToolRequest, in MessageKey) (*mcp.CallToolResult, ContextResult, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "message_context", Description: "Read only this customer's fixed profile records, allowed knowledge references and recent channel history, excluding the current event. Use the Host-provided current message as the question; the loaded expert chooses authorized knowledge tools. Human history can have missing text; never invent it."}, func(ctx context.Context, _ *mcp.CallToolRequest, in MessageKey) (*mcp.CallToolResult, ContextResult, error) {
 		records, e := a.Store.MessageContext(ctx, p, in.ConnectionID, in.EventID)
 		if e != nil {
 			return nil, ContextResult{}, e
