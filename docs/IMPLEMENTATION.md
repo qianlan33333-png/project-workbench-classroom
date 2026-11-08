@@ -462,3 +462,13 @@ review-agent发现并修复读取检查短路、资料错误毒化入站、恢�
 - 即时回复、普通客户消息及批量派发在提交前共用会话模式门禁。显式跨通道关联找不到唯一可信身份则拒绝。恢复不补发旧稿；通知失败不恢复 AI。详情见 `native/docs/CONVERSATION-CONTROL.md`。
 - 验证：Go test/vet 通过；24 个 Node 测试通过；隔离真实 MySQL 34 项测试通过（含万会话、晚提交、1000 普通事件积压、身份冲突、旧稿、重复恢复、跨通道拦截）；EXPLAIN 在万会话账号命中 actor/external 窄索引。隔离 Temporal namespace 的真实 Worker 重启及丢失队列确认测试通过，原事件一次发送、一次回执核对。独立 review-agent 修复后三次复审至 No findings。
 - 已只读找回真实 CRM 配对及同账号可信身份映射，真实 signed probe 200 且 nonce 一致；这不代表侧边栏按钮已完成真机验收。发布及真实 status/state.changed/resume 结果在后续交付记录补充。原上下文中心、CRM 与客户发送白名单保持原位。
+
+#### 本次发布读回
+
+正式 `native-20261108-08`，来源 `df6e33ee41fd8297a50ccb39baa34a75a6941dce`，Worker SHA256 `6fd52016bc5e4938fcdaaa3e4bdd3debcf6a991f9220ae3c0145873c77d0b431`。正式与回滚 07 共两版，无未完成发布；固定控制器验收包括真实 Harness 模型、原数据版本和认证项目目录。生成列/索引迁移前保存一份 MySQL 恢复点，旧恢复点已轮换。
+
+CRM 原安装仍启用且未改动设置（revision 3 / generation 1）。恢复同租户同账号可信配对，原 `support-gateway` 地址转交新连接器：真实 signed status 返回原生客户 Session；恢复 human 2→auto 3、同请求重复一致；受控暂停为 human 4；再恢复 auto 5。既有 Temporal 计划送出 3/4/5 三个状态事件，全部取得真实 CRM `ok` 回执。CRM 持久高水位同时保留旧 Session version 8 与新原生 Session version 5，证明新会话的较小版本未被旧缓存吞掉。此项为真实双端协议验收，不是企微物理侧边栏点击验收。
+
+会话接续：真实模型先保存 A/B 两组独立随机事实，完成服务升级重启后向 A 追问，A 准确返回自己的随机码，未返回 B 的随机码。五日间隔的身份稳定性由隔离 MySQL 验证；没有声称已真实等待五天。推进型采集规则尚未新增业务配置，不能将可用架构当作特定业务已交付。
+
+最后读回工作台/Worker/Temporal/渠道服务 active，测试联系人 autoReply=true/revision=5；托管账号一度读回 offline/sendEnabled=false，复查恢复 online/sendEnabled=true，因此仅确认当前在线，不宣称已验证长期在线稳定性。本轮未新增客户发送，原客户白名单、上下文中心和 CRM 服务继续运行。隔离凭证与临时配对副本不进入仓库，保留生产必要的宿主密钥。
