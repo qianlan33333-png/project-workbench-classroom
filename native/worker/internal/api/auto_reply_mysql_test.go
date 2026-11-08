@@ -136,7 +136,29 @@ func TestMySQLCustomerToolsOnlyReadBoundSubjectAndSelectedKnowledge(t *testing.T
 	cfg.Knowledge = []core.Ref{public}
 	cfg, e = s.PutReplySettings(ctx, owner, cfg)
 	must(e)
+	first, e := s.Message(ctx, owner, id, "one-message")
+	must(e)
+	must(s.SaveRun(ctx, core.Run{ID: first.ID, Principal: route.Principal, Operation: "incoming", OriginMessage: first.ID, Title: "Metadata settlement", Sources: []core.Ref{public}}))
+	must(s.MessageDisposition(ctx, route.Principal, id, "one-message", "ignored"))
 	must(s.SetGrant(ctx, owner, core.Grant{ResourceID: public.ResourceID, ProjectID: id, Sections: []string{}}))
+	control, e := s.IncomingForRun(ctx, first.ID)
+	must(e)
+	if control.State != "ignored" {
+		t.Fatal("state read lost binding")
+	}
+	if _, e = s.Run(ctx, route.Principal, first.ID); e == nil {
+		t.Fatal("metadata read bypassed business source gate")
+	}
+	req, _ := http.NewRequest("POST", apiHTTP.URL+"/messages/settle", strings.NewReader(`{"runId":"`+first.ID+`"}`))
+	req.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 40))
+	req.Header.Set("X-Workbench-Kind", "owner")
+	req.Header.Set("X-Workbench-Session", "owner-settlement")
+	res, e := http.DefaultClient.Do(req)
+	must(e)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatal("withdrawn source blocked completed message settlement", res.StatusCode)
+	}
 	if external() == 200 {
 		t.Fatal("revoked public source still allowed")
 	}

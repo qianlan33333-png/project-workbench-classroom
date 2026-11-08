@@ -509,15 +509,20 @@ func handoffEvent(ctx context.Context, tx *sql.Tx, m StoredMessage) error {
 }
 
 func (s *Store) IncomingForRun(ctx context.Context, id string) (StoredMessage, error) {
-	r, e := s.ExecutionRun(ctx, id)
+	// Trusted control-plane callers inspect binding/state, never protected facts.
+	// Dispatch and all business reads retain their normal resource authorization.
+	r, e := scanJSON[Run](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_runs WHERE id=?`, id))
 	if e != nil {
 		return StoredMessage{}, e
+	}
+	if r.Operation != "incoming" || r.OriginMessage == "" {
+		return StoredMessage{}, ErrDenied
 	}
 	m, e := scanJSON[StoredMessage](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_messages WHERE JSON_UNQUOTE(JSON_EXTRACT(body,'$.id'))=?`, r.OriginMessage))
 	if e != nil {
 		return m, e
 	}
-	if m.Principal != r.Principal {
+	if m.Principal != r.Principal || m.ID != r.OriginMessage {
 		return m, ErrDenied
 	}
 	return m, nil

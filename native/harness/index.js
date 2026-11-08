@@ -263,7 +263,7 @@ export async function apply(ctx, config) {
     if (polling || stopped) return;
     polling = true;
     try {
-      for(const agent of ctx.agents.list()){if(agent.id.startsWith('object-')&&agent.status==='idle')await settleIncoming(agent)}
+      for(const agent of ctx.agents.list()){if(agent.id.startsWith('object-')&&agent.status==='idle'){try{await settleIncoming(agent)}catch{ctx.logger.warn('Customer status settlement deferred: '+agent.id)}}}
       const reports=await call('/delegation/pending?after='+encodeURIComponent(reportCursor));
       for(const run of reports) {
         reportCursor=run.id;
