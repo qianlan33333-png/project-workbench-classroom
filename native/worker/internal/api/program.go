@@ -12,6 +12,7 @@ import (
 )
 
 type ProgramRequest struct {
+	Quiet        bool                     `json:"quiet,omitempty"`
 	Selection    *core.Selection          `json:"selection,omitempty"`
 	OperationKey string                   `json:"operationKey"`
 	Title        string                   `json:"title"`
@@ -21,7 +22,7 @@ type ProgramRequest struct {
 }
 
 func (a *Server) programRun(ctx context.Context, p core.Principal, in ProgramRequest) (core.Run, error) {
-	r := core.Run{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.OperationKey)).String(), Principal: p, Operation: "pipeline", Title: in.Title, Destination: in.Destination, Program: &core.PipelinePlan{Sources: in.Sources}}
+	r := core.Run{Quiet: in.Quiet, ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.OperationKey)).String(), Principal: p, Operation: "pipeline", Title: in.Title, Destination: in.Destination, Program: &core.PipelinePlan{Sources: in.Sources}}
 	if p.Kind != "project" || !core.ValidID(in.OperationKey) || len(in.Sources) == 0 || len(in.Sources) > 16 {
 		return r, core.ErrInvalid
 	}

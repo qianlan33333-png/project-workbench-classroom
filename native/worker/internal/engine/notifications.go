@@ -82,7 +82,7 @@ func (a *Activities) QueueNotifications(ctx context.Context) error {
 				return e
 			}
 		}
-		if source.Operation == "notification" || source.Operation == "control_notification" || source.ParentRunID != "" || (source.Operation == "reply" && event.Kind != "message.unknown" && event.Kind != "message.failed") {
+		if source.Operation == "notification" || source.Operation == "control_notification" || source.ParentRunID != "" || (source.Quiet && (event.Kind == "resource.published" || event.Kind == "batch.completed")) || (source.Operation == "reply" && event.Kind != "message.unknown" && event.Kind != "message.failed") {
 			if e = a.Store.AdvanceNotifications(ctx, event.Sequence); e != nil {
 				return e
 			}

@@ -6,7 +6,7 @@
 
 新鲜官方CRM授权读取目录和员工私聊均200；真实原专家问题通过真实Harness、qa_search/read/check，隔离发送器sent。来源组件复用原qa_sync/qa_retrieve/qa_gate；业务同步状态MySQL，完成后导出不可变JSONL接入原索引，原子发布前不改可答指针。索引仍为可再生派生缓存。首轮全目录补采在隔离环境持续，尚未发布新语料，不将采集进行中记为已完成。
 
-已验证Go test/vet；30个Node测试含Unicode和忽略SIGTERM后代收拢；隔离MySQL时间线182项4页、人工消息单连接池/版本/未知结果及历史连续性、关闭档案后旧事件停读、Temporal不可用仍202原编号。原采集代码在独立MySQL验证撤销授权中断、原编号跳过已完成、统计事务回滚及旧快照拒绝；原索引代码以模拟embedding验证新增消息可按ID读取且内容变化改变指纹。Product Design 桌面/390px手机与7项交互、真实模型人工消息接续通过；完整图文对照见根design-qa.md。产品源码两路独立review-agent修复并复审No findings；发布脚本继续单独复核，正式结果待读回后写回。
+已验证Go test/vet；30个Node测试含Unicode和忽略SIGTERM后代收拢；隔离MySQL时间线182项4页、人工消息单连接池/版本/未知结果及历史连续性、关闭档案后旧事件停读、Temporal不可用仍202原编号。原采集代码在独立MySQL验证撤销授权中断、原编号跳过已完成、统计事务回滚及旧快照拒绝；原索引代码以模拟embedding验证新增消息可按ID读取且内容变化改变指纹。Product Design 桌面/390px手机与7项交互、真实模型人工消息接续通过；完整图文对照见根design-qa.md。产品源码两路独立review-agent修复并复审No findings；每日程序使用通用quiet参数，成功留Session记录而不发本人通知，失败仍提醒；发布脚本继续单独复核，正式结果待读回后写回。
 
 ## 2026-11-08 正式资料接入与本人真实应答
 

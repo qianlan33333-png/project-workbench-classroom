@@ -22,6 +22,7 @@ type Method struct {
 	OutputSchema    map[string]any `json:"outputSchema,omitempty"`
 }
 type Run struct {
+	Quiet         bool          `json:"quiet,omitempty"`
 	Selection     *Selection    `json:"selection,omitempty"`
 	TargetRunIDs  []string      `json:"targetRunIds,omitempty"`
 	WorkflowID    string        `json:"workflowId,omitempty"`
