@@ -58,3 +58,7 @@ test('account description rejects a repeated catalogue cursor or mismatched refr
  const repeated=createGateway(config,async()=>{},async()=>({ok:true,json:async()=>({items:[],nextCursor:'repeat'})}));await assert.rejects(repeated.describe());
  const changed=createGateway(config,async()=>{},async url=>({ok:true,json:async()=>String(url).includes('/accounts/account')?{accountId:'other',name:'Wrong',tenantId:'tenant'}:{items:[{accountId:'account',name:'Actual'}]}}));await assert.rejects(changed.describe());
 });
+test('documented account remark remains the readable label while offline',async()=>{
+ const g=createGateway(config,async()=>{},async url=>({ok:true,json:async()=>String(url).includes('/accounts/account')?{accountId:'account',remark:'qianlan',status:'offline',sendEnabled:false,wecomIdentity:{corpId:'corp',userId:'staff'}}:{items:[{accountId:'account',remark:'Old remark',status:'online'}]}}));
+ const v=await g.describe();assert.equal(v.name,'qianlan');assert.equal(v.status,'offline');assert.equal(v.sendEnabled,false);
+});

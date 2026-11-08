@@ -54,7 +54,7 @@ export function createGateway(c,workerCall,fetcher=fetch){
       if(!found)throw Error('Bound account is not in the gateway directory');
       const account=await request('GET','/accounts/'+encodeURIComponent(c.accountId));
       if((account.accountId||account.id)!==c.accountId||account.tenantId&&account.tenantId!==c.tenantId)throw Error('Wrong account identity');
-      return{accountId:c.accountId,name:account.name||account.displayName||found.name||found.displayName||c.accountId,status:account.status,sendEnabled:account.sendEnabled===true};
+      return{accountId:c.accountId,name:account.name||account.displayName||account.remark||found.name||found.displayName||found.remark||c.accountId,status:account.status,sendEnabled:account.sendEnabled===true};
     },
     async ingest(raw,headers){return ingestEvent(verifyGateway(c,raw,headers))},
     async poll(signal){
