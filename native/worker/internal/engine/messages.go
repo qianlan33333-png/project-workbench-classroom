@@ -104,6 +104,15 @@ func (a *Activities) SendDelivery(ctx context.Context, id string) (Receipt, erro
 		return Receipt{}, failure(e)
 	}
 	if d.State == "prepared" {
+		if r.Operation == "reply" {
+			expired, err := a.Store.ExpireReplyDraft(ctx, id)
+			if err != nil {
+				return Receipt{}, failure(err)
+			}
+			if expired {
+				return Receipt{State: "failed", Error: "自动回复未提交：配置或会话已失效。"}, nil
+			}
+		}
 		transport, err := a.Store.Transport(ctx, r.Principal, d.ConnectionID)
 		if err != nil {
 			return Receipt{}, failure(err)

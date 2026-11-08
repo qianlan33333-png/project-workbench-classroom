@@ -35,13 +35,31 @@ type PrepareMessage struct {
 }
 
 func (a *Server) messageTools(s *mcp.Server, p core.Principal) {
-	mcp.AddTool(s, &mcp.Tool{Name: "message_context", Description: "Read only the fixed records bound to this incoming message and object. No customer identifier or database query is accepted."}, func(ctx context.Context, _ *mcp.CallToolRequest, in MessageKey) (*mcp.CallToolResult, struct {
-		Records []core.Record `json:"records"`
-	}, error) {
-		v, e := a.Store.MessageContext(ctx, p, in.ConnectionID, in.EventID)
-		return nil, struct {
-			Records []core.Record `json:"records"`
-		}{v}, e
+	type ContextResult struct {
+		Records        []core.Record          `json:"records"`
+		Knowledge      []core.Ref             `json:"knowledge"`
+		History        []core.IncomingMessage `json:"history"`
+		HistoryLimited bool                   `json:"historyLimited"`
+	}
+	mcp.AddTool(s, &mcp.Tool{Name: "message_context", Description: "Read only this incoming customer's fixed profile records, allowed knowledge references and recent channel history. Search knowledge with resource_search and read sources with resource_excerpt. Human history can have missing text; never invent it."}, func(ctx context.Context, _ *mcp.CallToolRequest, in MessageKey) (*mcp.CallToolResult, ContextResult, error) {
+		records, e := a.Store.MessageContext(ctx, p, in.ConnectionID, in.EventID)
+		if e != nil {
+			return nil, ContextResult{}, e
+		}
+		m, e := a.Store.Message(ctx, p, in.ConnectionID, in.EventID)
+		if e != nil {
+			return nil, ContextResult{}, e
+		}
+		history, e := a.Store.MessageHistory(ctx, p, in.ConnectionID, in.EventID)
+		out := ContextResult{Records: records, Knowledge: m.Knowledge, History: history, HistoryLimited: true}
+		for len(out.History) > 0 {
+			raw, _ := json.Marshal(out)
+			if len(raw) <= 46000 {
+				break
+			}
+			out.History = out.History[:len(out.History)-1]
+		}
+		return nil, out, e
 	})
 	mcp.AddTool(s, &mcp.Tool{Name: "message_prepare", Description: "Prepare one immutable outgoing message for owner review. Does not send. The owner must confirm the exact saved content/version; agents cannot confirm themselves."}, func(ctx context.Context, _ *mcp.CallToolRequest, in PrepareMessage) (*mcp.CallToolResult, core.Decision, error) {
 		if p.Kind != "project" || !core.ValidID(in.OperationKey) {
@@ -73,7 +91,7 @@ func (a *Server) messageTools(s *mcp.Server, p core.Principal) {
 			return nil, RunRef{}, e
 		}
 		route, e := a.Store.Route(ctx, message.RouteID)
-		if e != nil || !route.Enabled || !route.AutoReply || route.Principal != p {
+		if e != nil || !route.Enabled || !route.AutoReply || route.Principal != p || max(int64(1), route.Revision) != max(int64(1), message.RouteRevision) {
 			return nil, RunRef{}, core.ErrDenied
 		}
 		if message.State != "received" && message.State != "reply_queued" {
@@ -224,6 +242,11 @@ func (a *Server) messageRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /message-routes", func(w http.ResponseWriter, r *http.Request) {
 		var v core.MessageRoute
 		if decode(w, r, &v) {
+			if v.ConnectionID == "" {
+				out, e := a.Store.ChangeReplyMode(r.Context(), principal(r.Context()), v.ID, v.Revision, v.AutoReply)
+				respond(w, out, e)
+				return
+			}
 			if v.Principal.Kind == "project" {
 				old, e := a.Store.Route(r.Context(), v.ID)
 				if core.IsMissing(e) {
@@ -247,7 +270,13 @@ func (a *Server) messageRoutes(mux *http.ServeMux) {
 		if !decode(w, r, &in) {
 			return
 		}
+		_, _ = a.Store.EnsureReplyRoute(r.Context(), in)
 		message, e := a.Store.AcceptMessage(r.Context(), in)
+		if core.IsMissing(e) {
+			if _, err := a.Store.EnsureReplyRoute(r.Context(), in); err == nil {
+				message, e = a.Store.AcceptMessage(r.Context(), in)
+			}
+		}
 		if e != nil || message.State != "received" {
 			respond(w, message, e)
 			return
@@ -268,14 +297,7 @@ func (a *Server) messageRoutes(mux *http.ServeMux) {
 				return
 			}
 		}
-		run := core.Run{ID: message.ID, Principal: message.Principal, Operation: "incoming", Title: "渠道新消息", Goal: message.Text + "\n\n消息引用：" + core.Digest(message.IncomingMessage) + "\nconnectionId=" + message.ConnectionID + "\neventId=" + message.EventID + "\n请按专家方法判断回复、忽略或转人工，通过对应消息工具记录。", OriginMessage: message.ID}
-		for _, v := range message.Context {
-			run.Sources = append(run.Sources, v.Ref)
-		}
-		if e = a.Store.SaveRun(r.Context(), run); e == nil {
-			_, e = a.Temporal.ExecuteWorkflow(r.Context(), client.StartWorkflowOptions{ID: run.ID, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.Dispatch, run.ID)
-			e = accepted(e)
-		}
+		e = a.startIncoming(r.Context(), message)
 		respond(w, message, e)
 	})
 }

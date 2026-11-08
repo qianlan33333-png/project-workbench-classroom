@@ -49,7 +49,7 @@ toolServers:
         section: 开放的板块编号
 ```
 
-正式密钥来自环境变量，不能出现在该配置。宿主使用官方 MCP 客户端加载；工具按 `serverName` 分组，无需修改宿主源码。HTTPS 外部地址或本机 HTTP；禁止 URL 凭证与查询参数。客户对象 Session 不开放额外服务。
+正式密钥来自环境变量，不能出现在该配置。宿主使用官方 MCP 客户端加载；工具按 `serverName` 分组，无需修改宿主源码。HTTPS 外部地址或本机 HTTP；禁止 URL 凭证与查询参数。客户对象 Session 默认不开放额外服务。确有必要时，由本人同时配置非空 `customerTools` 工具名称白名单和 `sources`。只允许本项目接入设置勾选的公共资料快照；调用前后均检查实时共享范围并登记来源。个人资料只能走可信对象绑定，不能通过外部查询工具读取全库。
 
 服务器名称只允许1～32个字母、数字或连字符，并以字母或数字开头；不使用下划线，也不能重复，以免与 MCP 的工具命名分隔符混淆。
 
@@ -80,3 +80,10 @@ toolServers:
 遵循 [Agent Skills](https://agentskills.io/specification)：目录含 `SKILL.md`，frontmatter 包含 name/description，方法说明尽量短，长资料放 references 并按需加载。用户资料留资源库，包内只放方法和通用样例。Harness 沿用官方 skill-filesystem/tool-skill 插件。
 
 新工具至少验证：官方 SDK tools/list/call、Schema拒绝无效输入、身份不可覆盖、共享撤销、幂等、取消/恢复、数据预算、第二种任务复用。外部操作额外验证超时未知不会重发，以及真实结果与连接器受理的区分。真实模型/渠道、模拟模型/渠道分别记录。
+
+
+## 自动应答的标准适配
+
+专项配置与使用见 [AUTO-REPLY.md](AUTO-REPLY.md)。网关只做协议与可信身份转换；默认专家方法是 `customer-reply`，可替换为其他 Skill。MCP仍为现有 message_context、resource_search、resource_excerpt、message_reply、message_disposition、message_receipt，不增加业务专用生成器。
+
+人工接管递增现有路由版本；项目配置也有独立递增版本。两者任一改变均阻断未提交旧草稿。队列与提交均按同客户顺序处理，直到前条真实请求返回受理/失败/未知；不等客户已读，未知结果不重发。明确未提交的 prepared 任务可恢复原编号，已提交的任务只核原回执。

@@ -21,6 +21,10 @@ type Transport struct {
 	Enabled  bool     `json:"enabled"`
 }
 type MessageRoute struct {
+	Revision       int64       `json:"revision"`
+	DisplayName    string      `json:"displayName,omitempty"`
+	LastMessageAt  string      `json:"lastMessageAt"`
+	Preview        string      `json:"preview,omitempty"`
 	ID             string      `json:"id"`
 	ConnectionID   string      `json:"connectionId"`
 	ConversationID string      `json:"conversationId"`
@@ -31,6 +35,9 @@ type MessageRoute struct {
 	Context        []RecordRef `json:"context,omitempty"`
 }
 type IncomingMessage struct {
+	Kind           string     `json:"kind,omitempty"`
+	DisplayName    string     `json:"displayName,omitempty"`
+	ExternalUserID string     `json:"externalUserId,omitempty"`
 	OccurredAt     *time.Time `json:"occurredAt,omitempty"`
 	ConnectionID   string     `json:"connectionId"`
 	EventID        string     `json:"eventId"`
@@ -40,8 +47,12 @@ type IncomingMessage struct {
 	ReplyTo        string     `json:"replyTo,omitempty"`
 }
 type StoredMessage struct {
-	ID         string `json:"id"`
-	DecisionID string `json:"decisionId,omitempty"`
+	RouteRevision    int64  `json:"routeRevision,omitempty"`
+	SettingsRevision int64  `json:"settingsRevision,omitempty"`
+	ExpertSkill      string `json:"expertSkill,omitempty"`
+	Knowledge        []Ref  `json:"knowledge,omitempty"`
+	ID               string `json:"id"`
+	DecisionID       string `json:"decisionId,omitempty"`
 	IncomingMessage
 	RouteID   string      `json:"routeId,omitempty"`
 	Principal Principal   `json:"principal"`
@@ -168,11 +179,26 @@ func (s *Store) PutRoute(ctx context.Context, p Principal, v MessageRoute) error
 		if v.Principal.Kind == "project" && Digest(contextIdentities(old.Context)) != Digest(contextIdentities(v.Context)) {
 			return ErrConflict
 		}
+		if v.Principal.Kind == "project" {
+			if v.Revision != old.Revision {
+				return ErrConflict
+			}
+			v.Revision = routeRevision(old)
+			v.AutoReply = old.AutoReply
+			v.LastMessageAt = old.LastMessageAt
+			v.Preview = old.Preview
+		}
 		if old.ConnectionID != v.ConnectionID || old.ConversationID != v.ConversationID || old.ActorID != v.ActorID || old.Principal != v.Principal {
 			return ErrConflict
 		}
 		_, e = tx.ExecContext(ctx, `UPDATE wb_message_routes SET body=? WHERE id=?`, jsonText(v), v.ID)
 	} else if IsMissing(e) {
+		if v.Revision == 0 {
+			v.Revision = 1
+		}
+		if v.LastMessageAt == "" {
+			v.LastMessageAt = messageTime(time.Now())
+		}
 		_, e = tx.ExecContext(ctx, `INSERT INTO wb_message_routes(id,connection_id,conversation_id,actor_id,body) VALUES(?,?,?,?,?)`, v.ID, v.ConnectionID, v.ConversationID, v.ActorID, jsonText(v))
 	} else {
 		return e
@@ -187,19 +213,101 @@ func (s *Store) Route(ctx context.Context, id string) (MessageRoute, error) {
 	return scanJSON[MessageRoute](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_message_routes WHERE id=?`, id))
 }
 func (s *Store) AcceptMessage(ctx context.Context, v IncomingMessage) (StoredMessage, error) {
-	if !ValidID(v.ConnectionID) || v.EventID == "" || len(v.EventID) > 191 || len(v.Text) > 64000 || v.ActorID == "" || v.ConversationID == "" {
+	if !ValidID(v.ConnectionID) || v.EventID == "" || len(v.EventID) > 191 || len(v.Text) > 64000 || v.ActorID == "" || len(v.ActorID) > 191 || v.ConversationID == "" || len(v.ConversationID) > 191 || len(v.DisplayName) > 191 || (v.Kind != "" && v.Kind != "human") {
 		return StoredMessage{}, ErrInvalid
 	}
-	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(v.ConnectionID+"/"+v.EventID)).String()
-	message := StoredMessage{ID: id, IncomingMessage: v, CreatedAt: time.Now().UTC(), State: "unrouted"}
-	route, e := scanJSON[MessageRoute](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_message_routes WHERE connection_id=? AND conversation_id=? AND actor_id=?`, v.ConnectionID, v.ConversationID, v.ActorID))
-	if e == nil && route.Enabled {
+	// Duplicate transport events must not depend on today's mutable resource configuration.
+	if old, err := scanJSON[StoredMessage](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_messages WHERE connection_id=? AND event_id=?`, v.ConnectionID, v.EventID)); err == nil {
+		if Digest(incomingIdentity(old.IncomingMessage)) != Digest(incomingIdentity(v)) {
+			return old, ErrConflict
+		}
+		return old, nil
+	} else if !IsMissing(err) {
+		return StoredMessage{}, err
+	}
+	// Resolve trusted identities before the route transaction; no model input is used.
+	route, routeErr := scanJSON[MessageRoute](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_message_routes WHERE connection_id=? AND conversation_id=? AND actor_id=?`, v.ConnectionID, v.ConversationID, v.ActorID))
+	var knowledge []Ref
+	var contextRefs []RecordRef
+	var skill string
+	var settingsRevision int64
+	var inputErr error
+	if routeErr == nil && route.Enabled && route.AutoReply && v.Kind != "human" {
+		var e error
+		knowledge, contextRefs, skill, settingsRevision, e = s.replyInputs(ctx, route, v)
+		if e != nil {
+			inputErr = e
+			knowledge = nil
+			contextRefs = nil
+		}
+	} else if routeErr != nil && !IsMissing(routeErr) {
+		return StoredMessage{}, routeErr
+	}
+	tx, e := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if e != nil {
+		return StoredMessage{}, e
+	}
+	defer tx.Rollback()
+	if routeErr == nil {
+		route, e = scanJSON[MessageRoute](tx.QueryRowContext(ctx, `SELECT body FROM wb_message_routes WHERE id=? FOR UPDATE`, route.ID))
+		if e != nil {
+			return StoredMessage{}, e
+		}
+	}
+	existing, e := scanJSON[StoredMessage](tx.QueryRowContext(ctx, `SELECT body FROM wb_messages WHERE connection_id=? AND event_id=? FOR UPDATE`, v.ConnectionID, v.EventID))
+	if e == nil {
+		var digest string
+		if e = tx.QueryRowContext(ctx, `SELECT digest FROM wb_messages WHERE connection_id=? AND event_id=?`, v.ConnectionID, v.EventID).Scan(&digest); e != nil {
+			return existing, e
+		}
+		if digest != Digest(v) && Digest(incomingIdentity(existing.IncomingMessage)) != Digest(incomingIdentity(v)) {
+			return existing, ErrConflict
+		}
+		return existing, tx.Commit()
+	}
+	if !IsMissing(e) {
+		return existing, e
+	}
+	message := StoredMessage{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(v.ConnectionID+"/"+v.EventID)).String(), IncomingMessage: v, CreatedAt: time.Now().UTC(), State: "unrouted"}
+	if routeErr == nil && route.Enabled {
 		message.RouteID = route.ID
 		message.Principal = route.Principal
+		message.RouteRevision = routeRevision(route)
+		message.SettingsRevision = max(settingsRevision, -settingsRevision)
+		message.Context = contextRefs
+		message.Knowledge = knowledge
+		message.ExpertSkill = skill
 		message.State = "received"
-		message.Context = route.Context
-	} else if e != nil && !IsMissing(e) {
-		return message, e
+		if route.Principal.Kind == "project" && (!route.AutoReply || settingsRevision < 0) {
+			message.State = "paused"
+		}
+		if inputErr != nil {
+			message.State = "handoff"
+			route.AutoReply = false
+			route.Revision = routeRevision(route) + 1
+			if e = pausePending(ctx, tx, route.ID); e != nil {
+				return message, e
+			}
+			if e = handoffEvent(ctx, tx, message); e != nil {
+				return message, e
+			}
+		}
+		if v.Kind == "human" {
+			message.State = "human"
+			route.AutoReply = false
+			route.Revision = routeRevision(route) + 1
+			if e = pausePending(ctx, tx, route.ID); e != nil {
+				return message, e
+			}
+		}
+		route.LastMessageAt = messageTime(message.CreatedAt)
+		route.Preview = preview(v.Text)
+		if v.DisplayName != "" {
+			route.DisplayName = v.DisplayName
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE wb_message_routes SET body=? WHERE id=?`, jsonText(route), route.ID); e != nil {
+			return message, e
+		}
 	}
 	if message.Principal.Kind == "personal" && message.State == "received" {
 		message.DecisionID, e = s.matchSendingDecision(ctx, strings.TrimSpace(message.Text), message.OccurredAt)
@@ -207,18 +315,28 @@ func (s *Store) AcceptMessage(ctx context.Context, v IncomingMessage) (StoredMes
 			return message, e
 		}
 	}
-	_, e = s.DB.ExecContext(ctx, `INSERT IGNORE INTO wb_messages(connection_id,event_id,digest,body) VALUES(?,?,?,?)`, v.ConnectionID, v.EventID, Digest(v), jsonText(message))
+	_, e = tx.ExecContext(ctx, `INSERT INTO wb_messages(connection_id,event_id,digest,body) VALUES(?,?,?,?)`, v.ConnectionID, v.EventID, Digest(v), jsonText(message))
 	if e != nil {
 		return message, e
 	}
-	var existing string
-	if e = s.DB.QueryRowContext(ctx, `SELECT digest FROM wb_messages WHERE connection_id=? AND event_id=?`, v.ConnectionID, v.EventID).Scan(&existing); e != nil {
-		return message, e
+	if message.Principal.Kind == "project" && (message.State == "paused" || message.State == "human" || message.State == "handoff") {
+		label := "客户消息（自动回复已暂停）"
+		if message.State == "human" {
+			label = "人工已回复，自动回复保持暂停"
+		}
+		if message.State == "handoff" {
+			label = "资料配置或读取校验未通过，本客户已暂停自动回复，请检查项目接入设置。"
+		}
+		text := message.Text
+		if text == "" {
+			text = "原渠道未提供正文，不能推测回复内容。"
+		}
+		event := RunEvent{ID: message.ID + "-history", SessionID: message.Principal.SessionID, RunID: "", Kind: "message.history", Text: label + "\n" + text, CreatedAt: message.CreatedAt}
+		if _, e = tx.ExecContext(ctx, `INSERT IGNORE INTO wb_events(id,session_id,run_id,body) VALUES(?,?,?,?)`, event.ID, event.SessionID, event.RunID, jsonText(event)); e != nil {
+			return message, e
+		}
 	}
-	if existing != Digest(v) {
-		return message, ErrConflict
-	}
-	return scanJSON[StoredMessage](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_messages WHERE connection_id=? AND event_id=?`, v.ConnectionID, v.EventID))
+	return message, tx.Commit()
 }
 func (s *Store) Message(ctx context.Context, p Principal, connection, event string) (StoredMessage, error) {
 	m, e := scanJSON[StoredMessage](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_messages WHERE connection_id=? AND event_id=?`, connection, event))
@@ -239,6 +357,14 @@ func (s *Store) MessageDisposition(ctx context.Context, p Principal, connection,
 		return e
 	}
 	defer tx.Rollback()
+	first, e := s.Message(ctx, p, connection, event)
+	if e != nil {
+		return e
+	}
+	route, e := scanJSON[MessageRoute](tx.QueryRowContext(ctx, `SELECT body FROM wb_message_routes WHERE id=? FOR UPDATE`, first.RouteID))
+	if e != nil {
+		return e
+	}
 	m, e := scanJSON[StoredMessage](tx.QueryRowContext(ctx, `SELECT body FROM wb_messages WHERE connection_id=? AND event_id=? FOR UPDATE`, connection, event))
 	if e != nil {
 		return e
@@ -253,6 +379,24 @@ func (s *Store) MessageDisposition(ctx context.Context, p Principal, connection,
 		return ErrConflict
 	}
 	m.State = state
+	if state == "handoff" {
+		if routeRevision(route) != max(int64(1), m.RouteRevision) {
+			return ErrConflict
+		}
+		if route.Principal.Kind == "project" {
+			route.AutoReply = false
+			route.Revision = routeRevision(route) + 1
+			if e = pausePending(ctx, tx, route.ID); e != nil {
+				return e
+			}
+			if e = handoffEvent(ctx, tx, m); e != nil {
+				return e
+			}
+			if _, e = tx.ExecContext(ctx, `UPDATE wb_message_routes SET body=? WHERE id=?`, jsonText(route), route.ID); e != nil {
+				return e
+			}
+		}
+	}
 	if _, e = tx.ExecContext(ctx, `UPDATE wb_messages SET body=? WHERE connection_id=? AND event_id=?`, jsonText(m), connection, event); e != nil {
 		return e
 	}
@@ -300,13 +444,10 @@ func (s *Store) MessageContext(ctx context.Context, p Principal, connection, eve
 	if e != nil || !route.Enabled || route.Principal != p {
 		return nil, ErrDenied
 	}
-	if m.State != "received" {
-		return nil, ErrConflict
-	}
 	var records []Record
 	for _, ref := range m.Context {
 		allowed := false
-		for _, current := range route.Context {
+		for _, current := range append(route.Context, m.Context...) {
 			if current == ref {
 				allowed = true
 				break
@@ -416,5 +557,16 @@ func (s *Store) FinishDelivery(ctx context.Context, id, state, receipt, reason s
 	if _, e = tx.ExecContext(ctx, `UPDATE wb_deliveries SET state=?,body=? WHERE id=?`, v.State, jsonText(v), id); e != nil {
 		return v, e
 	}
+	if _, e = tx.ExecContext(ctx, `UPDATE wb_messages SET body=JSON_SET(body,'$.state',?) WHERE connection_id=? AND event_id=? AND message_state='reply_submitting' AND EXISTS(SELECT 1 FROM wb_runs WHERE id=? AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.operation'))='reply')`, "reply_"+state, v.ConnectionID, v.Target["replyTo"], v.RunID); e != nil {
+		return v, e
+	}
 	return v, tx.Commit()
+}
+
+// Gateway retries may carry a newer display name or envelope timestamp. These
+// metadata changes do not create a second input; identity/content must match.
+func incomingIdentity(v IncomingMessage) IncomingMessage {
+	v.DisplayName = ""
+	v.OccurredAt = nil
+	return v
 }

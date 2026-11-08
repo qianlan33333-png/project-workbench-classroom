@@ -41,6 +41,7 @@ func (a *Server) Handler() http.Handler {
 	a.configRoutes(mux)
 	a.personalRoutes(mux)
 	a.messageRoutes(mux)
+	a.replyRoutes(mux)
 	a.scheduleRoutes(mux)
 	a.resourceRoutes(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +218,8 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 		cancel()
 		if e == nil {
 			a.messageTools(s, bound)
-			s.RemoveTools("message_prepare", "message_receipt")
+			a.resourceTools(s, bound)
+			s.RemoveTools("message_prepare")
 			return s
 		}
 		if !core.IsMissing(e) {

@@ -21,6 +21,44 @@ func ReceiptSweep(ctx workflow.Context) error {
 	return workflow.ExecuteActivity(ctx, "SummarizeBatchReceipts").Get(ctx, nil)
 }
 func (a *Activities) QueueReceiptChecks(ctx context.Context) error {
+	prepared, e := a.Store.DB.QueryContext(ctx, `SELECT d.id FROM wb_deliveries d JOIN wb_runs r ON r.id=d.run_id WHERE d.state='prepared' AND JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.operation'))='reply' ORDER BY JSON_UNQUOTE(JSON_EXTRACT(d.body,'$.updatedAt')),d.id LIMIT 100`)
+	if e != nil {
+		return e
+	}
+	idsToStart := []string{}
+	for prepared.Next() {
+		var id string
+		if e = prepared.Scan(&id); e != nil {
+			break
+		}
+		idsToStart = append(idsToStart, id)
+	}
+	if e == nil {
+		e = prepared.Err()
+	}
+	prepared.Close()
+	if e != nil {
+		return e
+	}
+	for _, id := range idsToStart {
+		expired, err := a.Store.ExpireReplyDraft(ctx, id)
+		if err != nil {
+			return err
+		}
+		if expired {
+			continue
+		}
+		_, err = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY}, SendMessage, id)
+		if err != nil && !temporal.IsWorkflowExecutionAlreadyStartedError(err) {
+			return err
+		}
+		// Rotate recovery candidates even when configuration is still missing;
+		// a bad prepared draft cannot monopolize the bounded sweep window.
+		if _, err = a.Store.DB.ExecContext(ctx, `UPDATE wb_deliveries SET body=JSON_SET(body,'$.updatedAt',DATE_FORMAT(UTC_TIMESTAMP(6),'%Y-%m-%dT%H:%i:%s.%fZ')) WHERE id=? AND state='prepared'`, id); err != nil {
+			return err
+		}
+	}
+
 	rows, e := a.Store.DB.QueryContext(ctx, `SELECT id FROM wb_deliveries WHERE state IN ('submitting','unknown','accepted','pending_confirmation') AND COALESCE(JSON_EXTRACT(body,'$.receiptChecks'),0)<IF(state='pending_confirmation',288,3) AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.updatedAt')) < DATE_FORMAT(UTC_TIMESTAMP()-INTERVAL 5 MINUTE,'%Y-%m-%dT%H:%i:%s') ORDER BY JSON_UNQUOTE(JSON_EXTRACT(body,'$.updatedAt')) LIMIT 100`)
 	if e != nil {
 		return e

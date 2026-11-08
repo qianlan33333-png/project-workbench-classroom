@@ -39,10 +39,14 @@ func (a *Server) configRoutes(mux *http.ServeMux) {
 		if p.Kind == "project" {
 			_, e := a.Store.SessionRoute(r.Context(), p)
 			if e == nil {
-				respond(w, nil, core.ErrDenied)
-				return
+				for _, ref := range refs {
+					if e = a.Store.CheckMessageKnowledge(r.Context(), p, ref); e != nil {
+						respond(w, nil, e)
+						return
+					}
+				}
 			}
-			if !core.IsMissing(e) {
+			if e != nil && !core.IsMissing(e) {
 				respond(w, nil, e)
 				return
 			}

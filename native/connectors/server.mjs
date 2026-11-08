@@ -1,4 +1,4 @@
-import fs from 'node:fs/promises';import crypto from 'node:crypto';
+import fs from 'node:fs/promises';import crypto from 'node:crypto';import{createServer}from 'node:http';
 import{McpServer}from '@modelcontextprotocol/sdk/server/mcp.js';
 import{StreamableHTTPServerTransport}from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import{createMcpExpressApp}from '@modelcontextprotocol/sdk/server/express.js';
@@ -21,6 +21,13 @@ app.post('/mcp',async(req,res)=>{
  try{await server.connect(transport);await transport.handleRequest(req,res,req.body)}catch{if(!res.headersSent)res.status(500).json({error:'connector unavailable'})}
 });
 app.get('/mcp',(_req,res)=>res.status(405).end());app.delete('/mcp',(_req,res)=>res.status(405).end());
-const server=app.listen(Number(process.env.WORKBENCH_CONNECTOR_PORT||7383),'127.0.0.1');
+const server=createServer(async(req,res)=>{
+ const match=/^\/hooks\/([a-zA-Z0-9_-]{1,96})$/.exec(req.url||'');
+ if(!match)return app(req,res);
+ if(req.method!=='POST'){res.writeHead(405).end();return}
+ try{let size=0;const chunks=[];for await(const chunk of req){size+=chunk.length;if(size>1048576){res.writeHead(413).end();return}chunks.push(chunk)}
+ await channels.ingestGateway(match[1],Buffer.concat(chunks),req.headers);res.writeHead(200,{'content-type':'application/json'}).end('{"accepted":true}');
+ }catch{res.writeHead(400).end('Webhook not accepted')}
+}).listen(Number(process.env.WORKBENCH_CONNECTOR_PORT||7383),'127.0.0.1');
 channels.start(abort.signal).catch(()=>{console.error('Channel receiver stopped; restart the connector after checking configuration');process.exitCode=1;server.close()});
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{abort.abort();server.close()});

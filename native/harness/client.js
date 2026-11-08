@@ -6,7 +6,7 @@ window.__ModuleLoader__.load({
     const { useState, useEffect } = React;
     const {IconClockOutlineRegular, IconDatabaseOutlineRegular}=require("@deepseek-ai/dsh-client-ui-primitives");
     let resourceProject="";
-    const css = `.wb-page{height:100%;overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:14px;line-height:1.6}.wb-content{max-width:960px;margin:auto;padding:28px clamp(20px,4vw,48px) 48px}.wb-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}.wb-heading h1{font-size:20px;font-weight:500;margin:0}.wb-page button,.wb-inline{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:6px 12px;cursor:pointer}.wb-page button:disabled{opacity:.5;cursor:wait}.wb-page textarea{font:inherit;width:100%;box-sizing:border-box;min-height:88px;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:10px}.wb-page input,.wb-page select{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:7px 10px;min-width:0;max-width:100%;box-sizing:border-box}.wb-muted{color:var(--dsw-alias-label-secondary)}.wb-list{border-top:1px solid var(--dsw-alias-border-l3)}.wb-row{display:flex;gap:16px;align-items:center;padding:18px 0;border-bottom:1px solid var(--dsw-alias-border-l3);flex-wrap:wrap}.wb-row-main{flex:1;min-width:180px}.wb-row strong{font-weight:500}.wb-tag{font-size:12px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l3);border-radius:6px}.wb-form{padding:20px 0;display:grid;gap:16px}.wb-field{display:grid;gap:6px;min-width:0}.wb-columns{display:grid;grid-template-columns:1fr 1fr;gap:16px}.wb-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start}.wb-form>h2{font-size:16px;font-weight:500;margin:0}.wb-note{padding:12px 0;overflow-wrap:anywhere}.wb-check{display:flex;gap:8px;align-items:center;padding:6px 0}.wb-section{border:1px solid var(--dsw-alias-border-l3);border-radius:10px;padding:16px;margin-top:12px}.wb-section h2{font-size:16px;font-weight:500;margin:0 0 8px}@media(max-width:600px){.wb-columns{grid-template-columns:1fr}.wb-heading{align-items:flex-start}.wb-row-main{min-width:140px}}`;
+    const css = `.wb-page{height:100%;overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:14px;line-height:1.6}.wb-content{max-width:960px;margin:auto;padding:28px clamp(20px,4vw,48px) 48px}.wb-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}.wb-heading h1{font-size:20px;font-weight:500;margin:0}.wb-page button,.wb-inline{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:6px 12px;cursor:pointer}.wb-short-label{display:none}@media(max-width:600px){.wb-full-label{display:none}.wb-short-label{display:inline}.wb-inline{font-size:12px;padding:4px 6px}}.wb-page button:disabled{opacity:.5;cursor:wait}.wb-page textarea{font:inherit;width:100%;box-sizing:border-box;min-height:88px;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:10px}.wb-page input,.wb-page select{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:7px 10px;min-width:0;max-width:100%;box-sizing:border-box}.wb-muted{color:var(--dsw-alias-label-secondary)}.wb-list{border-top:1px solid var(--dsw-alias-border-l3)}.wb-row{display:flex;gap:16px;align-items:center;padding:18px 0;border-bottom:1px solid var(--dsw-alias-border-l3);flex-wrap:wrap}.wb-row-main{flex:1;min-width:180px}.wb-row strong{font-weight:500}.wb-tag{font-size:12px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l3);border-radius:6px}.wb-form{padding:20px 0;display:grid;gap:16px}.wb-field{display:grid;gap:6px;min-width:0}.wb-columns{display:grid;grid-template-columns:1fr 1fr;gap:16px}.wb-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start}.wb-form>h2{font-size:16px;font-weight:500;margin:0}.wb-note{padding:12px 0;overflow-wrap:anywhere}.wb-check{display:flex;gap:8px;align-items:center;padding:6px 0}.wb-section{border:1px solid var(--dsw-alias-border-l3);border-radius:10px;padding:16px;margin-top:12px}.wb-section h2{font-size:16px;font-weight:500;margin:0 0 8px}@media(max-width:600px){.wb-columns{grid-template-columns:1fr}.wb-heading{align-items:flex-start}.wb-row-main{min-width:140px}}`;
     async function api(path, data) {
       const r = await fetch("/workbench-api" + path, {
         method: data === undefined ? "GET" : "POST",
@@ -18,6 +18,7 @@ window.__ModuleLoader__.load({
       if (!r.ok) throw Error(v.error || "操作失败");
       return v;
     }
+    const responsiveLabel=(full,short)=>h(React.Fragment,null,h('span',{className:'wb-full-label'},full),h('span',{className:'wb-short-label','aria-hidden':true},short));
     const field = (label, node) =>
       h("label", { className: "wb-field" }, h("span", null, label), React.cloneElement(node,{"aria-label":node.props["aria-label"]||label}));
     const button = (label, onClick, props = {}) =>
@@ -510,9 +511,110 @@ window.__ModuleLoader__.load({
           h("label",{className:"wb-check"},h("input",{type:"checkbox",checked:settings.paused,onChange:e=>setSettings({...settings,paused:e.target.checked})}),"暂停每日汇总"),h("button",{type:"submit",disabled:busy},"保存安排")))
       ));
     }
+
+    let replyProject="";
+    let replyWorkspaceIds=new Set();
+    const sessionViews=new WeakMap(),workspaceViews=new WeakMap();
+    const visibleSession=id=>!String(id).startsWith('object-');
+    function filteredSessions(state){
+      if(sessionViews.has(state))return sessionViews.get(state);
+      const byId=Object.fromEntries(Object.entries(state.byId||{}).filter(([id])=>visibleSession(id)));
+      const v={...state,ids:(state.ids||[]).filter(visibleSession),byId};sessionViews.set(state,v);return v;
+    }
+    function filteredWorkspaces(state){
+      const previous=workspaceViews.get(state);if(previous?.generation===replyWorkspaceIds)return previous.value;
+      const value={...state,items:(state.items||[]).filter(w=>!replyWorkspaceIds.has(w.workspaceId)).map(w=>({...w,sessionIds:(w.sessionIds||[]).filter(visibleSession)})),archivedSessionIds:(state.archivedSessionIds||[]).filter(visibleSession),pinnedSessionIds:(state.pinnedSessionIds||[]).filter(visibleSession)};
+      workspaceViews.set(state,{generation:replyWorkspaceIds,value});return value;
+    }
+    async function replyProjects(){
+      const [projects,catalog]=await Promise.all([api('/reply-projects'),api('/catalog')]);
+      replyWorkspaceIds=new Set(catalog.projects.filter(p=>projects.some(c=>c.projectId===p.id)).map(p=>p.workspaceId));
+      window.dispatchEvent(new Event('wb-reply-projects'));return{projects:projects.filter(c=>catalog.projects.some(p=>p.id===c.projectId)),catalog};
+    }
+    function ReplyPage({openSession}){
+      const [catalog,setCatalog]=useState(),[projects,setProjects]=useState([]),[project,setProject]=useState(replyProject),[page,setPage]=useState({items:[]}),[q,setQ]=useState(''),[paused,setPaused]=useState(false),[cursor,setCursor]=useState(''),[trail,setTrail]=useState([]),[edit,setEdit]=useState(),[transports,setTransports]=useState([]),[allowedResources,setAllowedResources]=useState([]),[error,setError]=useState(''),[busy,setBusy]=useState(false),[loading,setLoading]=useState(true),[refresh,setRefresh]=useState(0);
+      useEffect(()=>{let current=true;Promise.all([replyProjects(),api('/transports')]).then(([v,t])=>{if(!current)return;setCatalog(v.catalog);setProjects(v.projects);setTransports(t);setProject(p=>p||v.projects[0]?.projectId||'');setLoading(false)}).catch(e=>{if(current){setError(e.message);setLoading(false)}});return()=>{current=false}},[refresh]);
+      useEffect(()=>{if(!project)return;let current=true;setLoading(true);setError('');api('/message-routes?'+new URLSearchParams({projectId:project,q,paused:String(paused),after:cursor})).then(v=>{if(current){setPage(v);setLoading(false)}}).catch(e=>{if(current){setError(e.message);setLoading(false)}});return()=>{current=false}},[project,q,paused,cursor,refresh]);
+      useEffect(()=>{if(!project)return;let current=true;setEdit(undefined);Promise.all([api('/reply-settings?projectId='+encodeURIComponent(project)),api('/reply-resources?projectId='+encodeURIComponent(project))]).then(([config,resources])=>{if(current){setEdit(config);setAllowedResources(resources)}}).catch(e=>{if(current)setError(e.message)});return()=>{current=false}},[project]);
+      const reset=()=>{setCursor('');setTrail([])};
+      const changeProject=id=>{replyProject=id;reset();setProject(id)};
+      const change=(name,value)=>setEdit(v=>({...v,[name]:value}));
+      const save=async e=>{e.preventDefault();setBusy(true);setError('');try{const v=await api('/reply-settings',edit);setEdit(v);setRefresh(v=>v+1)}catch(e){setError(e.message)}finally{setBusy(false)}};
+      const create=async()=>{setBusy(true);try{const v=await api('/reply-project/create',{});changeProject(v.projectId);setRefresh(v=>v+1)}catch(e){setError(e.message)}finally{setBusy(false)}};
+      const mode=async row=>{setBusy(true);try{await api('/message-routes',{id:row.id,revision:row.revision,autoReply:!row.autoReply});setRefresh(v=>v+1)}catch(e){setError(e.message)}finally{setBusy(false)}};
+      const projectName=catalog?.projects.find(p=>p.id===project)?.name||'自动化应答';
+      return h('div',{className:'wb-page'},h('style',null,css),h('div',{className:'wb-content'},
+        h('div',{className:'wb-heading'},h('h1',null,projectName),h('div',{className:'wb-actions'},projects.length>1&&field('项目',h('select',{value:project,onChange:e=>changeProject(e.target.value)},...projects.map(c=>h('option',{key:c.projectId,value:c.projectId},catalog?.projects.find(p=>p.id===c.projectId)?.name||c.projectId)))),button('刷新',()=>setRefresh(v=>v+1),{disabled:busy}))),
+        h('p',{className:'wb-muted'},'每位客户使用独立的原生对话。只加载当前页，点击后查看专家执行、上下文和回执。'),
+        error&&h('p',{role:'alert',className:'wb-note'},error),
+        !project&&!loading&&h('div',{className:'wb-section'},h('p',null,'还没有自动应答项目。创建后先配置渠道、专家和资料，再启用。'),button('创建自动化应答项目',create,{disabled:busy})),
+        project&&h(React.Fragment,null,
+          h('div',{className:'wb-actions'},field('搜索客户',h('input',{type:'search',value:q,placeholder:'客户名称或标识',onChange:e=>{reset();setQ(e.target.value)}})),h('label',{className:'wb-check'},h('input',{type:'checkbox',checked:paused,onChange:e=>{reset();setPaused(e.target.checked)}}),'只看已暂停')),
+          loading?h('p',{role:'status'},'正在读取会话…'):h('div',{className:'wb-list'},page.items.length===0?h('p',{className:'wb-note'},q||paused?'没有匹配的会话。':'暂无客户会话。启用接入后，新消息会出现在这里。'):page.items.map(row=>h('div',{className:'wb-row',key:row.id},h('div',{className:'wb-row-main'},button(row.displayName||row.actorId,()=>{replyProject=project;(async()=>{setBusy(true);try{const workspace=catalog.projects.find(p=>p.id===project);const target=await api('/session/start',{workspaceId:workspace.workspaceId,sessionId:row.sessionId});await openSession(target.sessionId)}catch(e){setError(e.message)}finally{setBusy(false)}})()}),h('div',{className:'wb-muted',style:{overflowWrap:'anywhere'}},row.preview||'暂无文字消息'),h('time',{className:'wb-muted',dateTime:row.lastMessageAt},row.lastMessageAt?new Date(row.lastMessageAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'时间未知')),h('span',{className:'wb-tag'},row.autoReply?'自动回复':'已暂停'),button(row.autoReply?'暂停':'恢复',()=>mode(row),{disabled:busy})))),
+          h('div',{className:'wb-actions',style:{marginTop:16}},button('上一页',()=>{const prev=[...trail];setCursor(prev.pop()||'');setTrail(prev)},{disabled:loading||trail.length===0}),h('span',{className:'wb-muted'},`第 ${trail.length+1} 页 · 每页最多50条`),button('下一页',()=>{setTrail(v=>[...v,cursor]);setCursor(page.next||'')},{disabled:loading||!page.next})),
+          edit&&h('details',{className:'wb-section'},h('summary',null,'接入设置'),h('form',{className:'wb-form',onSubmit:save},
+            field('渠道账号',h('select',{value:edit.connectionId||'',required:true,onChange:e=>change('connectionId',e.target.value)},h('option',{value:''},'选择已安装的第三方连接器'),...transports.filter(t=>t.enabled&&t.projects.includes(project)).map(t=>h('option',{key:t.id,value:t.id},t.name)))),
+            h('p',{className:'wb-muted'},'连接凭证保存在宿主私有配置。这里只列出已允许本项目使用的渠道账号。'),
+            field('默认专家Skill',h('input',{required:true,value:edit.expertSkill||'customer-reply',pattern:'[a-zA-Z0-9_-]{1,96}',onChange:e=>change('expertSkill',e.target.value)})),
+            h('fieldset',null,h('legend',null,'允许客户查询的公共资料'),...allowedResources.flatMap(r=>r.currentVersion?r.sections.map(section=>{const checked=edit.knowledge?.some(ref=>ref.resourceId===r.id&&ref.section===section.id);return h('label',{className:'wb-check',key:r.id+'/'+section.id},h('input',{type:'checkbox',checked:!!checked,onChange:e=>change('knowledge',e.target.checked?[...(edit.knowledge||[]),{resourceId:r.id,version:r.currentVersion,section:section.id}]:(edit.knowledge||[]).filter(ref=>ref.resourceId!==r.id||ref.section!==section.id))}),r.name+' / '+section.name)}):[])),
+            field('本用户资料板块（可选）',h('select',{value:edit.subject?edit.subject.resourceId+'/'+edit.subject.section:'',onChange:e=>{if(!e.target.value)return change('subject',undefined);const [resourceId,section]=e.target.value.split('/');change('subject',{resourceId,section,matchField:''})}},h('option',{value:''},'不读取个人资料'),...allowedResources.flatMap(r=>r.currentVersion?r.sections.map(section=>h('option',{key:r.id+'/'+section.id,value:r.id+'/'+section.id},r.name+' / '+section.name)):[]))),
+            edit.subject&&field('身份匹配字段',h('input',{value:edit.subject.matchField||'',placeholder:'留空：记录ID；或填资料中的可信外部ID字段',onChange:e=>change('subject',{...edit.subject,matchField:e.target.value})})),
+            h('label',{className:'wb-check'},h('input',{type:'checkbox',checked:!!edit.notify,onChange:e=>change('notify',e.target.checked)}),'转人工和异常提醒今日，沿用本人已配置的通知目标'),
+            h('label',{className:'wb-check'},h('input',{type:'checkbox',checked:!!edit.enabled,onChange:e=>change('enabled',e.target.checked)}),'启用此项目的自动应答'),
+            h('p',{className:'wb-muted'},'同一真实会话只能有一个自动发送者。先用独立测试账号验证；恢复只处理后续新消息。'),
+            h('button',{type:'submit',disabled:busy},busy?'保存中…':'保存设置')
+          ))
+        )
+      ));
+    }
+    function ChannelHistory({sessionId}){
+      const [open,setOpen]=useState(false),[rows,setRows]=useState([]),[error,setError]=useState('');
+      const labels={received:'待处理',human:'人工已回复',paused:'已暂停',handoff:'已转人工',ignored:'已忽略',reply_queued:'回复待提交',reply_submitting:'正在提交',prepared:'待提交',submitting:'正在提交',accepted:'网关已受理',sent:'已发送',delivered:'已送达',failed:'未发送／失败',unknown:'结果未知，未重发'};
+      const load=async()=>{setError('');try{setRows(await api('/reply-channel-history?sessionId='+encodeURIComponent(sessionId)))}catch(e){setError(e.message)}};
+      return h('div',{style:{position:'relative'}},button(responsiveLabel('渠道记录','记录'),()=>{setOpen(v=>!v);if(!open)load()},{className:'wb-inline','aria-label':'渠道记录','aria-expanded':open}),open&&h('section',{className:'wb-page',style:{position:'fixed',zIndex:20,top:90,right:14,width:'min(600px, calc(100vw - 28px))',maxHeight:'65vh',overflow:'auto',padding:16,boxSizing:'border-box',border:'1px solid var(--dsw-alias-border-l3)',borderRadius:10,boxShadow:'0 6px 24px #0002'}},h('div',{className:'wb-actions'},h('strong',null,'本客户的渠道记录'),button('刷新',load),button('关闭',()=>setOpen(false))),h('p',{className:'wb-muted'},'最近50条入站与50条回复；包括暂停期间的原消息。专家执行仍在原生对话中查看。'),error&&h('p',{role:'alert'},error),rows.length===0?h('p',null,'暂无渠道记录'):rows.map(row=>h('div',{className:'wb-note',key:row.kind+row.id},h('div',{className:'wb-muted'},new Date(row.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})+' · '+row.kind+' · '+(labels[row.state]||labels[row.state.replace(/^reply_/,'')]||row.state)),h('div',{style:{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}},row.text)))));
+    }
+    function installReplyViews(ctx){
+      const {IconChatBubbleOutlineRegular,IconMessageOutlineRegular}=require('@deepseek-ai/dsh-client-ui-primitives');
+      ctx.slots.inject('sidebar.panellist',()=>ctx.slots.register({name:'sidebar.panellist',id:'wb-replies',order:-5,label:()=>'自动化应答'},IconChatBubbleOutlineRegular||IconMessageOutlineRegular||IconDatabaseOutlineRegular));
+      ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:'wb-replies',inject:()=>({openSession:async id=>{await ctx.sessions.refresh();await ctx.sessions.refreshProjections(id);ctx.uiWorkspace.openSession(id);}})},ReplyPage));
+      // Replace only the native list's data projection; reuse its component,
+      // controls, shortcuts, store, locale and ordinary project behaviour.
+      ctx.slots.inject('sidebar.workspaces',()=>{
+        const base=ctx.slots.entries('sidebar.workspaces').find(entry=>entry.component);
+        if(!base)return()=>{};
+        const Original=base.component;
+        function NativeList(props){
+          const [,update]=useState(0);useEffect(()=>{const changed=()=>update(v=>v+1);window.addEventListener('wb-reply-projects',changed);return()=>window.removeEventListener('wb-reply-projects',changed)},[]);
+          return h(Original,{...props,useSessions:selector=>props.useSessions(state=>selector(filteredSessions(state))),useWorkspaces:selector=>props.useWorkspaces(state=>selector(filteredWorkspaces(state))),searchSessions:async(...args)=>{const result=await props.searchSessions(...args);return{...result,items:result.items.filter(item=>visibleSession(item.id||item.sessionId))}}});
+        }
+        // Preserve the shipped entry's child-slot authority and composed props.
+        // Restore the public component entry on this plugin's disposal.
+        base.component=NativeList;
+        return()=>{if(base.component===NativeList)base.component=Original};
+      });
+      ctx.slots.inject('conversation.session.header.utilities',()=>ctx.slots.register({name:'conversation.session.header.utilities',id:'reply-return',order:-30,inject:sessionId=>({sessionId})},({sessionId})=>sessionId.startsWith('object-')?button(responsiveLabel('返回自动应答','返回'),()=>ctx.layout.selectPanel('wb-replies'),{className:'wb-inline','aria-label':'返回自动应答'}):null));
+      const channelSnapshots=new WeakMap();
+      for(const slot of ['main.conversation','conversation.content','conversation.header','conversation.session'])ctx.slots.inject(slot,()=>{
+        const base=ctx.slots.entries(slot).find(entry=>entry.component);if(!base)return()=>{};
+        const Original=base.component;
+        function ChannelConversation(props){
+          if(!props.sessionId?.startsWith('object-')||!props.useSession)return h(Original,props);
+          return h(Original,{...props,useSession:selector=>props.useSession(state=>{
+            if(!state)return selector(state);
+            let view=channelSnapshots.get(state);if(!view){view={...state,blank:false,awaitingFirstTurn:false};channelSnapshots.set(state,view)}
+            return selector(view);
+          })});
+        }
+        base.component=ChannelConversation;return()=>{if(base.component===ChannelConversation)base.component=Original};
+      });
+      ctx.slots.inject('conversation.session.header.utilities',()=>ctx.slots.register({name:'conversation.session.header.utilities',id:'channel-history',order:-20,inject:sessionId=>({sessionId})},({sessionId})=>sessionId.startsWith('object-')?h(ChannelHistory,{sessionId}):null));
+      replyProjects().catch(()=>{});
+    }
     return {
       inject: ["slots", "layout", "uiWorkspace", "sessions"],
       apply(ctx) {
+        ctx.effect(()=>{const style=document.createElement('style');style.textContent=css;document.head.appendChild(style);return()=>style.remove()},'workbench shared native extension styles');
+        try{installReplyViews(ctx)}catch(error){console.error("Auto reply view failed:",error);throw error}
         const openToday = async () => {
           const c = await api("/catalog");
           if (c.personalSessionId)
@@ -547,6 +649,7 @@ window.__ModuleLoader__.load({
               name: "conversation.session.header.utilities",
               id: "workbench-resources",
               order: 30,
+              inject: sessionId=>({sessionId}),
             },
             ({sessionId}) =>
               h(

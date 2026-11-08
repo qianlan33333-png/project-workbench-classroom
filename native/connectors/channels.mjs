@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import {createGateway} from './wecom-gateway.mjs';
 import * as lark from '@larksuiteoapi/node-sdk';
 
 export function parseWechatJSON(text){return JSON.parse(text,(key,value,context)=>key==='message_id'&&typeof value==='number'&&context?.source?context.source:value)}
@@ -16,6 +17,7 @@ export async function ingestFeishu(c,{sender,message:m},workerCall){
 const unknown=receipt=>({state:'unknown',receipt:receipt||'',error:'结果未明确；连接器不会自动重发。'});
 export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
  const clients=new Map(),tokens=new Map();
+ const gateways=new Map(config.filter(c=>c.enabled&&c.kind==='wecom-gateway').map(c=>[c.id,createGateway(c,workerCall,fetcher)]));
  const entry=id=>{const c=config.find(c=>c.id===id&&c.enabled);if(!c)throw Error('Connector unavailable');return c};
  const platformWechat=async(c,endpoint,data,signal)=>{
   const r=await fetcher('https://ilinkai.weixin.qq.com/ilink/bot/'+endpoint,{method:'POST',redirect:'error',signal:AbortSignal.any([signal||new AbortController().signal,AbortSignal.timeout(45000)]),headers:{'content-type':'application/json',AuthorizationType:'ilink_bot_token',Authorization:'Bearer '+c.token,'X-WECHAT-UIN':Buffer.from(String(crypto.randomBytes(4).readUInt32BE())).toString('base64'),'iLink-App-Id':'bot','iLink-App-ClientVersion':String((2<<16)|(4<<8)|10)},body:JSON.stringify({...data,base_info:{channel_version:'2.4.10',bot_agent:'PersonalWorkbench'}})});
@@ -33,6 +35,7 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
  const feishu=c=>{if(feishuFactory)return feishuFactory(c);if(!clients.has(c.id))clients.set(c.id,new lark.Client({appId:c.appId,appSecret:c.appSecret,appType:lark.AppType.SelfBuild,domain:lark.Domain.Feishu,loggerLevel:lark.LoggerLevel.error}));return clients.get(c.id)};
  async function send({connectionId,idempotencyKey,target,text}){
   const c=entry(connectionId);if(!text||text.length>16000)throw Error('Invalid message');
+  if(gateways.has(c.id))return gateways.get(c.id).send({connectionId,idempotencyKey,target,text});
   if(c.kind==='wechat'){
    if(target.actorId!==c.ownerId)return{state:'failed',error:'此微信连接只允许本人通知。'};
    const state=await workerCall('/connector-state?id='+encodeURIComponent(c.id));const context=state.contextTokens?.[target.actorId];if(!context)return{state:'failed',error:'本人需要先建立微信回复窗口。'};
@@ -65,6 +68,7 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
  }
  async function receipt({connectionId,receipt,target,state}){
   const c=entry(connectionId);
+  if(gateways.has(c.id))return gateways.get(c.id).receipt({receipt,target,state});
   if(!receipt)return unknown();
   if(c.kind==='wechat'){let proof;try{proof=JSON.parse(receipt)}catch{return unknown(receipt)};if(!proof.complete||proof.parts?.length!==proof.total||!proof.total)return unknown(receipt);return{state:'accepted',receipt,error:'微信接口提供受理回执，尚无客户送达查询接口。'}};
   if(c.kind==='feishu'){
@@ -107,5 +111,5 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   const dispatcher=new lark.EventDispatcher({}).register({'im.message.receive_v1':event=>ingestFeishu(c,event,workerCall)});
   await ws.start({eventDispatcher:dispatcher});if(!signal.aborted)await new Promise(r=>signal.addEventListener('abort',r,{once:true}));ws.close({force:true});
  }
- return{send,receipt,start:async signal=>Promise.all(config.filter(c=>c.enabled&&c.receive).map(c=>c.kind==='wechat'?pollWechat(c,signal):c.kind==='feishu'?pollFeishu(c,signal):Promise.resolve()))};
+ return{send,receipt,ingestGateway:async(id,raw,headers)=>{const g=gateways.get(id);if(!g)throw Error('Unknown gateway');return g.ingest(raw,headers)},start:async signal=>Promise.all(config.filter(c=>c.enabled&&c.receive).map(c=>c.kind==='wechat'?pollWechat(c,signal):c.kind==='feishu'?pollFeishu(c,signal):c.kind==='wecom-gateway'&&c.receiveMode==='poll'?gateways.get(c.id).poll(signal):Promise.resolve()))};
 }

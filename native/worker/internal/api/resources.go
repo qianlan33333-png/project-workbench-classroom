@@ -79,6 +79,9 @@ type ExcerptResult struct {
 func (a *Server) resourceTools(server *mcp.Server, p core.Principal) {
 	mcp.AddTool(server, &mcp.Tool{Name: "resource_excerpt", Description: "Read a bounded Unicode text fragment of one field in an allowed fixed resource record. Use JSON Pointer, record id and returned next offset for long knowledge documents; default 2000, maximum 4000 characters. Never reads hidden sections."}, func(ctx context.Context, _ *mcp.CallToolRequest, in ExcerptInput) (*mcp.CallToolResult, ExcerptResult, error) {
 		out := ExcerptResult{Ref: in.Ref, ID: in.ID, Pointer: in.Pointer}
+		if e := a.Store.CheckMessageKnowledge(ctx, p, in.Ref); e != nil {
+			return nil, out, e
+		}
 		if in.Offset < 0 || in.Limit < 0 || in.Limit > 4000 {
 			return nil, out, core.ErrInvalid
 		}
@@ -95,6 +98,9 @@ func (a *Server) resourceTools(server *mcp.Server, p core.Principal) {
 		}
 		if len(records) != 1 {
 			return nil, out, core.ErrInvalid
+		}
+		if e = a.Store.CheckMessageKnowledge(ctx, p, in.Ref); e != nil {
+			return nil, out, e
 		}
 		value, _, e := pointer.Get(records[0].Fields)
 		if e != nil {
@@ -122,6 +128,9 @@ func (a *Server) resourceTools(server *mcp.Server, p core.Principal) {
 	})
 	mcp.AddTool(server, &mcp.Tool{Name: "resource_search", Description: "Bounded literal search within one allowed snapshot section. Returns small previews and a continuation cursor; does not search hidden fields or load a whole knowledge base."}, func(ctx context.Context, _ *mcp.CallToolRequest, in SearchInput) (*mcp.CallToolResult, SearchResult, error) {
 		out := SearchResult{Ref: in.Ref, Hits: []SearchHit{}}
+		if e := a.Store.CheckMessageKnowledge(ctx, p, in.Ref); e != nil {
+			return nil, out, e
+		}
 		query := strings.ToLower(strings.TrimSpace(in.Query))
 		if query == "" || len(query) > 128 {
 			return nil, out, core.ErrInvalid
@@ -130,6 +139,9 @@ func (a *Server) resourceTools(server *mcp.Server, p core.Principal) {
 		for pages := 0; pages < 5; pages++ {
 			page, e := a.Store.Read(ctx, p, in.Ref, after, 200)
 			if e != nil {
+				return nil, out, e
+			}
+			if e = a.Store.CheckMessageKnowledge(ctx, p, in.Ref); e != nil {
 				return nil, out, e
 			}
 			for _, record := range page.Records {

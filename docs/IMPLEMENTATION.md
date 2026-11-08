@@ -427,3 +427,18 @@ API启动与后台就绪分开；Worker只在部署提交且渠道就绪后消�
 固定控制器完成正式模型、资源及认证页面验收后，06:06:30标准回滚03→02，06:08:10标准回滚02→03（北京时间），未传临时验收钩子。原定时、今日与通知目标已恢复，通知游标未回退。四项正式服务active，Worker API及后台均就绪；公网1440px/390px页面通过，无异常/横向溢出。今日新输入 `REVIEW-LIVE-0610` 实际调用 `mcp__workbench__resource_list`，编号 `call_00_zs8iehpiZbQlPOtswARR0287`，读回5个资源并完成。
 
 云端最终仅保留current=`native-20261108-03`与previous=`native-20261108-02`，旧01版、遗留迁移备份、临时候选/验证目录、四个隔离测试库与测试账号已清退。本机额外遗留归档均已校验摘要及完整可读性，旧SQLite完整性检查通过。独立资料服务active/enabled、原上下文中心与CRM保留；没有创建客户发送任务，没有GitHub推送。当前业务质量/实际发送边界见 `native/ACCEPTANCE.md`。
+
+
+## 2026-11-08 自动应答专项（待部署）
+
+隔离工作树standard-auto-reply、分支codex/standard-auto-reply，基线4de2615；原工作区未提交的今日跟进改动保持原样。业务流程与范围见plans/2026-11-08-auto-reply-minimal.md，配置说明见native/docs/AUTO-REPLY.md。复用普通项目、原生Session/Skill、MCP、Temporal与MySQL，仅增加专项视图、薄网关适配和原路由版本化停答。
+
+隔离MySQL全套core/api/engine分别219.968/50.490/94.765秒通过；补充标准外部MCP来源登记/实时撤权、资料读取失败仍持久接管、owner渠道历史读取31.08秒通过。一万合成会话每页50，完整遍历无丢失/重复，搜索与暂停过滤通过。人工事件去重、路由与项目双代次、取消收尾、旧稿过期、FIFO和prepared恢复均验证；unknown不重发。
+
+真实Harness/Temporal五个合成客户并行，均实际调用skill、message_context、resource_search、resource_excerpt、message_reply（以及原回执查询）；原生各1轮、6或7个模型步骤。白名单在外发前拒绝合成目标，实际客户外发零。停止Host后持久2条输入：一条取消后为handoff，另一条跨Worker/Host重启在原ID恢复生成且仅1条delivery；没有重开已取消输入。
+
+Product Design沿用原生布局；隔离Playwright验证1440/390/320宽度、10000摘要、每页50、搜索/暂停、原生详情/返回和配置，无JS异常与横向溢出。客户Session不进入普通导航，后台任务结束20秒后释放所持Agent引用；原生对话正文/工具仍原生，暂停前未运行模型的原消息在同一Session「渠道记录」核对，不伪造模型轮次。
+
+review-agent发现并修复读取检查短路、资料错误毒化入站、恢复队列饥饿、取消后未结算、发送倒序及历史展示问题，最终No findings；Node19项、Go/vet通过。完整真实Provider发送不在这些模拟结果内。
+
+当前旧网关托管账号读回offline/sendEnabled=false；没有收到本人本次联测原文，旧回调未改。用户明确要求跳过本次真实企微联测、先完成上线；正式自动应答保持停用，晚点完成真实收发、人工接管/恢复与回执验收再启用。原上下文中心、CRM及既有工作台渠道继续运行。发布后保留一个已成功验证且支持本次协议的回滚版本。

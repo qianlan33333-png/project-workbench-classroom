@@ -181,6 +181,7 @@ func run() error {
 	iw.RegisterWorkflow(engine.Followup)
 	iw.RegisterWorkflow(engine.Daily)
 	iw.RegisterWorkflow(engine.Dispatch)
+	iw.RegisterWorkflow(engine.Incoming)
 	iw.RegisterWorkflow(engine.SendMessage)
 	iw.RegisterWorkflow(engine.WaitAndSend)
 	iw.RegisterWorkflow(engine.ReceiptOnly)
@@ -205,6 +206,20 @@ func run() error {
 	}
 
 	backgroundReady.Store(true)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if e := apiServer.RecoverIncoming(ctx); e != nil {
+					slog.Warn("Incoming recovery deferred")
+				}
+			}
+		}
+	}()
 	go apiServer.DeliverSignals(ctx)
 	select {
 	case <-ctx.Done():

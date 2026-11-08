@@ -46,6 +46,25 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	return &Store{DB: db}, nil
 }
 func (s *Store) Migrate(ctx context.Context) error {
+	// DDL may be reached by the API/Worker during the same restart. MySQL's
+	// connection-scoped lock keeps additive migrations idempotent across them.
+	lock, e := s.DB.Conn(ctx)
+	if e != nil {
+		return e
+	}
+	defer lock.Close()
+	var acquired int
+	if e = lock.QueryRowContext(ctx, `SELECT GET_LOCK(CONCAT(DATABASE(),'/migrate'),30)`).Scan(&acquired); e != nil {
+		return e
+	}
+	if acquired != 1 {
+		return fmt.Errorf("migration is already running")
+	}
+	defer func() {
+		release, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = lock.ExecContext(release, `DO RELEASE_LOCK(CONCAT(DATABASE(),'/migrate'))`)
+	}()
 	for _, q := range strings.Split(schema, ";") {
 		if strings.TrimSpace(q) != "" {
 			if _, e := s.DB.ExecContext(ctx, q); e != nil {
@@ -67,6 +86,59 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if n == 0 {
 		if _, e := s.DB.ExecContext(ctx, `ALTER TABLE wb_events ADD sequence BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE`); e != nil {
 			return e
+		}
+	}
+	for _, column := range []struct{ name, definition string }{
+		{"project_id", "VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (JSON_UNQUOTE(JSON_EXTRACT(body,'$.principal.projectId'))) STORED"},
+		{"auto_reply", "BOOLEAN GENERATED ALWAYS AS (JSON_EXTRACT(body,'$.autoReply')=TRUE) STORED"},
+		{"display_name", "VARCHAR(191) GENERATED ALWAYS AS (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(body,'$.displayName')),'')) STORED"},
+		{"last_activity", "VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(body,'$.lastMessageAt')),'')) STORED"},
+	} {
+		var count int
+		if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='wb_message_routes' AND column_name=?`, column.name).Scan(&count); e != nil {
+			return e
+		}
+		if count == 0 {
+			if _, e := s.DB.ExecContext(ctx, "ALTER TABLE wb_message_routes ADD COLUMN "+column.name+" "+column.definition); e != nil {
+				return e
+			}
+		}
+	}
+	for name, columns := range map[string]string{"wb_routes_recent": "project_id,last_activity DESC,id DESC", "wb_routes_paused": "project_id,auto_reply,last_activity DESC,id DESC"} {
+		var count int
+		if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='wb_message_routes' AND index_name=?`, name).Scan(&count); e != nil {
+			return e
+		}
+		if count == 0 {
+			if _, e := s.DB.ExecContext(ctx, "CREATE INDEX "+name+" ON wb_message_routes ("+columns+")"); e != nil {
+				return e
+			}
+		}
+	}
+	for _, column := range []struct{ name, definition string }{
+		{"route_id", "VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (JSON_UNQUOTE(JSON_EXTRACT(body,'$.routeId'))) STORED"},
+		{"message_state", "VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (JSON_UNQUOTE(JSON_EXTRACT(body,'$.state'))) STORED"},
+		{"arrival_at", "VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (JSON_UNQUOTE(JSON_EXTRACT(body,'$.createdAt'))) STORED"},
+	} {
+		var count int
+		if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='wb_messages' AND column_name=?`, column.name).Scan(&count); e != nil {
+			return e
+		}
+		if count == 0 {
+			if _, e := s.DB.ExecContext(ctx, "ALTER TABLE wb_messages ADD COLUMN "+column.name+" "+column.definition); e != nil {
+				return e
+			}
+		}
+	}
+	for name, columns := range map[string]string{"wb_messages_route": "route_id,arrival_at,event_id", "wb_messages_pending": "route_id,message_state,arrival_at,event_id"} {
+		var count int
+		if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='wb_messages' AND index_name=?`, name).Scan(&count); e != nil {
+			return e
+		}
+		if count == 0 {
+			if _, e := s.DB.ExecContext(ctx, "CREATE INDEX "+name+" ON wb_messages ("+columns+")"); e != nil {
+				return e
+			}
 		}
 	}
 	return nil

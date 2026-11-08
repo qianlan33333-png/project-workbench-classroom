@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { Readable } from "node:stream";
 import { timingSafeEqual, createHash, randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import { mkdir, realpath } from "node:fs/promises";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
 import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
@@ -94,7 +95,7 @@ export async function apply(ctx, config) {
         await call("/projects", owner, p);
         projectCache.set(p.id,JSON.stringify(p));
       }
-      projects.push({ ...p, workspaceId: w.id, sessionIds:w.sessionIds??[] });
+      projects.push({ ...p, workspaceId: w.id, sessionIds:(w.sessionIds??[]).filter(id=>!id.startsWith("object-")) });
     }
     return projects;
   }
@@ -134,7 +135,8 @@ export async function apply(ctx, config) {
       // Optional standard MCP servers are owner-installed plugins. Customer
       // object Sessions intentionally receive only the fixed message tools.
       for(const server of (config.toolServers||[])) {
-        if(boundary.objectSession||!(p.kind==='personal'?server.personal:server.projects?.includes(p.projectId)))continue;
+        if(!(p.kind==='personal'?server.personal:server.projects?.includes(p.projectId)))continue;
+        if(boundary.objectSession&&(!Array.isArray(server.customerTools)||!server.customerTools.length))continue;
         toolNamespace(server.name);if(namespaces.has(server.name))throw Error('Duplicate MCP namespace');
         const url=new URL(server.url);
         if(url.username||url.password||url.search||url.hash||(url.protocol!=='https:'&&(url.protocol!=='http:'||url.hostname!=='127.0.0.1')))throw Error('Invalid MCP endpoint');
@@ -147,6 +149,7 @@ export async function apply(ctx, config) {
       agent.ctx.on('tools/execute',async(exec,next)=>{
         const name=namespaceOfTool(exec.name);
         if(!externalSources.has(name))return next();
+        if(boundary.objectSession){const server=config.toolServers.find(s=>s.name===name);const tool=exec.name.replace('mcp__'+name+'__','');if(!server.customerTools.includes(tool))throw Error('Customer tool is not allowed')}
         // Conservatively record before dispatch, including failed/partial calls.
         // Recheck after return so a concurrent revocation cannot reveal a result.
         const refs=externalSources.get(name);
@@ -215,8 +218,8 @@ export async function apply(ctx, config) {
     "workbench: scoped lifecycle",
   );
   for (const agent of ctx.agents.list()) await attach(agent);
-  const agentHandles=new Map();
-  async function ensureSession(sessionId,path) {
+  const agentHandles=new Map(),sessionLoads=new Map(),idleSince=new Map(),objectAdmissions=new Set();
+  async function loadSession(sessionId,path) {
     let agent=ctx.agents.get(sessionId);
     if(!agent){
       const persisted=await ctx.sessionPersistence.stat(sessionId);
@@ -231,6 +234,22 @@ export async function apply(ctx, config) {
     if(!await ctx.sessions.flush(agent.session))throw Error('Session was not persisted');
     return agent;
   }
+  async function ensureSession(id,path){
+    if(sessionLoads.has(id))await sessionLoads.get(id);
+    const loading=loadSession(id,path);sessionLoads.set(id,loading);
+    try{return await loading}finally{if(sessionLoads.get(id)===loading)sessionLoads.delete(id)}
+  }
+  async function settleIncoming(agent){const id=delivery.stateOf(agent.session).incomingReport;if(id)await call('/messages/settle',owner,{runId:id})}
+  const releaseTimer=setInterval(async()=>{
+    for(const[id,handle]of agentHandles){if(!id.startsWith('object-'))continue;
+      if(handle.agent.status!=='idle'||delivery.stateOf(handle.agent.session).pendingIncoming){idleSince.delete(id);continue}
+      if(!idleSince.has(id)){idleSince.set(id,Date.now());continue}
+      if(Date.now()-idleSince.get(id)<20000||sessionLoads.has(id)||objectAdmissions.has(id))continue;
+      const closing=(async()=>{await settleIncoming(handle.agent);if(handle.agent.status!=='idle'||objectAdmissions.has(id))return;await ctx.sessions.flush(handle.agent.session);agentHandles.delete(id);await handle.dispose()})();
+      sessionLoads.set(id,closing);try{await closing}catch{idleSince.delete(id)}finally{if(sessionLoads.get(id)===closing)sessionLoads.delete(id)}
+    }
+  },5000);
+  ctx.effect(()=>()=>clearInterval(releaseTimer),'workbench: release idle object agents');
   ctx.effect(()=>async()=>{for(const handle of agentHandles.values())await handle.dispose()},'workbench: owned sessions');
   // Today's daily schedule exists even before the first browser conversation.
   // Workspace session order is mutable (the UI may create another blank chat).
@@ -244,6 +263,7 @@ export async function apply(ctx, config) {
     if (polling || stopped) return;
     polling = true;
     try {
+      for(const agent of ctx.agents.list()){if(agent.id.startsWith('object-')&&agent.status==='idle')await settleIncoming(agent)}
       const reports=await call('/delegation/pending?after='+encodeURIComponent(reportCursor));
       for(const run of reports) {
         reportCursor=run.id;
@@ -266,19 +286,17 @@ export async function apply(ctx, config) {
         deliveryCursor=event.sequence;
         if (stopped) break;
         try {
+          if(event.sessionId.startsWith('object-')&&!await ctx.sessionPersistence.stat(event.sessionId)){await call('/events/ack',owner,{id:event.id});continue}
           let agent = ctx.agents.get(event.sessionId);
-          if (!agent)
-            agent = (
-              await ctx.agents.resume({ resumeSessionId: event.sessionId })
-            ).agent;
+          if(!agent){const w=ctx.workspaceRegistry.list().find(w=>w.sessionIds.includes(event.sessionId));if(!w)throw Error('Result Session workspace unavailable');agent=await ensureSession(event.sessionId,w.path)}
           if (delivery.stateOf(agent.session).through < event.sequence) {
-            const text = `执行结果 · ${new Date(event.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}\n任务 ${event.runId} · 阶段 ${event.kind}\n${event.text}\n${JSON.stringify(event.details ?? {})}\n${event.kind==='project.reported'?'上文是目标项目助手的文字汇报；模型表述不等于业务事实，若与工具回执冲突，先查询原任务核对，不能凭汇报推翻已有接收回执。':`这是后台任务 ${event.runId} 的真实回执。`}不是让你回顾最近一轮聊天。只针对这个任务说明已做工作、结果与下一步，不把其他聊天的工具调用算入本任务。${event.kind==='personal.daily'?'上文是本次已生成的今日安排，请以该安排为主要反馈；引用的其他项目状态只是汇总依据，不能说这些工作被你重新执行了。':''}只核对原任务，不重跑业务。`;
-            agent.followup(
-              createUserMessage({
+            let text = `执行结果 · ${new Date(event.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}\n任务 ${event.runId} · 阶段 ${event.kind}\n${event.text}\n${JSON.stringify(event.details ?? {})}\n${event.kind==='project.reported'?'上文是目标项目助手的文字汇报；模型表述不等于业务事实，若与工具回执冲突，先查询原任务核对，不能凭汇报推翻已有接收回执。':`这是后台任务 ${event.runId} 的真实回执。`}不是让你回顾最近一轮聊天。只针对这个任务说明已做工作、结果与下一步，不把其他聊天的工具调用算入本任务。${event.kind==='personal.daily'?'上文是本次已生成的今日安排，请以该安排为主要反馈；引用的其他项目状态只是汇总依据，不能说这些工作被你重新执行了。':''}只核对原任务，不重跑业务。`;
+            if(event.kind==='message.history')text="渠道历史引用（不会触发自动应答）\n"+event.text;
+            const resultMessage=createUserMessage({
                 content: [{ type: "text", text }],
                 source: { kind: "workbench-result", sequence: event.sequence },
-              }),
-            );
+              });
+            if(event.sessionId.startsWith('object-'))agent.session.append('user/message',resultMessage,{surfaceOp:'append'});else agent.followup(resultMessage);
           }
           if (!(await ctx.sessions.flush(agent.session)))
             throw new Error("Session result was not persisted");
@@ -334,7 +352,7 @@ export async function apply(ctx, config) {
               res.writeHead(200,{'content-type':response.headers.get('content-type'),'content-disposition':response.headers.get('content-disposition')});
               const stream=Readable.fromWeb(response.body);stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);return;
             }
-            const readPaths = new Set(["/resource-page", "/schedules", "/notification-targets",
+            const readPaths = new Set(["/reply-resources","/transports","/reply-projects","/reply-settings","/message-routes","/reply-session","/reply-channel-history","/resource-page", "/schedules", "/notification-targets",
               "/resources",
               "/connections",
               "/grants",
@@ -344,7 +362,7 @@ export async function apply(ctx, config) {
               "/personal/settings",
               "/notifications",
             ]);
-            const writePaths = new Set(["/schedules/pause",
+            const writePaths = new Set(["/reply-settings","/message-routes","/reply-projects","/schedules/pause",
               "/resources",
               "/connections",
               "/grants",
@@ -366,7 +384,13 @@ export async function apply(ctx, config) {
               json(res, 200, await call(path, owner, await body(req)));
               return;
             }
-            if(req.method==='POST' && ['/session/start','/workspace/create'].includes(path)) {
+            if(req.method==='POST'&&path==='/reply-project/create'){
+ const origin=req.headers.origin;if(!origin||new URL(origin).host!==req.headers.host){json(res,403,{error:'origin rejected'});return}
+ const projectPath=join(dirname(personalPath),'projects','auto-reply');
+ await mkdir(projectPath,{recursive:true});const w=await ctx.workspaceRegistry.create(await realpath(projectPath),'自动化应答');await syncProjects();
+ const projectId=idOf(w.path);await call('/reply-projects',owner,{projectId});json(res,200,{projectId,workspaceId:w.id});return;
+ }
+ if(req.method==='POST' && ['/session/start','/workspace/create'].includes(path)) {
               const origin=req.headers.origin;
               if(!origin||new URL(origin).host!==req.headers.host){json(res,403,{error:'origin rejected'});return}
               const input=await body(req);
@@ -380,6 +404,16 @@ export async function apply(ctx, config) {
               if(!w)throw Error('Workspace unavailable');
               const id=input.sessionId||randomUUID();
               const agent=await ensureSession(id,w.path);
+              if(id.startsWith('object-')){
+                while(true){
+                  const before=delivery.stateOf(agent.session).through;
+                  const events=await call('/events?after='+before,identity(agent));
+                  for(const event of events){if(event.sequence<=delivery.stateOf(agent.session).through)continue;agent.session.append('user/message',createUserMessage({content:[{type:'text',text:(event.kind==='message.history'?'渠道历史引用（不会触发自动应答）':'渠道回执')+'\n'+event.text}],source:{kind:'workbench-result',sequence:event.sequence}}),{surfaceOp:'append'});await ctx.sessions.flush(agent.session);await call('/events/ack',owner,{id:event.id})}
+                  if(events.length<200)break;
+                  if(delivery.stateOf(agent.session).through<=before)throw Error('History cursor did not advance');
+                }
+              }
+
               if(input.text){agent.followup(createUserMessage({content:[{type:'text',text:input.text}],source:{kind:'user'}}));await ctx.sessions.flush(agent.session)}
               json(res,200,{sessionId:id});return;
             }
@@ -423,6 +457,7 @@ export async function apply(ctx, config) {
       return;
     }
     if(req.method==='POST' && ['/owner-request','/dispatch'].includes(req.url)) {
+      let reservedSid='';
       try {
         const input=await body(req);
         if(req.url==='/owner-request'){
@@ -435,13 +470,23 @@ export async function apply(ctx, config) {
         const isOwner=incoming&&input.principal.kind==='personal';
         const w=isOwner?personalWorkspace:ctx.workspaceRegistry.list().find(w=>idOf(w.path)===input.principal.projectId&&w.path!==personalPath);
         if(!w||(!isOwner&&input.principal.kind!=='project')||typeof input.goal!=='string')throw requestError('Target project unavailable',403);
-        const agent=await ensureSession(input.principal.sessionId,w.path);
+        const sid=input.principal.sessionId;
+        if(incoming&&!isOwner){const admission=await call('/messages/admit?runId='+encodeURIComponent(input.id));if(!admission.allowed){if(!admission.terminal)throw requestError('Earlier customer message pending',503);json(res,200,{accepted:true,sessionId:sid});return}}
+        if(incoming&&!isOwner&&objectAdmissions.has(sid))throw requestError('Customer admission busy',503);
+        if(incoming&&!isOwner&&ctx.agents.get(sid)?.status!=='running'){
+          const active=ctx.agents.list().filter(a=>a.id.startsWith('object-')&&a.status==='running').length;
+          if(active+objectAdmissions.size>=4)throw requestError('Customer capacity busy',503);
+        }
+        if(incoming&&!isOwner){objectAdmissions.add(sid);reservedSid=sid}
+        let agent;{agent=await ensureSession(sid,w.path);if(incoming&&!isOwner){await settleIncoming(agent);const pending=delivery.stateOf(agent.session).pendingIncoming;if(pending&&pending!==input.id)throw requestError('Customer turn busy',503)}}
+
+        if(incoming&&!isOwner&&!(await call('/messages/admit?runId='+encodeURIComponent(input.id))).allowed){json(res,200,{accepted:true,sessionId:agent.id});return}
         if(!delivery.stateOf(agent.session).dispatches.includes(input.id)) {
           agent.followup(createUserMessage({content:[{type:'text',text:(!incoming?'这是一项已经由今日派发到本项目的任务。当前会话就是目标项目会话，派发这一步已完成。请直接执行本人原话中的目标业务，不要重复执行其中针对今日的转交或task_delegate指令。\n\n本人原话：\n':'')+input.goal+'\n\n本次已绑定的资料引用：'+JSON.stringify([...(input.sources||[]),...(input.lineage||[])])}],source:{kind:isOwner?'workbench-owner':incoming?'workbench-incoming':'workbench-delegation',runId:input.id}}));
           if(!await ctx.sessions.flush(agent.session))throw Error('Project task was not persisted');
         }
         json(res,200,{accepted:true,sessionId:agent.id});
-      }catch(e){json(res,e.status||(e instanceof SyntaxError?400:503),{error:e.status?e.message:'Host delivery unavailable'})}
+      }catch(e){json(res,e.status||(e instanceof SyntaxError?400:503),{error:e.status?e.message:'Host delivery unavailable'})}finally{if(reservedSid)objectAdmissions.delete(reservedSid)}
       return;
     }
     if (req.url !== "/model" || req.method !== "POST") {

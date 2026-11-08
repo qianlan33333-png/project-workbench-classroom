@@ -144,15 +144,29 @@ func (s *Store) deliveryGate(ctx context.Context, tx *sql.Tx, d Delivery) error 
 			return fmt.Errorf("%w: registered check changed; prepare and review a new batch", ErrConflict)
 		}
 	case "reply":
+		var routeID string
+		if e = tx.QueryRowContext(ctx, `SELECT JSON_UNQUOTE(JSON_EXTRACT(body,'$.routeId')) FROM wb_messages WHERE connection_id=? AND event_id=?`, d.ConnectionID, d.Target["replyTo"]).Scan(&routeID); e != nil {
+			return e
+		}
+		route, e := scanJSON[MessageRoute](tx.QueryRowContext(ctx, `SELECT body FROM wb_message_routes WHERE id=? FOR SHARE`, routeID))
+		if e != nil {
+			return e
+		}
+		cfg, ce := scanJSON[ReplySettings](tx.QueryRowContext(ctx, `SELECT body FROM wb_settings WHERE id=? FOR SHARE`, "reply-"+r.Principal.ProjectID))
+		if ce != nil && !IsMissing(ce) {
+			return ce
+		}
+		if ce == nil && (!cfg.Enabled || cfg.ConnectionID != d.ConnectionID) {
+			return ErrDenied
+		}
 		m, e := scanJSON[StoredMessage](tx.QueryRowContext(ctx, `SELECT body FROM wb_messages WHERE connection_id=? AND event_id=? FOR UPDATE`, d.ConnectionID, d.Target["replyTo"]))
 		if e != nil {
 			return e
 		}
-		route, e := scanJSON[MessageRoute](tx.QueryRowContext(ctx, `SELECT body FROM wb_message_routes WHERE id=? FOR SHARE`, m.RouteID))
-		if e != nil {
-			return e
+		if ce == nil && cfg.Revision != m.SettingsRevision {
+			return ErrDenied
 		}
-		if !route.Enabled || !route.AutoReply || route.Principal != r.Principal || m.State != "reply_queued" {
+		if !route.Enabled || !route.AutoReply || route.Principal != r.Principal || m.State != "reply_queued" || routeRevision(route) != max(int64(1), m.RouteRevision) {
 			return ErrDenied
 		}
 		m.State = "reply_submitting"

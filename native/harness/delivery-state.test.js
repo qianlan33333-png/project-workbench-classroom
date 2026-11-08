@@ -2,6 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deliveryProjection as p } from './delivery-state.js';
 
+test('customer admission and completion survive persisted replay without waking another model',()=>{
+ let state=p.init();state=p.apply(state,{type:'agent/inbox/spliced',data:{inserted:[{source:{kind:'workbench-incoming',runId:'customer-1'}}]}});
+ assert.equal(state.pendingIncoming,'customer-1');assert.deepEqual(state.dispatches,['customer-1']);
+ state=p.apply(state,{type:'turn/end',data:{reason:{kind:'completed'}}});assert.equal(state.pendingIncoming,'');assert.equal(state.incomingReport,'customer-1');
+ state=p.apply(state,{type:'user/message',data:{source:{kind:'workbench-result',sequence:17},content:[]}});assert.equal(state.through,17);
+ assert.deepEqual(p.stateSchema.parse(JSON.parse(JSON.stringify(state))),state);
+});
+
 test('persisted delegation report survives replay and auxiliary messages do not lift read-only feedback', () => {
   const events = [
     { type:'user/message', data:{source:{kind:'workbench-delegation',runId:'dispatch-1'}, content:[]} },

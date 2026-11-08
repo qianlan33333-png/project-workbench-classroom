@@ -29,25 +29,51 @@ func (a *Activities) QueueNotifications(ctx context.Context) error {
 	}
 	p := core.Principal{Kind: "personal", SessionID: settings.SessionID}
 	for _, event := range events {
-		if event.RunID == "" || strings.HasSuffix(event.ID, "-notify") || !notifyKind(event.Kind) {
+		if (event.RunID == "" && event.Kind != "message.handoff") || strings.HasSuffix(event.ID, "-notify") || !notifyKind(event.Kind) {
 			if e = a.Store.AdvanceNotifications(ctx, event.Sequence); e != nil {
 				return e
 			}
 			continue
 		}
-		source, e := a.Store.Run(ctx, p, event.RunID)
-		if e != nil {
-			return e
+		var source core.Run
+		if event.Kind == "message.handoff" {
+			// Handoff is a status fact, including failures before a business
+			// Run could be created. No withdrawn source text is copied here.
+			source = core.Run{ID: event.RunID, Title: "自动应答需要接管", Operation: "incoming"}
+			source.Principal.SessionID = event.SessionID
+			if e = a.Store.DB.QueryRowContext(ctx, `SELECT kind,project_id FROM wb_sessions WHERE id=?`, event.SessionID).Scan(&source.Principal.Kind, &source.Principal.ProjectID); e != nil {
+				return e
+			}
+		} else {
+			source, e = a.Store.Run(ctx, p, event.RunID)
+			if e != nil {
+				return e
+			}
 		}
-		if source.Operation == "notification" || source.ParentRunID != "" {
+		if source.Operation == "notification" || source.ParentRunID != "" || (source.Operation == "reply" && event.Kind != "message.unknown" && event.Kind != "message.failed") {
 			if e = a.Store.AdvanceNotifications(ctx, event.Sequence); e != nil {
 				return e
 			}
 			continue
 		}
-		refs, e := a.Store.ActualRunSources(ctx, source.ID)
-		if e != nil {
-			return e
+		if source.Operation == "incoming" || source.Operation == "reply" {
+			route, err := a.Store.SessionRoute(ctx, source.Principal)
+			if err == nil {
+				cfg, err := a.Store.ReplySettingsForConnection(ctx, route.ConnectionID)
+				if err == nil && !cfg.Notify {
+					if e = a.Store.AdvanceNotifications(ctx, event.Sequence); e != nil {
+						return e
+					}
+					continue
+				}
+			}
+		}
+		var refs []core.Ref
+		if event.Kind != "message.handoff" {
+			refs, e = a.Store.ActualRunSources(ctx, source.ID)
+			if e != nil {
+				return e
+			}
 		}
 		text := source.Title + "\n" + event.CreatedAt.In(time.FixedZone("Asia/Shanghai", 8*3600)).Format("01-02 15:04") + "\n" + event.Text
 		if event.Kind == "decision.waiting" {
@@ -93,7 +119,7 @@ func (a *Activities) QueueNotifications(ctx context.Context) error {
 }
 func notifyKind(kind string) bool {
 	switch kind {
-	case "project.reported", "decision.waiting", "personal.daily", "resource.published", "batch.completed", "batch.partial", "run.failed", "run.canceled", "followup.completed", "message.batch_submitted", "message.batch_receipts", "message.unknown", "message.failed", "message.pending_confirmation", "message.sent", "message.delivered":
+	case "message.handoff", "project.reported", "decision.waiting", "personal.daily", "resource.published", "batch.completed", "batch.partial", "run.failed", "run.canceled", "followup.completed", "message.batch_submitted", "message.batch_receipts", "message.unknown", "message.failed", "message.pending_confirmation", "message.sent", "message.delivered":
 		return true
 	}
 	return false
