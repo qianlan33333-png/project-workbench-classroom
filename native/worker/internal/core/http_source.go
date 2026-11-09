@@ -252,6 +252,9 @@ func streamSourceRows(dec *json.Decoder, bounded *sourceBudgetReader, spec JSONS
 				return e
 			}
 		}
+		if accept == nil {
+			continue
+		}
 		key, _ := jsonpointer.New(spec.KeyPointer)
 		raw, _, e := key.Get(row)
 		if e != nil {

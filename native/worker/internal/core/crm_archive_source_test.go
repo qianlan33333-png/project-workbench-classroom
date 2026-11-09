@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"encoding/pem"
@@ -29,7 +30,7 @@ func TestCRMArchiveStreamsExactIdentityAndChecksManifest(t *testing.T) {
 	spec := JSONSource{ArrayField: "customers", KeyPointer: "/id", Fields: map[string]string{"name": "/name"}}
 	var records []Record
 	accept := func(r Record) error { records = append(records, r); return nil }
-	if err := streamCRMArchive(strings.NewReader(archiveFixture(crmFixtureRows)), spec, accept); err != nil {
+	if _, err := streamCRMArchive(strings.NewReader(archiveFixture(crmFixtureRows)), spec, accept); err != nil {
 		t.Fatal(err)
 	}
 	if len(records) != 1 || records[0].ID != "9007199254740993" || records[0].Fields["name"] != "  CRM 原名  " {
@@ -41,7 +42,7 @@ func TestCRMArchiveStreamsExactIdentityAndChecksManifest(t *testing.T) {
 		strings.Replace(archiveFixture(crmFixtureRows), `"read_only":true`, `"read_only":false`, 1),
 		archiveFixture(crmFixtureRows) + ` {}`,
 	} {
-		if err := streamCRMArchive(strings.NewReader(body), spec, func(Record) error { return nil }); err == nil {
+		if _, err := streamCRMArchive(strings.NewReader(body), spec, nil); err == nil {
 			t.Fatal("invalid archive passed source verification")
 		}
 	}
@@ -54,9 +55,20 @@ func TestMySQLCRMArchiveSourceUsesInstalledCLI(t *testing.T) {
 	}
 	store, ctx, id := acceptanceStore(t)
 	var tampered atomic.Bool
-	var requests atomic.Int32
+	var requests, logins atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/open/v1/archive-facts" || r.Header.Get("Authorization") != "Bearer archive-fixture" || r.Header.Get("Idempotency-Key") != "" {
+		if r.URL.Path == "/oauth/token" {
+			if err := r.ParseForm(); err != nil || r.Method != http.MethodPost || r.Form.Get("grant_type") != "client_credentials" || r.Form.Get("client_id") != "fixture" || r.Form.Get("client_secret") != "fixture-secret" || r.Form.Get("audience") != "external_integration" || r.Form.Get("scope") != "read" {
+				t.Error("unexpected CRM machine login")
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"access_token":"archive-fixture-%d","expires_in":1}`, logins.Add(1))
+			return
+		}
+		wantedToken := fmt.Sprintf("Bearer archive-fixture-%d", requests.Load()+1)
+		if r.Method != http.MethodPost || r.URL.Path != "/open/v1/archive-facts" || r.Header.Get("Authorization") != wantedToken || requests.Load()+1 != logins.Load() || r.Header.Get("Idempotency-Key") != "" {
 			t.Error("unexpected CRM source request")
 			w.WriteHeader(http.StatusForbidden)
 			return
@@ -69,15 +81,19 @@ func TestMySQLCRMArchiveSourceUsesInstalledCLI(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		requests.Add(1)
+		request := requests.Add(1)
 		rows := crmFixtureRows
 		if tampered.Load() {
 			rows = strings.Replace(rows, "原名", "被改", 1)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, archiveFixture(rows))
+		body := strings.ReplaceAll(archiveFixture(rows), "crm-production-fixture", fmt.Sprintf("crm-production-fixture-%d", request))
+		fmt.Fprint(w, body)
 	}))
 	defer server.Close()
+	transport := http.DefaultTransport
+	http.DefaultTransport = server.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = transport })
 	check := func(err error) {
 		t.Helper()
 		if err != nil {
@@ -88,11 +104,10 @@ func TestMySQLCRMArchiveSourceUsesInstalledCLI(t *testing.T) {
 	cert := filepath.Join(dir, "fixture.pem")
 	check(os.WriteFile(cert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600))
 	t.Setenv("SSL_CERT_FILE", cert)
-	check(os.WriteFile(filepath.Join(dir, "profiles.json"), []byte(fmt.Sprintf(`{"current":"fixture","profiles":{"fixture":{"origin":%q}}}`, server.URL)), 0600))
 	request := filepath.Join(dir, "request.json")
 	check(os.WriteFile(request, []byte(`{"hxc_account_ids":["00000000-0000-4000-8000-000000000001"]}`), 0600))
-	t.Setenv("WORKBENCH_SOURCE_CRM_FIXTURE_TOKEN", "archive-fixture")
-	config, err := json.Marshal(crmArchiveConfig{CLI: cli, ConfigDir: dir, Origin: server.URL, TokenEnv: "WORKBENCH_SOURCE_CRM_FIXTURE_TOKEN", RequestFile: request})
+	t.Setenv("WORKBENCH_SOURCE_CRM_FIXTURE_SECRET", "fixture-secret")
+	config, err := json.Marshal(crmArchiveConfig{CLI: cli, Origin: server.URL, ClientID: "fixture", ClientSecretEnv: "WORKBENCH_SOURCE_CRM_FIXTURE_SECRET", RequestFile: request})
 	check(err)
 	t.Setenv("WORKBENCH_SOURCE_CRM_FIXTURE", string(config))
 	owner := Principal{Kind: "owner", SessionID: id + "owner"}
@@ -113,8 +128,24 @@ func TestMySQLCRMArchiveSourceUsesInstalledCLI(t *testing.T) {
 	}
 	_, err = store.SyncSource(ctx, run, func() {})
 	check(err)
-	if requests.Load() != 1 {
+	if requests.Load() != 1 || logins.Load() != 1 {
 		t.Fatal("completed source was read again")
+	}
+	run.ID = id + "resume"
+	interrupted, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if _, err = store.SyncSource(interrupted, run, cancel); err == nil {
+		t.Fatal("interrupted source was published")
+	}
+	staged, err := store.Snapshot(ctx, resource.ID, run.ID)
+	check(err)
+	if staged.State != "staging" {
+		t.Fatal("test did not interrupt a staged source")
+	}
+	resumed, err := store.SyncSource(ctx, run, func() {})
+	check(err)
+	if resumed.State != "published" || resumed.SourceWatermark != staged.SourceWatermark || requests.Load() != 3 || logins.Load() != 3 {
+		t.Fatal("same facts could not resume across a new token and export watermark")
 	}
 	tampered.Store(true)
 	run.ID = id + "bad"
@@ -123,7 +154,7 @@ func TestMySQLCRMArchiveSourceUsesInstalledCLI(t *testing.T) {
 	}
 	current, err := store.Resource(ctx, resource.ID)
 	check(err)
-	if current.CurrentVersion != snap.Version || requests.Load() != 2 {
+	if current.CurrentVersion != resumed.Version || requests.Load() != 4 || logins.Load() != 4 {
 		t.Fatal("invalid source changed the published version")
 	}
 }

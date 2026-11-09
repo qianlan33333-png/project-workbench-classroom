@@ -41,6 +41,10 @@ export function createCRM(config,workerCall,invoke=cliCaller(config)){
  const permitted=new Set(config.allowedCustomerIds.map(String));
  const load=id=>workerCall('/connector-state?id='+encodeURIComponent(id));
  const compare=(id,expected,value)=>workerCall('/connector-state/compare',{id,expected,value});
+ async function reserve(id,claim){
+  try{await compare(id,{},claim);return true}
+  catch{return digest(await load(id))===digest(claim)}
+ }
  const pages=async(operation,params={},query={})=>{
   const rows=[];let cursor='';const seen=new Set();
   for(;;){const data=await invoke(operation,{params,query:{...query,...(cursor?{cursor}:{})}});if(!Array.isArray(data.items))throw Error('CRM page invalid');rows.push(...data.items);if(!data.next_cursor)return rows;if(seen.has(data.next_cursor))throw Error('CRM cursor repeated');seen.add(data.next_cursor);cursor=data.next_cursor}
@@ -48,7 +52,7 @@ export function createCRM(config,workerCall,invoke=cliCaller(config)){
  function request(input){
   const customer=String(input.target?.customerId||''),staff=String(input.target?.staffId||'');
   const slot=input.target?.businessSlot;
-  if(typeof input.idempotencyKey!=='string'||!input.idempotencyKey||!positive(customer)||!positive(staff)||!permitted.has(customer)||typeof slot!=='string'||!/^[A-Za-z0-9_.:-]{1,160}$/.test(slot)||!input.text||input.text.length>8000)throw Error('CRM recipient or content not allowed');
+  if(typeof input.idempotencyKey!=='string'||!input.idempotencyKey||!positive(customer)||!positive(staff)||typeof slot!=='string'||!/^[A-Za-z0-9_.:-]{1,160}$/.test(slot)||typeof input.text!=='string'||/^\p{White_Space}*$/u.test(input.text)||Buffer.byteLength(input.text,'utf8')>8000)throw Error('CRM recipient or content not allowed');
   const content=[{kind:'text',text:input.text}];
   const recipients=[{customer_id:Number(customer),staff_id:Number(staff),content}];
   const sourceDigest='sha256:'+digest({key:input.idempotencyKey,recipients,slot});
@@ -69,7 +73,7 @@ export function createCRM(config,workerCall,invoke=cliCaller(config)){
   return rows;
  }
  async function receipt(input){
-  let req;try{req=request(input)}catch{return{state:'failed',error:'CRM目标或内容不在允许范围。'}}
+  let req;try{req=request(input)}catch{return uncertain(input.receipt)}
   const state=await load(req.stateId);
   if(state.digest!==req.sourceDigest)return uncertain();
   try{
@@ -77,9 +81,11 @@ export function createCRM(config,workerCall,invoke=cliCaller(config)){
    const rows=await pages('admin.listAIAssistantExecutionReceipts',{plan_id:plan.id},{live:true});
    if(rows.length!==1||String(rows[0].customer_id)!==req.customer||String(rows[0].staff_id)!==req.staff||rows[0].recipient_id!==saved[0].id)return uncertain(String(plan.id));
    const row=rows[0],proof=row.receipt||{};
-   if(proof.receipt_found===true&&proof.msgid&&proof.query_state==='observed'&&proof.query_errcode===0&&proof.provider_delivery_status===1&&proof.provider_sent_at)return{state:'sent',receipt:String(plan.id)};
+   const observed=proof.receipt_found===true&&proof.msgid&&proof.query_state==='observed'&&proof.query_errcode===0;
+   if(observed&&proof.provider_delivery_status===1&&proof.provider_sent_at)return{state:'sent',receipt:String(plan.id)};
+   if(observed&&[2,3,4].includes(proof.provider_delivery_status))return{state:'failed',receipt:String(plan.id),error:businessReason(proof)||`企微执行失败（状态 ${proof.provider_delivery_status}）。`};
    if(['final_failed','terminal_failed','permanent_failed','failed','rejected','ineligible','cancelled','stopped'].includes(row.local_execution_state))return{state:'failed',receipt:String(plan.id),error:businessReason(proof)||'CRM执行已终止或失败。'};
-   if(proof.receipt_found===true&&proof.msgid&&proof.query_state==='observed'&&proof.query_errcode===0&&proof.provider_delivery_status===0)return{state:'pending_confirmation',receipt:String(plan.id)};
+   if(observed&&proof.provider_delivery_status===0)return{state:'pending_confirmation',receipt:String(plan.id)};
    return uncertain(String(plan.id),businessReason(proof));
   }catch{return uncertain(state.planId?String(state.planId):'')}
  }
@@ -87,14 +93,28 @@ export function createCRM(config,workerCall,invoke=cliCaller(config)){
   let req;try{req=request(input)}catch{return{state:'failed',error:'CRM目标或内容不在允许范围。'}}
   let state=await load(req.stateId);
   if(Object.keys(state).length)return receipt(input);
-  try{await compare(req.stateId,state,{digest:req.sourceDigest,phase:'creating'});state={digest:req.sourceDigest,phase:'creating'}}catch{return uncertain()}
+  if(!permitted.has(req.customer))return{state:'failed',error:'CRM目标不在允许范围。'};
+  const canceled={state:'failed',error:'CRM提交前已取消。'};
+  if(signal?.aborted)return canceled;
+  state={digest:req.sourceDigest,phase:'creating',attempt:crypto.randomUUID()};
+  try{if(!await reserve(req.stateId,state))return uncertain()}catch{return uncertain()}
   // Reuse the existing durable CAS for the original business slot. Two
   // independently selected batches cannot both create a plan for that slot.
-  const slot=await load(req.slotId),claim={deliveryKey:input.idempotencyKey,digest:req.sourceDigest};
-  if(Object.keys(slot).length&&(slot.deliveryKey!==claim.deliveryKey||slot.digest!==claim.digest))return{state:'failed',error:'原业务时段已有CRM任务，未重复建计划。'};
-  if(!Object.keys(slot).length){try{await compare(req.slotId,slot,claim)}catch{return{state:'failed',error:'原业务时段已有CRM任务，未重复建计划。'}}}
+  const claim={deliveryKey:input.idempotencyKey,digest:req.sourceDigest,attempt:state.attempt};
+  let slotClaimed;
+  try{slotClaimed=await reserve(req.slotId,claim)}catch{return uncertain()}
+  if(!slotClaimed){
+   try{await compare(req.stateId,state,{})}catch{return uncertain()}
+   return{state:'failed',error:'CRM业务槽未取得，未提交计划。'};
+  }
+  if(signal?.aborted){
+   try{
+    await compare(req.slotId,claim,{});
+    await compare(req.stateId,state,{});
+    return canceled;
+   }catch{return uncertain()}
+  }
   try{
-   signal?.throwIfAborted();
    const data=await invoke('admin.createAIAssistantPlan',{signal,body:{name:'工作台运营 '+input.idempotencyKey,source_kind:'workbench_operations',source_digest:req.sourceDigest,recipients:req.recipients},key:'wb-create-'+digest([config.id,input.idempotencyKey])});
    const plan=data.plan;
    if(!plan||!positive(plan.id)||plan.source_digest!==req.sourceDigest)throw Error('CRM create result mismatch');

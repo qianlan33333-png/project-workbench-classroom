@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createCRM} from './crm-cli.mjs';
-function fixture({lostCreate=false,lostApprove=false,status=0,queryError=0,abortAfterCreate,state='provider_accepted',failure=''}={}){
+function fixture({lostCreate=false,lostApprove=false,lostReserve='',status=0,queryError=0,abortAfterCreate,abortAfterSlot,state='provider_accepted',failure=''}={}){
  const states=new Map(),calls=[];let plan,row;
  const input={idempotencyKey:'original-delivery',target:{customerId:'10',staffId:'20',businessSlot:'original-business-slot'},text:'本人测试原文'};
  const worker=async(path,body)=>{
   if(!body)return structuredClone(states.get(new URL('http://test'+path).searchParams.get('id'))||{});
-  assert.deepEqual(states.get(body.id)||{},body.expected);states.set(body.id,structuredClone(body.value));return{ok:true};
+  assert.deepEqual(states.get(body.id)||{},body.expected);states.set(body.id,structuredClone(body.value));
+  if(body.id.startsWith('crm-slot-')&&body.value.deliveryKey)abortAfterSlot?.abort();
+  if(body.value.attempt&&Object.keys(body.expected).length===0&&lostReserve===(body.id.startsWith('crm-slot-')?'slot':'delivery'))throw Error('reservation response lost');
+  return{ok:true};
  };
  const invoke=async(op,{body,params,key}={})=>{
   calls.push(op);
@@ -21,7 +24,8 @@ function fixture({lostCreate=false,lostApprove=false,status=0,queryError=0,abort
   if(op==='admin.listAIAssistantExecutionReceipts')return{items:[{customer_id:10,staff_id:20,recipient_id:2,local_execution_state:state,receipt:{receipt_found:true,msgid:'original-message',query_state:'observed',failure_reason:failure,query_errcode:queryError,provider_delivery_status:status,provider_sent_at:status===1?'2026-11-08T12:00:00Z':null}}],next_cursor:''};
   throw Error('unexpected operation');
  };
- return{crm:createCRM({id:'crm',allowedCustomerIds:[10]},worker,invoke),input,calls,states};
+ const connector=allowedCustomerIds=>createCRM({id:'crm',allowedCustomerIds},worker,invoke);
+ return{crm:connector([10]),connector,input,calls,states};
 }
 test('CRM saves the exact recipient and draft, approves only after the owner workflow, then reads receipt',async()=>{
  const f=fixture();assert.equal((await f.crm.send(f.input)).state,'accepted');assert.equal((await f.crm.receipt(f.input)).state,'pending_confirmation');
@@ -78,4 +82,45 @@ test('cancellation after plan creation stops later review and approval calls',as
  assert.equal((await f.crm.send(f.input,{signal:controller.signal})).state,'unknown');
  assert.equal(f.calls.filter(x=>x==='admin.createAIAssistantPlan').length,1);
  assert.equal(f.calls.filter(x=>x==='admin.reviewAIAssistantRecipient'||x==='admin.approveAIAssistantPlan').length,0);
+});
+
+test('pre-create cancellation and invalid UTF-8 content leave the slot available',async()=>{
+ for(const abortWhileClaiming of [false,true]){
+  const controller=new AbortController();
+  const f=fixture({abortAfterSlot:abortWhileClaiming?controller:undefined});
+  for(const text of ['   ','中'.repeat(3000)])assert.equal((await f.crm.send({...f.input,text})).state,'failed');
+  if(!abortWhileClaiming)controller.abort();
+  assert.equal((await f.crm.send(f.input,{signal:controller.signal})).state,'failed');
+  assert.equal(f.calls.length,0);
+  assert.ok([...f.states.values()].every(v=>Object.keys(v).length===0));
+  assert.equal((await f.crm.send({...f.input,idempotencyKey:'next-owner-approved-delivery'})).state,'accepted');
+ }
+});
+
+test('verified provider failures are terminal even while local CRM remains accepted',async()=>{
+ for(const status of [2,3,4]){
+  const f=fixture({status});
+  await f.crm.send(f.input);
+  const result=await f.crm.receipt(f.input);
+  assert.equal(result.state,'failed');
+  assert.match(result.error,new RegExp(String(status)));
+ }
+});
+
+test('narrowing the send allowlist still permits reading the exact existing plan',async()=>{
+ const f=fixture({status:1});
+ await f.crm.send(f.input);
+ const restricted=f.connector([11]);
+ assert.equal((await restricted.receipt(f.input)).state,'sent');
+ assert.equal((await restricted.send({...f.input,idempotencyKey:'new-delivery'})).state,'failed');
+ assert.equal(f.calls.filter(x=>x==='admin.createAIAssistantPlan').length,1);
+});
+
+test('a lost reservation response reads back only the caller’s own attempt',async()=>{
+ for(const lostReserve of ['delivery','slot']){
+  const f=fixture({lostReserve});
+  const results=await Promise.all([f.crm.send(f.input),f.crm.send(f.input)]);
+  assert.equal(results.filter(result=>result.state==='accepted').length,1);
+  assert.equal(f.calls.filter(x=>x==='admin.createAIAssistantPlan').length,1);
+ }
 });

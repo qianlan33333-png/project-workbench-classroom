@@ -80,7 +80,7 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   throw Error('Unsupported connector');
  }
  async function receipt({connectionId,idempotencyKey,receipt,target,state,text}){
-  if(crms.has(connectionId))return crms.get(connectionId).receipt({idempotencyKey,target,text});
+  if(crms.has(connectionId))return crms.get(connectionId).receipt({idempotencyKey,receipt,target,text});
   // Only state.changed is idempotent at the receiver. Customer sends never
   // enter this branch and are never retried as a receipt query.
   if(target.kind==='conversation.mode.changed')return controls.has(connectionId)?controls.get(connectionId).notify({target,text}):{state:'failed',error:'CRM control is not configured'};

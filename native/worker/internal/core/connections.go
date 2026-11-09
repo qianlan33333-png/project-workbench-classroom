@@ -216,23 +216,42 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 		if resource.JSONSource == nil {
 			return snap, ErrInvalid
 		}
-		download, read := downloadJSON, streamJSON
+		var file *os.File
+		var digest string
+		var err error
 		if conn.Kind == CRMArchiveSource {
 			if !validCRMArchiveCollection(resource.JSONSource.ArrayField) {
 				return snap, ErrInvalid
 			}
-			download, read = exportCRMArchive, streamCRMArchive
+			file, err = exportCRMArchive(ctx, conn)
+		} else {
+			file, digest, err = downloadJSON(ctx, conn)
 		}
-		file, digest, err := download(ctx, conn)
 		if err != nil {
 			return snap, err
 		}
 		defer func() { file.Close(); os.Remove(file.Name()) }()
+		if conn.Kind == CRMArchiveSource {
+			// The selected facts can remain identical across fresh exports. Freeze
+			// their verified digest, independent of the envelope's new timestamps.
+			digest, e = streamCRMArchive(file, *resource.JSONSource, nil)
+			if e != nil {
+				return snap, e
+			}
+			if _, e = file.Seek(0, io.SeekStart); e != nil {
+				return snap, e
+			}
+		}
 		snap.SourceWatermark = digest
 		if e = s.BeginSnapshot(ctx, r.Principal, snap); e != nil {
 			return snap, e
 		}
-		if e = read(file, *resource.JSONSource, accept); e != nil {
+		if conn.Kind == CRMArchiveSource {
+			_, e = streamCRMArchive(file, *resource.JSONSource, accept)
+		} else {
+			e = streamJSON(file, *resource.JSONSource, accept)
+		}
+		if e != nil {
 			return snap, e
 		}
 	case "directory":
