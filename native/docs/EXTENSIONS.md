@@ -34,6 +34,8 @@ flowchart TB
 
 使用 MCP 官方 SDK，优先 Streamable HTTP；不新建插件协议。每个工具具有稳定名称、用途、JSON Schema 输入及 `structuredContent` 输出；ToolError 表达业务拒绝，客户端不能把 HTTP 200 当业务成功。
 
+客户身份基建使用同一 Worker `/mcp` 的来源凭据入口，仅提供 `customer_upsert` 和 `customer_get`；来源与 ID 范围由私有配置固定，不继承 Host、项目或会话权限。实现只新增两张 MySQL 表，不触发资料发布或历史合并。配置与读写合同见 [客户工具说明](CUSTOMERS.md)。
+
 本人在 Harness 的 Cordis 扩展配置增加 `toolServers`：
 
 ```yaml

@@ -114,6 +114,10 @@ func run() error {
 	if len(os.Getenv("WORKBENCH_HOST_TOKEN")) < 32 {
 		return errors.New("WORKBENCH_HOST_TOKEN must contain at least 32 characters")
 	}
+	customerClients, e := api.LoadCustomerClients(os.Getenv("WORKBENCH_CUSTOMER_CLIENTS"), os.Getenv("WORKBENCH_HOST_TOKEN"))
+	if e != nil {
+		return e
+	}
 	s, e := core.Open(ctx, os.Getenv("WORKBENCH_MYSQL_DSN"))
 	if e != nil {
 		return e
@@ -124,6 +128,21 @@ func run() error {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		return nil
+	}
+	var customerStore *core.Store
+	if len(customerClients) > 0 {
+		dsn := os.Getenv("WORKBENCH_CUSTOMER_MYSQL_DSN")
+		if dsn == "" {
+			return errors.New("WORKBENCH_CUSTOMER_MYSQL_DSN is required for customer clients")
+		}
+		customerStore, e = core.Open(ctx, dsn)
+		if e != nil {
+			return errors.New("customer database connection failed")
+		}
+		defer customerStore.DB.Close()
+		if e = customerStore.CheckCustomerSchema(ctx); e != nil {
+			return e
+		}
 	}
 	c, e := client.Dial(client.Options{HostPort: env("TEMPORAL_ADDRESS", "127.0.0.1:7233"), Namespace: env("TEMPORAL_NAMESPACE", "workbench")})
 	if e != nil {
@@ -146,7 +165,7 @@ func run() error {
 		return errors.New("worker HTTP must bind loopback")
 	}
 	var backgroundReady atomic.Bool
-	apiServer := &api.Server{Store: s, Temporal: c, Token: os.Getenv("WORKBENCH_HOST_TOKEN"), Host: bridge, BackgroundReady: backgroundReady.Load}
+	apiServer := &api.Server{Store: s, Temporal: c, Token: os.Getenv("WORKBENCH_HOST_TOKEN"), CustomerClients: customerClients, CustomerStore: customerStore, Host: bridge, BackgroundReady: backgroundReady.Load}
 	server := &http.Server{Addr: address, Handler: apiServer.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	errCh := make(chan error, 1)
 	listener, e := net.Listen("tcp", address)

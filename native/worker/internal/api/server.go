@@ -26,6 +26,8 @@ type Server struct {
 	Store           *core.Store
 	Temporal        client.Client
 	Token           string
+	CustomerClients []CustomerClient
+	CustomerStore   *core.Store
 	personalMu      sync.Mutex
 	Host            engine.AgentHost
 	BackgroundReady func() bool
@@ -60,7 +62,12 @@ func (a *Server) Handler() http.Handler {
 		backgroundReady := a.BackgroundReady == nil || a.BackgroundReady()
 		write(w, map[string]any{"ready": true, "backgroundReady": backgroundReady})
 	})
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return a.MCP(principal(r.Context())) }, &mcp.StreamableHTTPOptions{Stateless: true}))
+	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		if access, ok := r.Context().Value(customerAccessKey{}).(core.CustomerAccess); ok {
+			return a.customerMCP(access)
+		}
+		return a.MCP(principal(r.Context()))
+	}, &mcp.StreamableHTTPOptions{Stateless: true}))
 	mux.HandleFunc("GET /resources", func(w http.ResponseWriter, r *http.Request) {
 		v, e := a.Store.Resources(r.Context(), principal(r.Context()))
 		respond(w, v, e)
@@ -126,6 +133,17 @@ func (a *Server) Handler() http.Handler {
 			return
 		}
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if access, ok := a.customerAccess(token); ok {
+			if r.URL.Path != "/mcp" {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+			mux.ServeHTTP(w, r.WithContext(context.WithValue(ctx, customerAccessKey{}, access)))
+			return
+		}
 		if len(a.Token) < 32 || subtle.ConstantTimeCompare([]byte(token), []byte(a.Token)) != 1 {
 			http.Error(w, "unauthorized", 401)
 			return
