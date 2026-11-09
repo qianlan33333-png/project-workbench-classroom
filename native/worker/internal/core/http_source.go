@@ -11,6 +11,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -168,19 +169,86 @@ func downloadJSON(ctx context.Context, conn Connection) (*os.File, string, error
 // ArrayField is either empty for a root array or an exact top-level field name.
 // Per-record mapping uses the already adopted RFC6901 library, not a new DSL.
 type JSONSource struct {
-	ArrayField string            `json:"arrayField,omitempty"`
-	KeyPointer string            `json:"keyPointer"`
-	Fields     map[string]string `json:"fields"`
+	ArrayField  string            `json:"arrayField,omitempty"`
+	KeyPointer  string            `json:"keyPointer,omitempty"`
+	KeyPointers []string          `json:"keyPointers,omitempty"`
+	RowKey      string            `json:"rowKey,omitempty"`
+	Fields      map[string]string `json:"fields"`
 }
 
 func (s JSONSource) validate() error {
-	if len(s.Fields) == 0 || len(s.Fields) > 128 || s.KeyPointer == "" {
+	if len(s.Fields) == 0 || len(s.Fields) > 128 {
 		return ErrInvalid
 	}
-	if _, e := jsonpointer.New(s.KeyPointer); e != nil {
+	keys := s.KeyPointers
+	if s.RowKey != "" {
+		if s.RowKey != "content-occurrence" || s.KeyPointer != "" || len(keys) != 0 {
+			return ErrInvalid
+		}
+	} else if s.KeyPointer != "" {
+		if len(keys) != 0 {
+			return ErrInvalid
+		}
+		keys = []string{s.KeyPointer}
+	} else if len(keys) < 2 || len(keys) > 8 {
 		return ErrInvalid
+	}
+	seen := map[string]bool{}
+	for _, key := range keys {
+		if key == "" || seen[key] {
+			return ErrInvalid
+		}
+		if _, e := jsonpointer.New(key); e != nil {
+			return ErrInvalid
+		}
+		seen[key] = true
 	}
 	return validateSelection(Section{Select: s.Fields})
+}
+
+func (s JSONSource) recordID(row map[string]any) (string, error) {
+	if s.RowKey == "content-occurrence" {
+		raw, err := json.Marshal(row)
+		if err != nil {
+			return "", ErrInvalid
+		}
+		digest := sha256.Sum256(raw)
+		return "row_" + hex.EncodeToString(digest[:]), nil
+	}
+	keys := s.KeyPointers
+	if s.KeyPointer != "" {
+		keys = []string{s.KeyPointer}
+	}
+	values := make([]any, 0, len(keys))
+	for _, path := range keys {
+		pointer, err := jsonpointer.New(path)
+		if err != nil {
+			return "", ErrInvalid
+		}
+		value, _, err := pointer.Get(row)
+		if err != nil {
+			return "", fmt.Errorf("%w: source identity missing", ErrInvalid)
+		}
+		switch v := value.(type) {
+		case string:
+			if v == "" {
+				return "", fmt.Errorf("%w: source identity empty", ErrInvalid)
+			}
+		case json.Number:
+		default:
+			return "", fmt.Errorf("%w: source identity must be string or number", ErrInvalid)
+		}
+		values = append(values, value)
+	}
+	if s.KeyPointer != "" {
+		return fmt.Sprint(values[0]), nil
+	}
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return "", ErrInvalid
+	}
+	digest := sha256.Sum256(raw)
+	return "ck_" + hex.EncodeToString(digest[:]), nil
 }
 func skipJSON(dec *json.Decoder, resetBudget func()) error {
 	token, e := dec.Token()
@@ -234,6 +302,7 @@ func (r *sourceBudgetReader) Read(p []byte) (int, error) {
 
 // The opening array delimiter has already been consumed by the source reader.
 func streamSourceRows(dec *json.Decoder, bounded *sourceBudgetReader, spec JSONSource, accept func(Record) error, inspect func(map[string]any) error) error {
+	occurrences := map[string]int{}
 	for {
 		bounded.reset()
 		if !dec.More() {
@@ -255,19 +324,13 @@ func streamSourceRows(dec *json.Decoder, bounded *sourceBudgetReader, spec JSONS
 		if accept == nil {
 			continue
 		}
-		key, _ := jsonpointer.New(spec.KeyPointer)
-		raw, _, e := key.Get(row)
+		id, e := spec.recordID(row)
 		if e != nil {
-			return fmt.Errorf("%w: source identity missing", ErrInvalid)
+			return e
 		}
-		id := ""
-		switch value := raw.(type) {
-		case string:
-			id = value
-		case json.Number:
-			id = value.String()
-		default:
-			return fmt.Errorf("%w: source identity must be string or number", ErrInvalid)
+		if spec.RowKey == "content-occurrence" {
+			occurrences[id]++
+			id += "_" + strconv.Itoa(occurrences[id])
 		}
 		record := Record{ID: id, Fields: map[string]any{}}
 		for alias, path := range spec.Fields {
