@@ -2,8 +2,10 @@ import { createServer } from "node:http";
 import { Readable } from "node:stream";
 import { timingSafeEqual, createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { mkdir, realpath } from "node:fs/promises";
+import { mkdir, realpath, readFile, writeFile, rename, unlink, lstat } from "node:fs/promises";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
+import { Client as MCPClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { attachmentText } from "./attachment-text.js";
 import { deliveryProjection } from "./delivery-state.js";
@@ -58,6 +60,35 @@ export async function apply(ctx, config) {
     throw new Error("personalWorkspace is required");
   await mkdir(config.personalWorkspace, { recursive: true });
   const personalPath = await realpath(config.personalWorkspace);
+  // Rules are owner-authored workspace files, separate from inferred memory.
+  const ruleNames = new Set(["SOUL.md", "AGENT.md"]);
+  const readRule = async name => {
+    if (!ruleNames.has(name)) throw requestError("未知的配置文件", 404);
+    const path = join(personalPath, name);
+    let info;
+    try { info = await lstat(path); }
+    catch (error) { if (error.code === "ENOENT") return { name, content: "", revision: "missing" }; throw error; }
+    if (!info.isFile() || info.size > 64 * 1024) throw requestError("配置文件不是可读的 Markdown 文件");
+    const content = await readFile(path, "utf8");
+    return { name, content, revision: createHash("sha256").update(content).digest("hex") };
+  };
+  let rulesWrite = Promise.resolve();
+  const saveRule = input => {
+    const write = rulesWrite.then(async () => {
+      const current = await readRule(input.name);
+      if (input.revision !== current.revision) throw requestError("文件已更新，请重新打开后合并修改", 409);
+      if (typeof input.content !== "string" || Buffer.byteLength(input.content) > 64 * 1024)
+        throw requestError("配置文件最多 64 KiB");
+      const temp = join(personalPath, ".workbench-rule-" + randomUUID());
+      try {
+        await writeFile(temp, input.content, { flag: "wx", mode: 0o600 });
+        await rename(temp, join(personalPath, current.name));
+      } finally { await unlink(temp).catch(e => { if (e.code !== "ENOENT") throw e; }); }
+      return readRule(current.name);
+    });
+    rulesWrite = write.catch(() => {});
+    return write;
+  };
   ctx.on('llm/stream',(options,next)=>{
     if(!options.sessionId)return next();
     const session=ctx.sessions.get(options.sessionId);
@@ -121,6 +152,17 @@ export async function apply(ctx, config) {
     const boundary = await call('/session/check',p);
     if (p.kind === "personal") await call("/personal/session", p, {});
     installPersonalMemory(agent,p,call);
+    if (p.kind === "personal") agent.ctx.on("system-prompt/assemble", async (_assembly, _context, next) => {
+      const files = await Promise.all([...ruleNames].map(readRule));
+      const text = files.filter(f => f.content.trim()).map(f => f.name + "\n" + f.content).join("\n\n");
+      const result = await next();
+      if (!text) return result;
+      return { ...result, sections: [...result.sections, {
+        name: "workbench:personal-markdown",
+        text: "以下是本人保存的当前合作偏好。仍遵守资源范围、工具权限与确认要求。\n" + text,
+        interpolate: false,
+      }] };
+    });
     agent.ctx.on("agent/pre-step", async (payload, next) => {
       await call("/session/check", p, undefined, payload.signal);
       return next();
@@ -260,6 +302,7 @@ export async function apply(ctx, config) {
   // Today's identity must survive that ordering and Host restarts.
   const todayId='today_'+createHash('sha256').update(personalPath).digest('hex').slice(0,24);
   await ensureSession(todayId,personalPath);
+  await personalWorkspace.attachSession(todayId);
   let deliveryCursor=0, reportCursor="";
   let polling = false,
     stopped = false;
@@ -363,9 +406,84 @@ export async function apply(ctx, config) {
               json(res, 200, {
                 projects: await syncProjects(),
                 resources: await call("/resources"),
+                documentResourceIds: [...new Set((config.toolServers || []).flatMap(server => (server.sources || []).map(ref => ref.resourceId)))],
                 personalWorkspaceId: personalWorkspace.id,
                 personalSessionId: todayId,
               });
+              return;
+            }
+            if (req.method === "GET" && path === "/project-list") {
+              const [projects, reply] = await Promise.all([syncProjects(), call("/reply-projects")]);
+              const special = new Set(reply.map(p => p.projectId));
+              json(res, 200, { personalWorkspaceId: personalWorkspace.id, personalSessionId: todayId,
+                projects: projects.map(({workspace, ...p}) => ({ ...p, type: special.has(p.id) ? "auto-reply" : "ordinary" })) });
+              return;
+            }
+            if (req.method === "GET" && path === "/today-rules") {
+              json(res, 200, await Promise.all([...ruleNames].map(readRule))); return;
+            }
+            if (req.method === "GET" && path === "/experts") {
+              json(res, 200, await skillCatalog(personalPath, u.searchParams.get("name") || undefined)); return;
+            }
+            if (req.method === "GET" && path === "/mcp-catalog") {
+              json(res, 200, [{ name: "workbench", label: "工作台工具", configured: true },
+                ...(config.toolServers || []).map(server => ({ name: server.name, label: server.name,
+                  configured: Boolean(process.env[server.tokenEnv]), endpoint: new URL(server.url).origin,
+                }))]);
+              return;
+            }
+            if (req.method === "POST" && ["/project/create", "/today-rules", "/mcp-test", "/experts"].includes(path)) {
+              const origin = req.headers.origin;
+              if (!origin || new URL(origin).host !== req.headers.host) throw requestError("origin rejected", 403);
+              const input = await body(req);
+              if (path === "/today-rules") { json(res, 200, await saveRule(input)); return; }
+              if (path === "/experts") { json(res, 200, await skillCatalog.save(personalPath,input)); return; }
+              if (path === "/mcp-test") {
+                const builtin = input.name === "workbench";
+                const server = (config.toolServers || []).find(item => item.name === input.name);
+                if (!builtin && !server) throw requestError("插件不存在", 404);
+                const endpoint = new URL(builtin ? "/mcp" : server.url, worker);
+                if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
+                    (endpoint.protocol !== "https:" && (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1")))
+                  throw requestError("服务地址无效");
+                const credential = builtin ? token : process.env[server.tokenEnv];
+                if (!credential) throw requestError("尚未配置凭证");
+                const client = new MCPClient({ name: "workbench-owner-check", version: "1" });
+                const signal = AbortSignal.timeout(8000);
+                try {
+                  await client.connect(new StreamableHTTPClientTransport(endpoint, {
+                    requestInit: { redirect: "error", headers: { ...headers(owner), authorization: "Bearer " + credential } },
+                  }), { signal });
+                  const tools = [];
+                  let cursor;
+                  const seen = new Set();
+                  do {
+                    const page = await client.listTools(cursor ? { cursor } : undefined, { signal });
+                    tools.push(...page.tools.map(t => ({ name: t.name, description: t.description })));
+                    cursor = page.nextCursor;
+                    if (tools.length > 500 || seen.size >= 30 || cursor && seen.has(cursor)) throw Error("invalid tools catalogue");
+                    if (cursor) seen.add(cursor);
+                  } while (cursor);
+                  json(res, 200, { tools });
+                } catch {
+                  throw requestError("未能以当前凭证读取工具目录，请检查服务和连接配置", 502);
+                } finally { await client.close().catch(() => {}); }
+                return;
+              }
+              const name = typeof input.name === "string" ? input.name.trim() : "";
+              if (!name || name.length > 80 || /[\x00-\x1f\x7f]/.test(name) ||
+                  !["ordinary", "auto-reply"].includes(input.type)) throw requestError("请填写项目名称并选择类型");
+              const base = join(dirname(personalPath), "projects");
+              await mkdir(base, { recursive: true });
+              const directory = join(base, "project-" + randomUUID());
+              await mkdir(directory, { mode: 0o700 });
+              const workspace = await realpath(directory);
+              const id = idOf(workspace);
+              // Register the specialization before exposing its workspace in the sidebar.
+              if (input.type === "auto-reply") await call("/reply-projects", owner, { projectId: id });
+              const w = await ctx.workspaceRegistry.create(workspace, name);
+              await syncProjects();
+              json(res, 200, { id, name, type: input.type, workspaceId: w.id, sessionIds: [] });
               return;
             }
             if(req.method==='GET'&&path==='/resource-export'){
@@ -384,7 +502,7 @@ export async function apply(ctx, config) {
               "/personal/settings",
               "/notifications",
             ]);
-            const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/reply-projects","/schedules/pause",
+            const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause",
               "/resources",
               "/connections",
               "/grants",
@@ -403,14 +521,22 @@ export async function apply(ctx, config) {
                 json(res, 403, { error: "origin rejected" });
                 return;
               }
-              json(res, 200, await call(path, owner, await body(req)));
+              const input = await body(req);
+              if(path==="/reply-settings"&&!(await call("/reply-projects")).some(p=>p.projectId===input.projectId))
+                throw requestError("请在创建时选择自动化应答专项", 409);
+              json(res, 200, await call(path, owner, input));
               return;
             }
             if(req.method==='POST'&&path==='/reply-project/create'){
  const origin=req.headers.origin;if(!origin||new URL(origin).host!==req.headers.host){json(res,403,{error:'origin rejected'});return}
  const projectPath=join(dirname(personalPath),'projects','auto-reply');
- await mkdir(projectPath,{recursive:true});const w=await ctx.workspaceRegistry.create(await realpath(projectPath),'自动化应答');await syncProjects();
- const projectId=idOf(w.path);await call('/reply-projects',owner,{projectId});json(res,200,{projectId,workspaceId:w.id});return;
+ await mkdir(projectPath,{recursive:true});const resolved=await realpath(projectPath);
+ const projectId=idOf(resolved);
+ const existing=ctx.workspaceRegistry.list().find(w=>w.path===resolved);
+ if(existing&&!(await call("/reply-projects")).some(p=>p.projectId===projectId))throw requestError("已有普通项目不能改为专项",409);
+ await call('/reply-projects',owner,{projectId});
+ const w=await ctx.workspaceRegistry.create(resolved,'自动化应答');await syncProjects();
+ json(res,200,{projectId,workspaceId:w.id});return;
  }
  if(req.method==='POST' && ['/session/start','/workspace/create'].includes(path)) {
               const origin=req.headers.origin;
