@@ -13,6 +13,7 @@ import (
 // A transport is a standard MCP server. Business routing and approvals live
 // here; platform authentication and wire formats remain in the connector.
 type Transport struct {
+	Kind             string   `json:"kind,omitempty"`
 	ModeConnectionID string   `json:"modeConnectionId,omitempty"`
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`

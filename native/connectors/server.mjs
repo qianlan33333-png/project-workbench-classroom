@@ -16,7 +16,7 @@ app.post('/mcp',async(req,res)=>{
  const server=new McpServer({name:'workbench-message-connectors',version:'0.1.0'});
  server.registerTool('connection_describe',{inputSchema:{connectionId:z.string()}},async input=>{const v=await channels.describe(input);return{content:[{type:'text',text:JSON.stringify(v)}],structuredContent:v}});
  for(const [name,handler,inputSchema] of [['message_send',channels.send,{connectionId:z.string(),idempotencyKey:z.string(),target:z.record(z.string(),z.string()),text:z.string().max(16000)}],['message_receipt',channels.receipt,{connectionId:z.string(),idempotencyKey:z.string(),receipt:z.string(),state:z.string(),target:z.record(z.string(),z.string()),text:z.string().max(16000).optional()}]]){
-  server.registerTool(name,{inputSchema,outputSchema},async input=>{const result=await handler(input);return{content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result}})
+  server.registerTool(name,{inputSchema,outputSchema},async (input,extra)=>{const result=await handler(input,{signal:extra.signal});return{content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result}})
  }
  const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});res.on('close',()=>{transport.close();server.close()});
  try{await server.connect(transport);await transport.handleRequest(req,res,req.body)}catch{if(!res.headersSent)res.status(500).json({error:'connector unavailable'})}

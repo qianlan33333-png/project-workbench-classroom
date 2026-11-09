@@ -118,33 +118,7 @@ func (a *Server) messageTools(s *mcp.Server, p core.Principal) {
 		return nil, in.MessageKey, a.Store.MessageDisposition(ctx, p, in.ConnectionID, in.EventID, in.State)
 	})
 	mcp.AddTool(s, &mcp.Tool{Name: "message_receipt", Description: "Reconcile the original delivery using the connector's receipt tool. For a batch supply root runId and deliveryId from message_batch_read. Never resends. Returns stored status; the queued read updates it asynchronously."}, func(ctx context.Context, _ *mcp.CallToolRequest, in ReceiptRequest) (*mcp.CallToolResult, core.Delivery, error) {
-		run, e := a.Store.Run(ctx, p, in.RunID)
-		if e != nil {
-			return nil, core.Delivery{}, e
-		}
-		id := in.DeliveryID
-		if id == "" {
-			id = in.RunID
-		}
-		d, e := a.Store.Delivery(ctx, id)
-		if e != nil {
-			return nil, d, e
-		}
-		if d.RunID != in.RunID {
-			return nil, core.Delivery{}, core.ErrDenied
-		}
-		_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id + "-receipt-" + uuid.NewString(), TaskQueue: engine.InteractiveQueue}, engine.ReceiptOnly, id)
-		if e != nil {
-			return nil, core.Delivery{}, e
-		}
-		v, e := a.Store.Delivery(ctx, id)
-		if e != nil {
-			return nil, core.Delivery{}, e
-		}
-		if e = a.Store.RememberRunRead(ctx, p, run); e != nil {
-			return nil, core.Delivery{}, e
-		}
-		return nil, v, nil
+		return a.reconcileDelivery(ctx, p, in, false)
 	})
 }
 func (a *Server) messageRoutes(mux *http.ServeMux) {
@@ -300,4 +274,43 @@ func (a *Server) messageRoutes(mux *http.ServeMux) {
 		e = a.startIncoming(r.Context(), message)
 		respond(w, message, e)
 	})
+}
+
+func (a *Server) reconcileDelivery(ctx context.Context, p core.Principal, in ReceiptRequest, requireCRM bool) (*mcp.CallToolResult, core.Delivery, error) {
+	run, e := a.Store.Run(ctx, p, in.RunID)
+	if e != nil {
+		return nil, core.Delivery{}, e
+	}
+	id := in.DeliveryID
+	if id == "" {
+		id = in.RunID
+	}
+	d, e := a.Store.Delivery(ctx, id)
+	if e != nil {
+		return nil, d, e
+	}
+	if d.RunID != in.RunID {
+		return nil, core.Delivery{}, core.ErrDenied
+	}
+	if requireCRM {
+		transport, err := a.Store.Transport(ctx, p, d.ConnectionID)
+		if err != nil {
+			return nil, core.Delivery{}, err
+		}
+		if transport.Kind != "crm-cli" {
+			return nil, core.Delivery{}, core.ErrInvalid
+		}
+	}
+	_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id + "-receipt-" + uuid.NewString(), TaskQueue: engine.InteractiveQueue}, engine.ReceiptOnly, id)
+	if e != nil {
+		return nil, core.Delivery{}, e
+	}
+	v, e := a.Store.Delivery(ctx, id)
+	if e != nil {
+		return nil, core.Delivery{}, e
+	}
+	if e = a.Store.RememberRunRead(ctx, p, run); e != nil {
+		return nil, core.Delivery{}, e
+	}
+	return nil, v, nil
 }

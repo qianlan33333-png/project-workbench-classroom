@@ -502,3 +502,12 @@ Go test/vet、24项Node测试通过；使用真实08 Worker与08样式启动配�
 独立读回：四项工作台服务、原语料服务active，Worker API/backgroundReady均true，语料数量与指纹不变。隔离库、namespace、临时Host/Worker/接收器及兼容测试容器退场，验收证据保存在本机私有目录；只移除本轮合成接管/审计行，保留实际业务记录。原上下文中心、CRM及现有客户会话不改。
 
 渠道边界：托管企微账号本次最后读回为offline/sendEnabled=false。8条最终问答使用真实模型和原语料，发送只到隔离接收器；本次新专家在正式微信上的新问题收发尚未完成，不能把程序与资料服务在线当作企微在线。需托管账号恢复在线后再用本人新消息联测，未开放其他客户。未启用旧每日采集，也没有GitHub推送。
+
+## 2026-11-09 CRM CLI 基本运营入口
+
+从已读回的正式源码 `baffbfc7` 建立 `codex/crm-cli-basics`。本候选提供 `data_refresh`、`crm_push`、`crm_receipts`，策略选单暂缓。业务判断与登记方式见 [CRM CLI 基本运营工具](../native/docs/OPERATIONS.md)。
+
+- 采集调用 CRM CLI 原 `archive.facts.export`，按登记集合读取 CRM 原始事实、核对源清单，并复用资源字段清洗及发布。CLI 机器令牌与 CRM 地址绑定；HXC 原始权益和使用数据继续使用 HXC 来源。
+- 提交使用登记名单及原本人确认，沿已验证的 CLI 连接器和 CRM 审核合同。回执使用原计划编号和逐人执行结果。
+- Go test/vet、Node 37 项、CLI 原档案导出合同通过。真实 Linux CLI 连接隔离 TLS 夹具和隔离 MySQL，验证精确身份、字段清洗、已完成任务复用及错误清单保留上一版。隔离 MySQL 的原 HTTP 来源、本人确认及未知发送只查原回执回归通过。
+- 本轮直接使用真实 CLI 查询计划 391，读回 1 人、平台状态 1 且有发送时间。没有新建计划。候选尚未发布，正式工作台采集需要 CRM 机器授权和允许来源 IP。

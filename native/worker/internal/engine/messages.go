@@ -198,7 +198,7 @@ func (a *Activities) ReconcileDelivery(ctx context.Context, id string) (Receipt,
 		return Receipt{}, failure(e)
 	}
 	input := map[string]any{"connectionId": c.ID, "idempotencyKey": d.ID, "receipt": d.Receipt, "target": d.Target, "state": d.State}
-	if r.Operation == "control_notification" {
+	if r.Operation == "control_notification" || c.Kind == "crm-cli" {
 		input["text"] = d.Text
 	}
 	receipt, e := callConnector(ctx, c, "message_receipt", input)

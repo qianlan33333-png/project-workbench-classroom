@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import {createCRM} from './crm-cli.mjs';
 import {createGateway} from './wecom-gateway.mjs';
 import {createConversationControl} from './conversation-control.mjs';
 import * as lark from '@larksuiteoapi/node-sdk';
@@ -18,6 +19,7 @@ export async function ingestFeishu(c,{sender,message:m},workerCall){
 const unknown=receipt=>({state:'unknown',receipt:receipt||'',error:'结果未明确；连接器不会自动重发。'});
 export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
  const clients=new Map(),tokens=new Map();
+ const crms=new Map(config.filter(c=>c.enabled&&c.kind==='crm-cli').map(c=>[c.id,createCRM(c,workerCall)]));
  const controls=new Map();
  for(const c of config.filter(c=>c.crm&&c.crm.enabled!==false)){
   const control=createConversationControl(c,workerCall,fetcher);
@@ -42,7 +44,8 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   const r=await fetcher(u,{method:'POST',redirect:'error',signal:AbortSignal.timeout(20000),headers:{'content-type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw Error('WeCom transport unavailable');return r.json();
  };
  const feishu=c=>{if(feishuFactory)return feishuFactory(c);if(!clients.has(c.id))clients.set(c.id,new lark.Client({appId:c.appId,appSecret:c.appSecret,appType:lark.AppType.SelfBuild,domain:lark.Domain.Feishu,loggerLevel:lark.LoggerLevel.error}));return clients.get(c.id)};
- async function send({connectionId,idempotencyKey,target,text}){
+ async function send({connectionId,idempotencyKey,target,text},options){
+  if(crms.has(connectionId))return crms.get(connectionId).send({idempotencyKey,target,text},options);
   if(target.kind==='conversation.mode.changed')return controls.has(connectionId)?controls.get(connectionId).notify({target,text}):{state:'failed',error:'CRM control is not configured'};
   const c=entry(connectionId);if(!text||text.length>16000)throw Error('Invalid message');
   if(gateways.has(c.id))return gateways.get(c.id).send({connectionId,idempotencyKey,target,text});
@@ -76,7 +79,8 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   }
   throw Error('Unsupported connector');
  }
- async function receipt({connectionId,receipt,target,state,text}){
+ async function receipt({connectionId,idempotencyKey,receipt,target,state,text}){
+  if(crms.has(connectionId))return crms.get(connectionId).receipt({idempotencyKey,target,text});
   // Only state.changed is idempotent at the receiver. Customer sends never
   // enter this branch and are never retried as a receipt query.
   if(target.kind==='conversation.mode.changed')return controls.has(connectionId)?controls.get(connectionId).notify({target,text}):{state:'failed',error:'CRM control is not configured'};

@@ -182,7 +182,7 @@ func (s JSONSource) validate() error {
 	}
 	return validateSelection(Section{Select: s.Fields})
 }
-func skipJSON(dec *json.Decoder) error {
+func skipJSON(dec *json.Decoder, resetBudget func()) error {
 	token, e := dec.Token()
 	if e != nil {
 		return e
@@ -196,6 +196,9 @@ func skipJSON(dec *json.Decoder) error {
 	}
 	depth := 1
 	for depth > 0 {
+		if resetBudget != nil {
+			resetBudget()
+		}
 		token, e = dec.Token()
 		if e != nil {
 			return e
@@ -228,6 +231,62 @@ func (r *sourceBudgetReader) Read(p []byte) (int, error) {
 	r.remaining -= int64(n)
 	return n, e
 }
+
+// The opening array delimiter has already been consumed by the source reader.
+func streamSourceRows(dec *json.Decoder, bounded *sourceBudgetReader, spec JSONSource, accept func(Record) error, inspect func(map[string]any) error) error {
+	for {
+		bounded.reset()
+		if !dec.More() {
+			break
+		}
+		var row map[string]any
+		before := dec.InputOffset()
+		if e := dec.Decode(&row); e != nil {
+			return fmt.Errorf("%w: malformed source record", ErrInvalid)
+		}
+		if row == nil || dec.InputOffset()-before > 512<<10 {
+			return fmt.Errorf("%w: invalid or oversized source record", ErrInvalid)
+		}
+		if inspect != nil {
+			if e := inspect(row); e != nil {
+				return e
+			}
+		}
+		key, _ := jsonpointer.New(spec.KeyPointer)
+		raw, _, e := key.Get(row)
+		if e != nil {
+			return fmt.Errorf("%w: source identity missing", ErrInvalid)
+		}
+		id := ""
+		switch value := raw.(type) {
+		case string:
+			id = value
+		case json.Number:
+			id = value.String()
+		default:
+			return fmt.Errorf("%w: source identity must be string or number", ErrInvalid)
+		}
+		record := Record{ID: id, Fields: map[string]any{}}
+		for alias, path := range spec.Fields {
+			pointer, _ := jsonpointer.New(path)
+			value, _, e := pointer.Get(row)
+			if e != nil {
+				record.Fields[alias] = nil
+			} else {
+				record.Fields[alias] = value
+			}
+		}
+		if e := accept(record); e != nil {
+			return e
+		}
+	}
+	end, e := dec.Token()
+	if e != nil || end != json.Delim(']') {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func streamJSON(reader io.Reader, spec JSONSource, accept func(Record) error) error {
 	if e := spec.validate(); e != nil {
 		return e
@@ -246,49 +305,7 @@ func streamJSON(reader io.Reader, spec JSONSource, accept func(Record) error) er
 			return fmt.Errorf("%w: duplicate source array", ErrInvalid)
 		}
 		found = true
-		for dec.More() {
-			bounded.reset()
-			var row map[string]any
-			before := dec.InputOffset()
-			if e := dec.Decode(&row); e != nil {
-				return fmt.Errorf("%w: malformed source record", ErrInvalid)
-			}
-			if row == nil || dec.InputOffset()-before > 512<<10 {
-				return fmt.Errorf("%w: invalid or oversized source record", ErrInvalid)
-			}
-			key, _ := jsonpointer.New(spec.KeyPointer)
-			raw, _, e := key.Get(row)
-			if e != nil {
-				return fmt.Errorf("%w: source identity missing", ErrInvalid)
-			}
-			id := ""
-			switch value := raw.(type) {
-			case string:
-				id = value
-			case json.Number:
-				id = value.String()
-			default:
-				return fmt.Errorf("%w: source identity must be string or number", ErrInvalid)
-			}
-			record := Record{ID: id, Fields: map[string]any{}}
-			for alias, path := range spec.Fields {
-				pointer, _ := jsonpointer.New(path)
-				value, _, e := pointer.Get(row)
-				if e != nil {
-					record.Fields[alias] = nil
-				} else {
-					record.Fields[alias] = value
-				}
-			}
-			if e = accept(record); e != nil {
-				return e
-			}
-		}
-		end, e := dec.Token()
-		if e != nil || end != json.Delim(']') {
-			return ErrInvalid
-		}
-		return nil
+		return streamSourceRows(dec, bounded, spec, accept, nil)
 	}
 	if spec.ArrayField == "" {
 		if first != json.Delim('[') {
@@ -315,7 +332,7 @@ func streamJSON(reader io.Reader, spec JSONSource, accept func(Record) error) er
 				if e = array(); e != nil {
 					return e
 				}
-			} else if e = skipJSON(dec); e != nil {
+			} else if e = skipJSON(dec, nil); e != nil {
 				return ErrInvalid
 			}
 		}

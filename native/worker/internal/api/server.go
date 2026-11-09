@@ -228,6 +228,7 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 	}
 	a.attachmentTools(s, bound)
 	a.programTools(s, bound)
+	a.crmTools(s, bound)
 	a.resourceTools(s, bound)
 	a.dispatchBatchTools(s, bound)
 	a.scheduleTools(s, bound)

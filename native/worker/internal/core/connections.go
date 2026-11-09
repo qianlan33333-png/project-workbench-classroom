@@ -46,7 +46,7 @@ func (s *Store) PutConnection(ctx context.Context, p Principal, v Connection) er
 		if !validMCPEndpoint(v.Location) || !ValidID(v.SourceTool) || !ValidID(v.SecretEnv) || !strings.HasPrefix(v.SecretEnv, "WORKBENCH_SOURCE_") {
 			return ErrInvalid
 		}
-	case "mysql":
+	case "mysql", CRMArchiveSource:
 		if !ValidID(v.SecretEnv) || !strings.HasPrefix(v.SecretEnv, "WORKBENCH_SOURCE_") {
 			return ErrInvalid
 		}
@@ -64,6 +64,26 @@ func (s *Store) PutConnection(ctx context.Context, p Principal, v Connection) er
 	_, e := s.DB.ExecContext(ctx, `INSERT INTO wb_connections VALUES(?,?) ON DUPLICATE KEY UPDATE body=VALUES(body)`, v.ID, jsonText(v))
 	return e
 }
+
+func (s *Store) sourceConnection(ctx context.Context, resource Resource) (Connection, error) {
+	return scanJSON[Connection](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_connections WHERE id=?`, resource.ConnectionID))
+}
+
+func (s *Store) RequireSourceKind(ctx context.Context, p Principal, id, kind string) error {
+	resource, err := s.canWrite(ctx, p, id)
+	if err != nil {
+		return err
+	}
+	conn, err := s.sourceConnection(ctx, resource)
+	if err != nil {
+		return err
+	}
+	if conn.Kind != kind {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func (s *Store) Grants(ctx context.Context, p Principal) ([]Grant, error) {
 	if !p.IsOwner() {
 		return nil, ErrDenied
@@ -111,7 +131,7 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 	if e != nil {
 		return Snapshot{}, e
 	}
-	conn, e := scanJSON[Connection](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_connections WHERE id=?`, resource.ConnectionID))
+	conn, e := s.sourceConnection(ctx, resource)
 	if e != nil {
 		return Snapshot{}, e
 	}
@@ -192,11 +212,18 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 				return snap, e
 			}
 		}
-	case "http-json":
+	case "http-json", CRMArchiveSource:
 		if resource.JSONSource == nil {
 			return snap, ErrInvalid
 		}
-		file, digest, err := downloadJSON(ctx, conn)
+		download, read := downloadJSON, streamJSON
+		if conn.Kind == CRMArchiveSource {
+			if !validCRMArchiveCollection(resource.JSONSource.ArrayField) {
+				return snap, ErrInvalid
+			}
+			download, read = exportCRMArchive, streamCRMArchive
+		}
+		file, digest, err := download(ctx, conn)
 		if err != nil {
 			return snap, err
 		}
@@ -205,7 +232,7 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 		if e = s.BeginSnapshot(ctx, r.Principal, snap); e != nil {
 			return snap, e
 		}
-		if e = streamJSON(file, *resource.JSONSource, accept); e != nil {
+		if e = read(file, *resource.JSONSource, accept); e != nil {
 			return snap, e
 		}
 	case "directory":

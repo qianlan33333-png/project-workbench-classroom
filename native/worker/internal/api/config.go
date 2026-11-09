@@ -191,15 +191,7 @@ func (a *Server) moreTools(s *mcp.Server, bound core.Principal) {
 		}{v}, e
 	})
 	mcp.AddTool(s, &mcp.Tool{Name: "resource_sync", Description: "Run the registered resource source reader and validator, then atomically publish. Uses fixed owner configuration; no ad-hoc SQL."}, func(ctx context.Context, _ *mcp.CallToolRequest, in SyncInput) (*mcp.CallToolResult, RunRef, error) {
-		if bound.Kind != "project" || !core.ValidID(in.OperationKey) {
-			return nil, RunRef{}, core.ErrDenied
-		}
-		r := core.Run{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(bound.SessionID+"/"+in.OperationKey)).String(), Principal: bound, Operation: "sync", Destination: in.Destination, Title: in.Title}
-		if e := a.Store.SaveRun(ctx, r); e != nil {
-			return nil, RunRef{}, e
-		}
-		_, e := a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.Principal.ProjectID, Operation: r.Operation})
-		return nil, RunRef{RunID: r.ID}, accepted(e)
+		return a.syncResource(ctx, bound, in)
 	})
 	mcp.AddTool(s, &mcp.Tool{Name: "followup_create", Description: "Persist one bounded follow-up. At most three timed checks; targetRunIds (at most 5) are checked against actual execution/publication/receipts each round. Source pages are only samples. Questions wait for a real owner answer. Never sends to customers."}, func(ctx context.Context, _ *mcp.CallToolRequest, in FollowupRequest) (*mcp.CallToolResult, RunRef, error) {
 		if !core.ValidID(in.OperationKey) || in.Goal == "" || len(in.Goal) > 16000 || in.NextAt.IsZero() {
@@ -261,4 +253,16 @@ func (a *Server) moreTools(s *mcp.Server, bound core.Principal) {
 		_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.Principal.ProjectID, Operation: r.Operation})
 		return nil, RunRef{RunID: r.ID}, accepted(e)
 	})
+}
+
+func (a *Server) syncResource(ctx context.Context, p core.Principal, in SyncInput) (*mcp.CallToolResult, RunRef, error) {
+	if p.Kind != "project" || !core.ValidID(in.OperationKey) {
+		return nil, RunRef{}, core.ErrDenied
+	}
+	r := core.Run{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.OperationKey)).String(), Principal: p, Operation: "sync", Destination: in.Destination, Title: in.Title}
+	if e := a.Store.SaveRun(ctx, r); e != nil {
+		return nil, RunRef{}, e
+	}
+	_, e := a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.Principal.ProjectID, Operation: r.Operation})
+	return nil, RunRef{RunID: r.ID}, accepted(e)
 }
