@@ -845,7 +845,7 @@ def daily_scope(read, params, records, *, now=None, detail=None):
 
 
 def package_daily(read, params):
-    detail = package_run(read, params, preflight=True)
+    detail = package_run(read, params, preflight=not params.get("item"))
     out = package_detail(read, params, detail=detail)
     if not (out["reviewed"] or out["handoff"] or out["formal"]):
         package, week = package_identity({"package": params.get("currentPackage") or params["package"],
