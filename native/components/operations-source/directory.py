@@ -136,6 +136,35 @@ def profiles(read, params):
     return {"state": "ready", "records": records, "total": out["total"], "snapshot": out["snapshot_id"], "next": out["next_cursor"]}
 
 
+def profile_lookup(read, params):
+    external = params.get("externalUserId", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,191}", external):
+        raise ValueError("invalid external contact identity")
+    # Reuse the original center's already-published read index. Never build an
+    # index or scan/reimport the source JSON in this latency-sensitive read.
+    sys.path.insert(0, str(ORIGINAL / "ops"))
+    import canonical_archive_index as index
+    source = ORIGINAL / "var/private-data/canonical_users_live.json"
+    signature = index.signature(source)
+    path = ORIGINAL / "var/canonical-read-index" / (index.cache_key(signature) + ".sqlite")
+    from contextlib import closing
+    with closing(index.connect(path)) as db:
+        metadata = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata WHERE key IN ('__read_index','snapshot_id')")}
+        if metadata.get("__read_index", {}).get("source_signature") != signature:
+            raise ValueError("archive index is stale")
+        rows = db.execute("SELECT workbench_ref FROM users WHERE json_extract(body,'$.external_userid')=? LIMIT 2", (external,)).fetchall()
+    if len(rows) > 1:
+        raise ValueError("ambiguous external contact identity")
+    result = {"externalUserId": external, "records": []}
+    if rows:
+        doc = profile(read, {"id": rows[0][0], "snapshot_id": metadata["snapshot_id"]})
+        if doc.get("state") != "ready" or index.signature(source) != signature:
+            raise ValueError("archive generation changed")
+        result["records"] = [{"id": doc["id"], "fields": {"nickname": doc.get("nickname", ""),
+            "profile_fields": {"snapshot": doc["snapshot"], "groups": doc["groups"], "missingSources": doc.get("missingSources", [])}}}]
+    return result
+
+
 def profile(read, params):
     ref, snapshot = params.get("id", ""), params.get("snapshot_id", "")
     if not SAFE.fullmatch(ref) or (snapshot and not SAFE.fullmatch(snapshot)):
@@ -1066,7 +1095,7 @@ if __name__ == "__main__":
         raise ValueError("invalid directory parameters")
     views = ({"package_prepare": package_prepare, "package_generate": package_generate,
               "package_edit": package_edit, "package_confirm": package_confirm}
-             if execute else {"profiles": profiles, "profile": profile, "catalog": catalog, "members": members,
+             if execute else {"profiles": profiles, "profile": profile, "profile_lookup": profile_lookup, "catalog": catalog, "members": members,
                               "package": package_detail, "package_daily": package_daily, "package_review": package_review_page,
                               "package_history": package_history, "package_card": package_card})
     result = views[value["view"]](reader(allow_edit=execute and value["view"] in ("package_edit", "package_confirm")), params)
