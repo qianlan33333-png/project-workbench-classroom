@@ -196,6 +196,7 @@ func run() error {
 	bw.RegisterWorkflow(engine.OperationsPackageEdit)
 	bw.RegisterWorkflow(engine.OperationsPackageConfirm)
 	bw.RegisterWorkflow(engine.ConfirmOperationsBatch)
+	bw.RegisterWorkflow(engine.OperationsReviewMaintenance)
 	bw.RegisterActivity(a)
 	if e = bw.Start(); e != nil {
 		return e

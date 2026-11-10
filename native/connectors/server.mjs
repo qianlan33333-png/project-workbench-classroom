@@ -19,6 +19,10 @@ app.post('/mcp',async(req,res)=>{
  for(const [name,handler,inputSchema] of [['message_send',channels.send,{connectionId:z.string(),idempotencyKey:z.string(),target:z.record(z.string(),z.string()),text:z.string().max(16000)}],['message_receipt',channels.receipt,{connectionId:z.string(),idempotencyKey:z.string(),receipt:z.string(),state:z.string(),target:z.record(z.string(),z.string()),text:z.string().max(16000).optional()}]]){
   server.registerTool(name,{inputSchema,outputSchema},async (input,extra)=>{const result=await handler(input,{signal:extra.signal});return{content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result}})
  }
+ server.registerTool('operations_material_versions',{inputSchema:{connectionId:z.string(),ids:z.array(z.string().regex(/^[1-9][0-9]{0,18}$/)).max(5000)}},async(input,extra)=>{
+  const result=await channels.operationsMaterialVersions(input,{signal:extra.signal});
+  return{content:[{type:'text',text:'CRM material versions'}],structuredContent:result};
+ });
  for(const [name,send] of [['operations_batch_send',true],['operations_batch_receipt',false]]){
   server.registerTool(name,{inputSchema:{connectionId:z.string(),runId:z.string().uuid()}},async(input,extra)=>{
    const result=await channels.operationsBatch(input,send,{signal:extra.signal});

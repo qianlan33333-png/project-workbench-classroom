@@ -839,14 +839,18 @@ def daily_scope(read, params, records, *, now=None, detail=None):
                                 or any(old_binding.get(field) != binding.get(field) for field in ("slot_key", "cycle_key", "node"))):
                             raise ValueError("existing original draft uses a different node or method")
                         reuse = {"reuseRun": old_run, "reuseItem": old_key, "reusePackage": old_package, "reuseWeek": old_week}
-            action = ["service-node", ref, binding["slot_key"], binding["cycle_key"], binding["node"]] if (
-                binding.get("primary_identity") == "299" and binding.get("slot_key")
-            ) else ["scheduled-service", ref, params["strategy"], task[0]] if params["strategy"] != "hxc:onboarding" else [
-                "newcomer-window", ref, params["strategy"], binding.get("window_start"), binding.get("window_end")]
-            slot = hashlib.sha256(json.dumps(action, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-            scope.append({"offset": offset, "key": key, "id": ref, "reason": record["reason"], "slot": slot,
-                          "expiresAt": end.isoformat() if end else None, "expert": text(request.get("skill_key")),
-                          "strategyVersion": request.get("strategy_version"), **reuse})
+            member = {"offset": offset, "key": key, "id": ref, "reason": record["reason"],
+                      "expiresAt": end.isoformat() if end else None, "expert": text(request.get("skill_key")),
+                      "strategyVersion": request.get("strategy_version"), **reuse}
+            if params.get("include_slot") == "1":
+                if binding.get("primary_identity") == "299" and binding.get("slot_key"):
+                    action = ["service-node", ref, binding["slot_key"], binding["cycle_key"], binding["node"]]
+                elif params["strategy"] == "hxc:onboarding":
+                    action = ["newcomer-window", ref, params["strategy"], binding.get("window_start"), binding.get("window_end")]
+                else:
+                    action = ["scheduled-service", ref, params["strategy"], task[0]]
+                member["slot"] = hashlib.sha256(json.dumps(action, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+            scope.append(member)
     return scope
 
 
@@ -930,12 +934,12 @@ def package_review_page(read, params):
                 "exclusive": not ORIGINAL_SEND_FLAG.exists()}
     records, _ = candidate_records(read, params.get("currentPackage") or params["package"],
                                    params.get("currentWeek") or params["week"])
-    scope = daily_scope(read, params, records, detail=detail)
+    scope = daily_scope(read, {**params, "include_slot": "1"}, records, detail=detail)
     if params.get("version") == "1":
         return {"state": "ready", "digest": detail["digest"], "identityVersion": published[-1],
                 "activeKeys": [row["key"] for row in scope], "exclusive": not ORIGINAL_SEND_FLAG.exists()}
     start = int(offset)
-    page = scope[start:start + 20]
+    page = [row for row in scope if start <= row["offset"] < start + 20]
     members = {member["key"]: member for member in page}
     items = [item for item in detail["items"] if item["item_key"] in members]
     result = package_detail(read, {**params, "review_page": "1"}, detail={**detail, "items": items})
@@ -950,7 +954,7 @@ def package_review_page(read, params):
                    expiresAt=members[row["key"]]["expiresAt"],
                    materials=review_materials(items[row["key"]]))
     return {"state": "ready", "run": detail["run_id"], "digest": detail["digest"], "identityVersion": published[-1], "rows": rows,
-            "next": start + len(page) if start + len(page) < len(scope) else 0}
+            "next": start + 20 if start + 20 < len(detail["items"]) else 0}
 
 
 def daily_generation_open(params, run):

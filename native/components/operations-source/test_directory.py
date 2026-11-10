@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from directory import SHANGHAI, bind_daily_drafts, daily_scope, delivery_label, members, newcomer_deadline, package_binding, package_card, package_confirm, package_daily, package_detail, package_edit, package_prepare, profile, profiles, reader
+from directory import SHANGHAI, bind_daily_drafts, daily_scope, delivery_label, members, newcomer_deadline, package_binding, package_card, package_confirm, package_daily, package_detail, package_edit, package_prepare, package_review_page, profile, profiles, reader
 
 
 class OriginalDirectoryTest(unittest.TestCase):
@@ -22,6 +22,27 @@ class OriginalDirectoryTest(unittest.TestCase):
             self.assertTrue(source.call_args.kwargs["preflight"])
             self.assertIsNotNone(package_daily(None, {**params, "item": "usr_1"})["rows"][0]["judgment"])
             self.assertFalse(source.call_args.kwargs["preflight"])
+
+    def test_review_pages_keep_the_original_item_offsets_when_scope_shrinks(self):
+        run = "copybatch-" + "a"*32
+        items = [{"item_key": f"item_{i}", "safe_user_ref": f"usr_{i}",
+                  "usable": True, "reviewable": True, "text": "完整原稿"} for i in range(40)]
+        detail = {"run_id": run, "digest": "b"*64, "items": items}
+        candidates = [{"id": item["safe_user_ref"], "nickname": "", "reason": "原策略"} for item in items]
+        scope = [{"offset": i, "key": item["item_key"], "slot": "a"*64,
+                  "reason": "原策略", "expiresAt": None} for i, item in enumerate(items)]
+        params = {"package": "weekpkg-source", "week": "2026-W46", "run": run}
+        with patch("directory.package_run", return_value=detail), \
+             patch("directory.formal_status", return_value=""), \
+             patch("directory.candidate_records", return_value=(candidates, "")), \
+             patch("directory.daily_scope", side_effect=[scope, scope[1:]]), \
+             patch("directory.review_archive", return_value=("c"*64,)), \
+             patch("directory.review_recipients", return_value={}):
+            first = package_review_page(None, params)
+            second = package_review_page(None, {**params, "offset": str(first["next"])})
+        self.assertEqual(first["next"], 20)
+        self.assertEqual([row["key"] for row in second["rows"]], [f"item_{i}" for i in range(20, 40)])
+        self.assertEqual(second["next"], 0)
 
     def test_same_business_node_reuses_older_original_draft(self):
         old, new = ("copybatch-" + digit*32 for digit in ("1", "2"))

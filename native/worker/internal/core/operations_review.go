@@ -42,10 +42,12 @@ type OperationsReviewRow struct {
 }
 
 type OperationsMaterial struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	AppID string `json:"appId"`
-	Page  string `json:"page"`
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	AppID   string `json:"appId"`
+	Page    string `json:"page"`
+	Version int64  `json:"version,omitempty"`
+	Cover   string `json:"cover,omitempty"`
 }
 
 type OperationsBatchItem struct {

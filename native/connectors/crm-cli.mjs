@@ -6,7 +6,7 @@ const digest=value=>crypto.createHash('sha256').update(JSON.stringify(canonical(
 const uncertain=(receipt,reason='')=>({state:'unknown',receipt:receipt||'',error:'CRM结果未明确；只查询原计划，不重复提交。'+reason});
 const businessReason=proof=>[...['failure_reason','query_failure'].map(k=>typeof proof[k]==='string'?proof[k].replace(/[\x00-\x1f\x7f]/g,'').slice(0,200):''),...['creation_errcode','query_errcode'].map(k=>Number.isSafeInteger(proof[k])&&proof[k]!==0?`${k}=${proof[k]}`:'')].filter(Boolean).join('；');
 const positive=value=>/^[1-9][0-9]*$/.test(String(value))&&Number.isSafeInteger(Number(value));
-const operations=new Set(['admin.createAIAssistantPlan','admin.getAIAssistantPlan','admin.getAIAssistantRecipient','admin.listAIAssistantPlans','admin.listAIAssistantRecipients','admin.reviewAIAssistantRecipient','admin.previewAIAssistantPlanApproval','admin.approveAIAssistantPlan','admin.listAIAssistantExecutionReceipts','admin.getMediaMiniProgram','admin.getCustomerDirectoryDetail']);
+const operations=new Set(['admin.createAIAssistantPlan','admin.getAIAssistantPlan','admin.getAIAssistantRecipient','admin.listAIAssistantPlans','admin.listAIAssistantRecipients','admin.reviewAIAssistantRecipient','admin.previewAIAssistantPlanApproval','admin.approveAIAssistantPlan','admin.listAIAssistantExecutionReceipts','admin.getMediaMiniProgram','admin.getCustomerDirectoryDetail','admin.getMediaImage']);
 
 // Only host configuration chooses the executable and credentials. Request
 // content travels on stdin; no shell, model-controlled argv or token logging.
@@ -142,7 +142,32 @@ export function createCRM(config,workerCall,invoke=cliCaller(config)){
    return{state:'accepted',receipt:String(plan.id)};
   }catch{return uncertain(state.planId?String(state.planId):'')}
  }
- return{send,receipt,batch:createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,compare,pages)};
+ async function materialVersions({ids},{signal}={}){
+  const cards=[];
+  for(let i=0;i<ids.length;i+=8){
+   const page=await Promise.all(ids.slice(i,i+8).map(async id=>{
+    try{
+     const item=await readMiniProgram(invoke,id,signal);
+     if(item?.enabled&&String(item.id)===id&&positive(item.version))
+      return {id,title:item.title,appId:item.app_id,page:item.page_path,version:item.version,cover:item.cover};
+    }catch{/* A missing version leaves the card visible but not authorized for sending. */}
+    return null;
+   }));
+   cards.push(...page.filter(Boolean));
+  }
+  return {cards};
+ }
+ return{send,receipt,materialVersions,batch:createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,compare,pages)};
+}
+
+async function readMiniProgram(invoke,id,signal){
+ const result=await invoke('admin.getMediaMiniProgram',{params:{id},signal});
+ const card=result.item||result.miniprogram;
+ if(!card?.enabled||card.thumbnail_status!=='ready'||!positive(card.thumb_image_id))return null;
+ const coverResult=await invoke('admin.getMediaImage',{params:{id:card.thumb_image_id},signal});
+ const cover=coverResult.item||coverResult.image;
+ if(!cover?.enabled||cover.id!==card.thumb_image_id||!cover.updated_at)return null;
+ return {...card,cover:digest([cover.id,cover.updated_at])};
 }
 
 const batchKind='workbench_operations_batch';
@@ -204,11 +229,10 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
   }
   const recipients=[];
   const itemKey=new Map(),deadlines=[],materials=new Map(),versions={};
-  const validCard=card=>card&&positive(card.id)&&card.title&&card.appId&&card.page;
+  const validCard=card=>card&&positive(card.id)&&positive(card.version)&&/^[a-f0-9]{64}$/.test(card.cover||"")&&card.title&&card.appId&&card.page;
   const readMaterial=async id=>{
    try{
-    const result=await invoke('admin.getMediaMiniProgram',{params:{id}});
-    return result.item||result.miniprogram||null;
+    return await readMiniProgram(invoke,id,signal);
    }catch(error){
     if(error.status===404)return null;
     throw error;
@@ -233,11 +257,11 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
       if(!materials.has(card.id))materials.set(card.id,await readMaterial(card.id));
       const current=materials.get(card.id);
       if(!current?.enabled||String(current.id)!==card.id||current.title!==card.title||
-         current.app_id!==card.appId||current.page_path!==card.page||!positive(current.version)){
+         current.app_id!==card.appId||current.page_path!==card.page||current.version!==card.version||current.cover!==card.cover){
        entries[row.key]=fail('CRM 小程序素材已变化或不可用。');
        break;
       }
-      versions[card.id]=current.version;
+      versions[card.id]=[current.version,current.cover];
      }
      if(entries[row.key])continue;
     }
@@ -268,6 +292,7 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
    return saved.length===itemKey.size&&ids.size===saved.length&&
     saved.every(row=>itemKey.has(String(row.customer_id))&&String(row.staff_id)===String(manifest.staff)&&positive(row.id))?ids:null;
   };
+  const contentStamp=saved=>digest(saved.map(row=>[String(row.customer_id),String(row.id),String(row.content_version_id)]).sort((a,b)=>a[0].localeCompare(b[0])));
   async function read() {
    if(state.digest!==sourceDigest)return finish();
    if(state.phase==='failed'){
@@ -280,7 +305,7 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
     const params={plan_id:plan.id};
     const saved=await pages('admin.listAIAssistantRecipients',params);
     const recipientIds=validRecipients(saved);
-    if(!recipientIds)return finish(plan.id);
+    if(!recipientIds||!state.contents||state.contents!==contentStamp(saved))return finish(plan.id);
     let cursor=state.receiptCursor||'',limit=state.receiptLimit||20;
     for(let page=0;page<12;page++){
      let data;
@@ -369,7 +394,7 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
     const material=await readMaterial(id);
     if(!material?.enabled||String(material.id)!==id||!positive(material.version))
      return recordFailure('CRM 小程序素材已经失效，未批准发送。');
-    currentVersions[id]=material.version;
+    currentVersions[id]=[material.version,material.cover];
    }
    if(state.cardVersions!==digest(currentVersions))
     return recordFailure('CRM 小程序素材版本已经改变，未批准发送。');
@@ -378,7 +403,7 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
    if(deadlines.some(deadline=>!(deadline>Date.now())))
     return recordFailure('计划中的原服务动作已经过期，未批准发送。');
    signal?.throwIfAborted();
-   await remember({phase:'approving'});
+   await remember({phase:'approving',contents:contentStamp(saved)});
    await invoke('admin.approveAIAssistantPlan',{params,body:{expected_version:preview.plan_version,preview_digest:preview.preview_digest},
     key:key('approve'),signal,timeout:120000});
    await remember({phase:'submitted'});

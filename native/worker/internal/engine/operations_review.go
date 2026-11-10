@@ -71,7 +71,68 @@ func (a *Activities) publishOperationsReview(ctx context.Context, run core.Run, 
 		}
 		offset = page.Next
 	}
+	a.bindOperationsMaterialVersions(ctx, run, rows)
 	return a.Store.PublishOperationsReview(ctx, run.ID, head, rows)
+}
+
+// Reading the CRM card catalog is optional for opening drafts. Only an
+// exact catalog version fixed here can later be submitted for delivery.
+func (a *Activities) bindOperationsMaterialVersions(ctx context.Context, run core.Run, rows []core.OperationsReviewRow) {
+	ids := []string{}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		for _, card := range row.Materials {
+			if !seen[card.ID] {
+				ids = append(ids, card.ID)
+				seen[card.ID] = true
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	var cfg struct{ Transport string }
+	var config []byte
+	if err := a.Store.DB.QueryRowContext(ctx, `SELECT body FROM wb_settings WHERE id=?`, "operations-"+run.Principal.ProjectID).Scan(&config); err != nil || json.Unmarshal(config, &cfg) != nil {
+		return
+	}
+	transport, err := a.Store.Transport(ctx, run.Principal, cfg.Transport)
+	if err != nil || transport.Kind != "crm-cli" {
+		return
+	}
+	bounded, cancel := context.WithTimeout(ctx, 50*time.Second)
+	defer cancel()
+	session, err := connectConnectorWithTimeout(bounded, transport, 45*time.Second)
+	if err != nil {
+		return
+	}
+	defer session.Close()
+	result, err := session.CallTool(bounded, &mcp.CallToolParams{Name: "operations_material_versions",
+		Arguments: map[string]any{"connectionId": transport.ID, "ids": ids}})
+	if err != nil || result.IsError {
+		return
+	}
+	raw, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		return
+	}
+	var out struct{ Cards []core.OperationsMaterial }
+	if json.Unmarshal(raw, &out) != nil {
+		return
+	}
+	byID := map[string]core.OperationsMaterial{}
+	for _, card := range out.Cards {
+		byID[card.ID] = card
+	}
+	for i := range rows {
+		for j := range rows[i].Materials {
+			card := &rows[i].Materials[j]
+			known := byID[card.ID]
+			if known.Title == card.Title && known.AppID == card.AppID && known.Page == card.Page && known.Version > 0 && known.Cover != "" {
+				card.Version, card.Cover = known.Version, known.Cover
+			}
+		}
+	}
 }
 
 func (a *Activities) PublishOriginalOperationsReview(ctx context.Context, id string, batch originalPackage) error {
@@ -245,7 +306,23 @@ func (a *Activities) ReadOrSubmitOperationsBatch(ctx context.Context, id string)
 	return a.Store.SaveOperationsBatchResult(ctx, id, out)
 }
 
+func OperationsReviewMaintenance(ctx workflow.Context) error {
+	return workflow.ExecuteActivity(operationsPackageActivityContext(ctx), "QueueOperationsReviewMaintenance").Get(ctx, nil)
+}
+
+func (a *Activities) StartOperationsReviewMaintenance(ctx context.Context) error {
+	_, err := a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID: "operations-review-maintenance", TaskQueue: BatchQueue,
+		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
+	}, OperationsReviewMaintenance)
+	if temporal.IsWorkflowExecutionAlreadyStartedError(err) {
+		return nil
+	}
+	return err
+}
+
 func (a *Activities) QueueOperationsReviewMaintenance(ctx context.Context) error {
+	defer keepAlive(ctx)()
 	day := originalOperationsDay(time.Now())
 	rows, err := a.Store.DB.QueryContext(ctx, `SELECT r.id, r.project_id, COALESCE(JSON_UNQUOTE(JSON_EXTRACT(i.body,'$.text')),'')
 		FROM wb_runs r JOIN wb_items roster ON roster.run_id=r.id AND roster.item_id=?

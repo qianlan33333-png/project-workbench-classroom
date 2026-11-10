@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import {createCRM} from './crm-cli.mjs';
 function fixture({lostCreate=false,lostApprove=false,lostReserve='',status=0,queryError=0,abortAfterCreate,abortAfterSlot,state='provider_accepted',failure=''}={}){
  const states=new Map(),calls=[];let plan,row;
@@ -128,7 +129,8 @@ test('a lost reservation response reads back only the caller’s own attempt',as
 function operationsBatchFixture(count,{lostApproval=false,invalid=false,merged=false,edited=false,materialDrift=false,lostCreate=false}={}){
  const states=new Map(),calls=[];
  const runId='12345678-1234-4abc-8123-123456789abc';
- const rows=Array.from({length:count},(_,i)=>({key:'item-'+i,customer:String(i+1),message:'逐人正文 '+i,materials:i===0?[{id:'1070',title:'小程序',appId:'wx-demo',page:'pages/main'}]:[]}));
+ const cover=crypto.createHash('sha256').update(JSON.stringify([303,'cover-version'])).digest('hex');
+ const rows=Array.from({length:count},(_,i)=>({key:'item-'+i,customer:String(i+1),message:'逐人正文 '+i,materials:i===0?[{id:'1070',title:'小程序',appId:'wx-demo',page:'pages/main',version:1,cover}]:[]}));
  if(invalid)rows.push({key:'missing',customer:'',message:'需要精确客户身份',materials:[]});
  let saved,plan,approved=false,materialReads=0;
  const invoke=async(operation,options={})=>{
@@ -136,7 +138,8 @@ function operationsBatchFixture(count,{lostApproval=false,invalid=false,merged=f
   switch(operation){
    case 'admin.getCustomerDirectoryDetail': return {canonical_customer_id:merged&&options.params.customer_id==='2'?'20':options.params.customer_id,
     customer:{customer_id:options.params.customer_id,status:'active'}};
-   case 'admin.getMediaMiniProgram': return {item:{id:1070,title:'小程序',app_id:'wx-demo',page_path:'pages/main',version:materialDrift?++materialReads:1,enabled:true}};
+   case 'admin.getMediaImage': return {item:{id:303,enabled:true,updated_at:'cover-version'}};
+   case 'admin.getMediaMiniProgram': return {item:{id:1070,title:'小程序',app_id:'wx-demo',page_path:'pages/main',version:materialDrift?++materialReads:1,enabled:true,thumbnail_status:'ready',thumb_image_id:303}};
    case 'admin.createAIAssistantPlan':
     saved=options.body;
     plan={id:42,source_kind:saved.source_kind,source_digest:saved.source_digest,target_count:saved.recipients.length,version:1,state:'pending_review'};

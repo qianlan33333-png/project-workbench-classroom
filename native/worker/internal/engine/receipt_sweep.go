@@ -18,16 +18,16 @@ func ReceiptSweep(ctx workflow.Context) error {
 	if e := workflow.ExecuteActivity(ctx, "QueueReceiptChecks").Get(ctx, nil); e != nil {
 		return e
 	}
-	if workflow.GetVersion(ctx, "operations-batch-sweep", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-		if e := workflow.ExecuteActivity(ctx, "QueueOperationsBatchReceipts").Get(ctx, nil); e != nil {
-			return e
-		}
-		maintenance := operationsPackageActivityContext(ctx)
-		if e := workflow.ExecuteActivity(maintenance, "QueueOperationsReviewMaintenance").Get(ctx, nil); e != nil {
-			return e
-		}
+	if e := workflow.ExecuteActivity(ctx, "SummarizeBatchReceipts").Get(ctx, nil); e != nil {
+		return e
 	}
-	return workflow.ExecuteActivity(ctx, "SummarizeBatchReceipts").Get(ctx, nil)
+	if workflow.GetVersion(ctx, "operations-batch-sweep", workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		return nil
+	}
+	if e := workflow.ExecuteActivity(ctx, "QueueOperationsBatchReceipts").Get(ctx, nil); e != nil {
+		return e
+	}
+	return workflow.ExecuteActivity(ctx, "StartOperationsReviewMaintenance").Get(ctx, nil)
 }
 func (a *Activities) QueueReceiptChecks(ctx context.Context) error {
 	prepared, e := a.Store.DB.QueryContext(ctx, `SELECT d.id FROM wb_deliveries d JOIN wb_runs r ON r.id=d.run_id WHERE d.state='prepared' AND JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.operation')) IN ('reply','owner_message') ORDER BY JSON_UNQUOTE(JSON_EXTRACT(d.body,'$.updatedAt')),d.id LIMIT 100`)
