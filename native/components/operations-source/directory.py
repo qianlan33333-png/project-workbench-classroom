@@ -6,11 +6,14 @@ import hashlib
 import json
 import re
 import sqlite3
+import stat
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 SAFE = re.compile(r"[A-Za-z0-9_-]{1,96}")
@@ -20,6 +23,8 @@ DIGEST = re.compile(r"[a-f0-9]{64}")
 CURSOR = re.compile(r"[A-Za-z0-9_=-]{1,1000}")
 ROOT = "http://127.0.0.1:8797/api/local/v3/"
 ORIGINAL = Path("/opt/daru-v3-warehouse-candidate")
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+ORIGINAL_SEND_FLAG = Path("/etc/workbench-operations-source/allow-crm-handoff")
 LABELS = {
     "identity": "身份／角色", "industry": "行业", "income_stage": "收入／营收阶段",
     "business_shape": "业务形态", "business_stage": "业务阶段", "business_focus": "业务焦点",
@@ -48,7 +53,7 @@ def reader(allow_edit=False):
 
     def read(path, query=None, payload=None, timeout=18, image=False):
         auth = operator_auth
-        if path == "copy-package-edit":
+        if path in ("copy-package-edit", "copy-package-review"):
             if not allow_edit or payload is None:
                 raise ValueError("original edit authority is required")
             auth = authorization("DARU_ADMIN_USER", "DARU_ADMIN_PASSWORD")
@@ -567,13 +572,13 @@ def package_card(read, params):
     return read(url.path.removeprefix("/api/local/v3/"), urllib.parse.parse_qsl(url.query), image=True)
 
 
-def package_detail(read, params):
+def package_detail(read, params, *, detail=None):
     if not params.get("run"):
         run = current_package(read, params).get("run_id")
         if not run:
             return {"state": "not_generated"}
         params = {**params, "run": run}
-    detail = package_run(read, params)
+    detail = detail if detail is not None else package_run(read, params)
     item_key = params.get("item", "")
     if item_key:
         if not SAFE.fullmatch(item_key):
@@ -622,10 +627,17 @@ def package_prepare(read, params):
     package, week = package_identity(params)
     row = current_package(read, params)
     records, revision = candidate_records(read, package, week)
-    if revision != params.get("revision") or not 1 <= len(records) <= 2500:
+    day = params.get("day")
+    if day and (day != datetime.now(SHANGHAI).date().isoformat() or row["strategy_key"] != params.get("strategy")):
+        return {"state": "source_changed"}
+    if day and not records:
+        if row["actionable_count"] != 0:
+            raise ValueError("candidate source is not ready")
+        return {"state": "empty"}
+    if (not day and revision != params.get("revision")) or not 1 <= len(records) <= 2500:
         return {"state": "source_changed"}
     ids = {item["id"] for item in records}
-    run = row.get("run_id")
+    run = "" if day else row.get("run_id")
     if run:
         detail = package_run(read, {**params, "run": run}, preflight=True)
         if {x.get("safe_user_ref") for x in detail["items"]} == ids:
@@ -643,11 +655,163 @@ def package_prepare(read, params):
             raise ValueError("original generation scope changed")
     if not RUN.fullmatch(run):
         raise ValueError("invalid original generation run")
+    if day:
+        scope = daily_scope(read, {**params, "run": run}, records)
+        return {"state": "ready" if scope else "empty", "run": run, "total": len(ids), "scope": scope}
     return {"state": "ready", "run": run, "total": len(ids)}
+
+
+def source_time(value):
+    if not isinstance(value, str) or not value:
+        return None
+    result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if result.tzinfo is None:
+        raise ValueError("source timestamp has no timezone")
+    return result
+
+
+def newcomer_deadline(request, now):
+    binding = request.get("sku_pack_binding") or {}
+    if binding.get("primary_identity") == "299":
+        paid = source_time(binding.get("paid_at"))
+        bounds = {"D2": (24, 96), "D4": (96, 168), "D7": (168, 192)}.get(binding.get("node"))
+        if binding.get("node") == "D0" or binding.get("skip_newcomer") is True:
+            return None
+        if not paid or not bounds or binding.get("skip_newcomer") is not False:
+            raise ValueError("invalid original 299 newcomer clock")
+        start, end = (paid + timedelta(hours=hour) for hour in bounds)
+    elif binding.get("window_start") and binding.get("window_end"):
+        start, end = source_time(binding["window_start"]), source_time(binding["window_end"])
+    else:
+        # Other source policies must publish their clock before being scheduled.
+        raise ValueError("unverified original newcomer window")
+    if entitlement_end := source_time(binding.get("entitlement_end")):
+        end = min(end, entitlement_end)
+    return end if start <= now < end else None
+
+
+def service_window(binding, now):
+    start = source_time(binding.get("window_start"))
+    limits = [value for value in (source_time(binding.get("window_end")),
+                                   source_time(binding.get("entitlement_end"))) if value]
+    end = min(limits, default=None)
+    return (not start or start <= now) and (not end or now < end), end
+
+
+def daily_scope(read, params, records, *, now=None, detail=None):
+    now = now or datetime.now(SHANGHAI)
+    if params["day"] != now.astimezone(SHANGHAI).date().isoformat():
+        raise ValueError("original business date expired")
+    preparing = detail is None
+    detail = detail if detail is not None else package_run(read, params, preflight=True)
+    if detail.get("review") or detail.get("handoff") or formal_status(detail):
+        return []
+    records = {row["id"]: row for row in records}
+    if not detail["items"] or (preparing and {row.get("safe_user_ref") for row in detail["items"]} != records.keys()):
+        raise ValueError("original run does not match the daily roster")
+    scope = []
+    db = ORIGINAL / "var" / "daru.sqlite"
+    with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=4) as conn:
+        frozen = conn.execute("SELECT item_key,request_json FROM copy_batch_items WHERE run_id=? ORDER BY item_index,item_key",
+                              (detail["run_id"],)).fetchall()
+        if len(frozen) != len(detail["items"]) or {row["item_key"] for row in detail["items"]} != {key for key, _ in frozen}:
+            raise ValueError("original item identities changed")
+        receipts = {}
+        for offset, (key, raw) in enumerate(frozen):
+            request = json.loads(raw)
+            ref = request["safe_user_ref"]
+            if ref not in records:
+                continue
+            record = records[ref]
+            if request.get("strategy_key") != params["strategy"]:
+                raise ValueError("original strategy changed")
+            binding = request.get("sku_pack_binding") or {}
+            if params["strategy"] == "hxc:onboarding":
+                end = newcomer_deadline(request, now)
+                if end is None:
+                    continue
+            else:
+                task = conn.execute("""SELECT json_extract(result_json,'$.scheduled_for') FROM action_logs
+                    WHERE week=? AND canonical_user_id=? AND action_type='agent_user_action'
+                      AND todo_type='hxc_lifecycle' AND status='pending'
+                      AND json_extract(result_json,'$.strategy_key')=?""",
+                    (params["week"], ref, params["strategy"])).fetchone()
+                if not task or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", task[0] or ""):
+                    raise ValueError("original schedule is unavailable")
+                if task[0] > params["day"]:
+                    continue
+                active, end = service_window(binding, now)
+                if not active:
+                    continue
+            if binding.get("primary_identity") == "299" and binding.get("slot_key"):
+                prior = conn.execute("""SELECT run_id,item_key,state,handoff_id,sent_at FROM sku299_generation_slots
+                     WHERE slot_key=? AND user_ref=? AND cycle_key=? AND node=? AND state!='cancelled'""",
+                     (binding["slot_key"], ref, binding["cycle_key"], binding["node"])).fetchone()
+                if prior:
+                    old_run, old_key, state, handoff, sent = prior
+                    if not RUN.fullmatch(old_run):
+                        raise ValueError("invalid original receipt reference")
+                    if old_run != detail["run_id"] and old_run not in receipts:
+                        receipts[old_run] = read("copy-package", {"run_id": old_run, "operator_view": 1}, timeout=8)["package"]
+                    old = receipts.get(old_run, detail)
+                    if old["run_id"] != old_run or not any(item["item_key"] == old_key and item.get("safe_user_ref") == ref for item in old["items"]):
+                        raise ValueError("original receipt identity mismatch")
+                    if (old_run != detail["run_id"] or old_key in verified_receipts(old) or
+                            old_key in ((old.get("handoff") or {}).get("selected_item_keys") or []) or
+                            state != "draft" or handoff or sent):
+                        continue
+            scope.append({"offset": offset, "key": key, "id": ref, "reason": record["reason"],
+                          "expiresAt": end.isoformat() if end else None})
+    return scope
+
+
+def package_daily(read, params):
+    detail = package_run(read, params, preflight=True)
+    out = package_detail(read, params, detail=detail)
+    if not (out["reviewed"] or out["handoff"] or out["formal"]):
+        package, week = package_identity(params)
+        records, _ = candidate_records(read, package, week)
+        keys = {row["key"] for row in daily_scope(read, params, records, detail=detail)}
+        out["rows"] = [row for row in out["rows"] if row["key"] in keys]
+    return out
+
+
+def daily_generation_open(params, run):
+    now = datetime.now(SHANGHAI)
+    if params["day"] != now.date().isoformat():
+        return False
+    db = ORIGINAL / "var" / "daru.sqlite"
+    with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=4) as conn:
+        if params["action"] == "export":
+            row = conn.execute("""SELECT request_json FROM copy_batch_items
+                WHERE run_id=? ORDER BY item_index,item_key LIMIT 1 OFFSET ?""", (run, int(params["offset"]))).fetchone()
+        else:
+            row = conn.execute("SELECT request_json FROM copy_batch_items WHERE run_id=? AND item_key=?",
+                               (run, params["item_key"])).fetchone()
+        if not row:
+            raise ValueError("original daily item changed")
+        request = json.loads(row[0])
+        if request.get("strategy_key") != params["strategy"]:
+            raise ValueError("original daily item changed")
+        binding = request.get("sku_pack_binding") or {}
+        if params["strategy"] == "hxc:onboarding":
+            if newcomer_deadline(request, now) is None:
+                return False
+        elif not service_window(binding, now)[0]:
+            return False
+        if binding.get("primary_identity") == "299" and binding.get("slot_key"):
+            claim = conn.execute("""SELECT run_id,state,handoff_id,sent_at FROM sku299_generation_slots
+                WHERE slot_key=? AND user_ref=? AND cycle_key=? AND node=? AND state!='cancelled'""",
+                (binding["slot_key"], request["safe_user_ref"], binding["cycle_key"], binding["node"])).fetchone()
+            if claim and (claim[0] != run or claim[1] != "draft" or claim[2] or claim[3]):
+                return False
+        return True
 
 
 def package_generate(read, params):
     run = package_binding(read, params)
+    if params.get("day") and not daily_generation_open(params, run):
+        return {"state": "held", "automatic_send_allowed": False}
     if params.get("action") == "export":
         return read("codex-copy-jobs", payload={"action": "export", "run_id": run, "offset": int(params["offset"]), "limit": 1}, timeout=220)
     if (params.get("action") == "import" and SAFE.fullmatch(params.get("item_key", ""))
@@ -684,6 +848,61 @@ def package_edit(read, params):
     return {"state": "saved", "digest": result["digest"], "revision": result["revision"]}
 
 
+def original_send_binding():
+    if not ORIGINAL_SEND_FLAG.exists():
+        return None
+    status = ORIGINAL_SEND_FLAG.lstat()
+    if status.st_uid != 0 or not stat.S_ISREG(status.st_mode) or status.st_mode & 0o022:
+        return None
+    return json.loads(ORIGINAL_SEND_FLAG.read_text())
+
+
+def matching_handoff(detail, keys):
+    review, handoff = detail.get("review") or {}, detail.get("handoff") or {}
+    return (review.get("decision") == "approved" and
+            set(review.get("selected_item_keys") or []) == set(keys) and
+            handoff.get("digest") == detail["digest"] and
+            set(handoff.get("selected_item_keys") or []) == set(keys))
+
+
+def package_confirm(read, params):
+    if (not params.get("staff") or not params.get("transport") or original_send_binding() != {
+            "staff": params["staff"], "transport": params["transport"],
+    }):
+        raise ValueError("original CRM handoff is disabled")
+    detail = package_run(read, params, preflight=True)
+    if detail["digest"] != params.get("digest"):
+        return {"state": "source_changed"}
+    keys = json.loads(params["keys"])
+    if (not isinstance(keys, list) or not keys or len(keys) > 2500
+            or any(not isinstance(key, str) or not SAFE.fullmatch(key) for key in keys)
+            or len(keys) != len(set(keys))):
+        raise ValueError("invalid review selection")
+    review, handoff = detail.get("review") or {}, detail.get("handoff") or {}
+    if handoff or review:
+        if review.get("decision") != "approved" or set(review.get("selected_item_keys") or []) != set(keys):
+            return {"state": "source_changed"}
+        if matching_handoff(detail, keys):
+            return {"state": "recorded"}
+        return {"state": "needs_check"}
+    if formal_status(detail):
+        return {"state": "needs_check"}
+    package, week = package_identity(params)
+    records, _ = candidate_records(read, package, week)
+    current = {row["key"] for row in daily_scope(read, params, records, detail=detail)}
+    usable = {row["item_key"] for row in detail["items"] if row.get("usable") and row.get("text")}
+    if not set(keys) <= current & usable:
+        return {"state": "source_changed"}
+    result = read("copy-package-review", payload={
+        "run_id": detail["run_id"], "digest": detail["digest"], "decision": "approved",
+        "excluded_item_keys": sorted({row["item_key"] for row in detail["items"]} - set(keys)),
+        "handoff_on_approval": True,
+    }, timeout=70)
+    if result.get("automatic_send_allowed") is not False:
+        raise ValueError("original confirmation outcome unavailable")
+    return {"state": "recorded" if matching_handoff({**result, "digest": detail["digest"]}, keys) else "needs_check"}
+
+
 if __name__ == "__main__":
     execute = sys.argv[1:] == ["execute"]
     limit = 160000 if execute else 8192
@@ -694,8 +913,10 @@ if __name__ == "__main__":
     params = value.get("params") or {}
     if not isinstance(params, dict) or not all(isinstance(v, str) for v in params.values()):
         raise ValueError("invalid directory parameters")
-    views = ({"package_prepare": package_prepare, "package_generate": package_generate, "package_edit": package_edit}
+    views = ({"package_prepare": package_prepare, "package_generate": package_generate,
+              "package_edit": package_edit, "package_confirm": package_confirm}
              if execute else {"profiles": profiles, "profile": profile, "catalog": catalog, "members": members,
-                              "package": package_detail, "package_history": package_history, "package_card": package_card})
-    result = views[value["view"]](reader(allow_edit=execute and value["view"] == "package_edit"), params)
+                              "package": package_detail, "package_daily": package_daily,
+                              "package_history": package_history, "package_card": package_card})
+    result = views[value["view"]](reader(allow_edit=execute and value["view"] in ("package_edit", "package_confirm")), params)
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))

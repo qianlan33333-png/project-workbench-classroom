@@ -32,6 +32,10 @@ type scheduleView struct {
 	Paused    bool        `json:"paused"`
 	Next      []time.Time `json:"next"`
 	State     string      `json:"state"`
+	ProjectID string      `json:"projectId,omitempty"`
+	Strategy  string      `json:"strategy,omitempty"`
+	Last      time.Time   `json:"last,omitzero"`
+	Result    string      `json:"result,omitempty"`
 }
 
 func (a *Server) configureProgram(ctx context.Context, p core.Principal, in ProgramSchedule) (string, error) {
@@ -138,6 +142,20 @@ func (a *Server) scheduleRoutes(mux *http.ServeMux) {
 			out[i].State = "ready"
 			out[i].Paused = d.Schedule.State.Paused
 			out[i].Next = d.Info.NextActionTimes
+			if v.Strategy != "" && len(d.Schedule.Spec.Calendars) == 1 {
+				calendar := d.Schedule.Spec.Calendars[0]
+				if len(calendar.Hour) == 1 && len(calendar.Minute) == 1 {
+					out[i].Hours = []int{calendar.Hour[0].Start}
+					out[i].Minute = calendar.Minute[0].Start
+				}
+			}
+			if len(d.Info.RecentActions) > 0 {
+				last := d.Info.RecentActions[len(d.Info.RecentActions)-1]
+				out[i].Last = last.ActualTime
+				if last.StartWorkflowResult != nil {
+					out[i].Result = a.operationsExecution(r.Context(), last.StartWorkflowResult.WorkflowID)
+				}
+			}
 		}
 		respond(w, out, nil)
 	})

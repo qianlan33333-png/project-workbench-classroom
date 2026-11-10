@@ -100,6 +100,9 @@ func (a *Server) operationsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /operations/settings", a.saveOperationsSettings)
 	mux.HandleFunc("GET /operations/view", a.operationsView)
 	mux.HandleFunc("GET /operations/source", a.operationsSource)
+	mux.HandleFunc("GET /operations/source-today", a.operationsToday)
+	mux.HandleFunc("POST /operations/original-schedule", a.configureOriginalOperationsSchedule)
+	mux.HandleFunc("POST /operations/source-confirm", a.confirmDailyOperations)
 	mux.HandleFunc("GET /operations/source-package-status", a.operationsPackageStatus)
 	mux.HandleFunc("POST /operations/source-package", a.startOperationsPackage)
 	mux.HandleFunc("POST /operations/source-package-edit", a.editOperationsPackage)
@@ -851,7 +854,7 @@ func (a *Server) operationsView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("runId")
-	if id == "" && len(history) > 0 && operationsDay(history[0].Date) == operationsDay(time.Now()) {
+	if id == "" && !cfg.ReadSource && len(history) > 0 && operationsDay(history[0].Date) == operationsDay(time.Now()) {
 		id = history[0].ID
 	}
 	run, _, _, err := a.operationsResults(ctx, p, cfg, id)
@@ -908,6 +911,10 @@ func (a *Server) prepareOperationsSend(w http.ResponseWriter, r *http.Request) {
 	cfg, err := a.readOperations(ctx, p.ProjectID)
 	if err != nil {
 		respond(w, nil, err)
+		return
+	}
+	if cfg.ReadSource {
+		respond(w, nil, core.ErrDenied)
 		return
 	}
 	run, source, eligibility, err := a.operationsResults(ctx, p, cfg, in.RunID)

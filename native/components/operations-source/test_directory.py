@@ -1,10 +1,78 @@
 import unittest
+import json
+import sqlite3
+import tempfile
+from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
-from directory import delivery_label, members, package_binding, package_card, package_detail, package_edit, package_prepare, profile, profiles, reader
+from directory import SHANGHAI, daily_scope, delivery_label, members, newcomer_deadline, package_binding, package_card, package_confirm, package_detail, package_edit, package_prepare, profile, profiles, reader
 
 
 class OriginalDirectoryTest(unittest.TestCase):
+    def test_newcomer_window_is_inclusive_only_at_its_start(self):
+        paid = datetime(2026, 11, 1, 9, tzinfo=SHANGHAI)
+        for node, start, end in (("D2", 24, 96), ("D4", 96, 168), ("D7", 168, 192)):
+            req = {"sku_pack_binding": {"primary_identity": "299", "paid_at": paid.isoformat(),
+                                        "node": node, "skip_newcomer": False}}
+            self.assertEqual(newcomer_deadline(req, paid+timedelta(hours=start)), paid+timedelta(hours=end))
+            self.assertIsNone(newcomer_deadline(req, paid+timedelta(hours=end)))
+
+    def test_daily_roster_excludes_expired_and_claimed_original_slots(self):
+        now = datetime(2026, 11, 10, 9, tzinfo=SHANGHAI)
+        run, old = ("copybatch-" + v*32 for v in ("a", "b"))
+        params = {"day": "2026-11-10", "strategy": "hxc:onboarding", "run": run}
+        items = [{"item_key": f"usr_{i}", "safe_user_ref": f"usr_{i}"} for i in range(3)]
+        records = [{"id": item["safe_user_ref"], "reason": "原依据"} for item in items]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "var").mkdir()
+            with sqlite3.connect(root / "var/daru.sqlite") as conn:
+                conn.execute("CREATE TABLE copy_batch_items (run_id,item_index,item_key,request_json)")
+                conn.execute("CREATE TABLE sku299_generation_slots (slot_key,user_ref,cycle_key,node,run_id,item_key,state,handoff_id,sent_at)")
+                for i, item in enumerate(items):
+                    binding = {"primary_identity": "299", "node": "D7" if i == 2 else "D2",
+                               "paid_at": (now - timedelta(hours=300 if i == 2 else 30)).isoformat(),
+                               "skip_newcomer": False, "slot_key": f"slot_{i}", "cycle_key": "cycle"}
+                    request = {"safe_user_ref": item["safe_user_ref"], "strategy_key": params["strategy"], "sku_pack_binding": binding}
+                    conn.execute("INSERT INTO copy_batch_items VALUES (?,?,?,?)", (run, i, item["item_key"], json.dumps(request)))
+                conn.execute("INSERT INTO sku299_generation_slots VALUES (?,?,?,?,?,?,?,?,?)",
+                             ("slot_1", "usr_1", "cycle", "D2", old, "usr_1", "draft", None, None))
+            def read(path, query, timeout):
+                self.assertEqual((path, query["run_id"]), ("copy-package", old))
+                return {"package": {"run_id": old, "items": [items[1]], "handoff": {"selected_item_keys": ["usr_1"]}}}
+
+            with patch("directory.ORIGINAL", root), patch("directory.formal_status", return_value=""):
+                scope = daily_scope(read, params, records, now=now, detail={"run_id": run, "items": items})
+            self.assertEqual([row["key"] for row in scope], ["usr_0"])
+
+    def test_original_confirmation_freezes_selection_and_requires_gate(self):
+        run = "copybatch-" + "a"*32
+        detail = {"run_id": run, "digest": "b"*64, "items": [
+            {"item_key": "usr_1", "usable": True, "text": "正文", "attachments": [{"type": "mini_program"}]},
+            {"item_key": "usr_2", "usable": True, "text": "另一条"},
+        ]}
+        params = {"package": "weekpkg-source", "week": "2026-W46", "run": run, "digest": detail["digest"],
+                  "keys": '["usr_1"]', "staff": "123", "transport": "crm-test"}
+        calls = []
+        def read(path, payload, timeout):
+            calls.append((path, payload))
+            return {"ok": True, "automatic_send_allowed": False,
+                    "review": {"decision": "approved", "selected_item_keys": ["usr_1"]},
+                    "handoff": {"digest": detail["digest"], "selected_item_keys": ["usr_1"]}}
+        with patch("directory.original_send_binding", return_value=None) as binding, \
+             patch("directory.package_run", return_value=detail), patch("directory.formal_status", return_value=""), \
+             patch("directory.candidate_records", return_value=([], "")), patch("directory.daily_scope", return_value=[{"key": "usr_1"}]):
+            with self.assertRaisesRegex(ValueError, "disabled"):
+                package_confirm(read, params)
+            binding.return_value = {"staff": "123", "transport": "crm-test"}
+            self.assertEqual(package_confirm(read, {**params, "digest": "c"*64}), {"state": "source_changed"})
+            self.assertEqual(package_confirm(read, params), {"state": "recorded"})
+            with patch("directory.formal_status", return_value="failed"):
+                self.assertEqual(package_confirm(read, params), {"state": "needs_check"})
+        self.assertEqual(calls, [("copy-package-review", {"run_id": run, "digest": detail["digest"],
+            "decision": "approved", "excluded_item_keys": ["usr_2"], "handoff_on_approval": True})])
+
     def test_full_population_uses_original_cursor_and_count(self):
         def read(path, query):
             self.assertEqual(path, "archive/users")
