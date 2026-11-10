@@ -1001,8 +1001,8 @@ window.__ModuleLoader__.load({
       const openProfile=id=>act(async()=>{setProfile(await api(path("profiles",{id})));setPage("profile")});
       const showSettings=kind=>act(async()=>{
         if(kind==="project"){
-          const list=await api("/reply-accounts?projectId="+encodeURIComponent(projectId));
-          setAccounts(list.filter(account=>account.kind==="crm-cli"));
+          const list=await api("/transports");
+          setAccounts(list.filter(account=>account.kind==="crm-cli"&&account.enabled&&account.projects?.includes(projectId)));
           setSettings({kind,knowledge:view.config.knowledge,transport:view.config.transport,staffId:view.config.staffId});
         }else{
           setExperts(await api(path("experts")));
