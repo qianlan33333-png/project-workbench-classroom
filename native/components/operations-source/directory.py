@@ -5,6 +5,7 @@ import concurrent.futures
 import hashlib
 import json
 import re
+import sqlite3
 import sys
 import urllib.error
 import urllib.parse
@@ -14,8 +15,11 @@ from pathlib import Path
 
 SAFE = re.compile(r"[A-Za-z0-9_-]{1,96}")
 WEEK = re.compile(r"\d{4}-W\d{2}")
+RUN = re.compile(r"copybatch-[a-f0-9]{32}")
+DIGEST = re.compile(r"[a-f0-9]{64}")
 CURSOR = re.compile(r"[A-Za-z0-9_=-]{1,1000}")
 ROOT = "http://127.0.0.1:8797/api/local/v3/"
+ORIGINAL = Path("/opt/daru-v3-warehouse-candidate")
 LABELS = {
     "identity": "身份／角色", "industry": "行业", "income_stage": "收入／营收阶段",
     "business_shape": "业务形态", "business_stage": "业务阶段", "business_focus": "业务焦点",
@@ -30,31 +34,50 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def reader():
+def reader(allow_edit=False):
     env = {}
     for line in Path("/etc/daru-ops-console.env").read_text().splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             key, value = line.split("=", 1)
             env[key] = value.strip().strip('"').strip("'")
-    auth = base64.b64encode((env["DARU_AUTH_USER"] + ":" + env["DARU_AUTH_PASSWORD"]).encode()).decode()
+    def authorization(user, password):
+        return "Basic " + base64.b64encode((env[user] + ":" + env[password]).encode()).decode()
+
+    operator_auth = authorization("DARU_AUTH_USER", "DARU_AUTH_PASSWORD")
     opener = urllib.request.build_opener(NoRedirect())
 
-    def read(path, query=None, payload=None, timeout=18):
+    def read(path, query=None, payload=None, timeout=18, image=False):
+        auth = operator_auth
+        if path == "copy-package-edit":
+            if not allow_edit or payload is None:
+                raise ValueError("original edit authority is required")
+            auth = authorization("DARU_ADMIN_USER", "DARU_ADMIN_PASSWORD")
         request = urllib.request.Request(ROOT + path + ("?" + urllib.parse.urlencode(query) if query else ""),
                                          data=json.dumps(payload).encode() if payload is not None else None,
-                                         headers={"Authorization": "Basic " + auth, "Content-Type": "application/json"})
+                                         headers={"Authorization": auth, "Content-Type": "application/json"})
         try:
             with opener.open(request, timeout=timeout) as response:
-                data = response.read(12 * 1024 * 1024 + 1)
+                if image:
+                    limit = 720 * 1024
+                    body = response.read(limit + 1)
+                    if response.headers.get_content_type() != "image/jpeg" or not body.startswith(b"\xff\xd8\xff") or len(body) > limit:
+                        raise ValueError("original card image is unavailable")
+                    return {"jpeg": base64.b64encode(body).decode("ascii")}
+                limit = (40 if path == "copy-package" else 12) * 1024 * 1024
+                data = response.read(limit + 1)
         except urllib.error.HTTPError as err:
             if err.code == 409 and path.startswith("archive/"):
                 return {"ok": False, "state": "source_changed"}
-            if err.code == 400 and path == "codex-copy-jobs":
+            if err.code in (400, 409) and path == "codex-copy-jobs":
                 result = json.loads(err.read(8192))
-                if result.get("error") == "current_actionable_package_required":
+                if payload.get("action") == "test_candidates" and result.get("error") == "current_actionable_package_required":
                     return {"ok": True, "items": []}
+            if err.code == 409 and path == "copy-package-edit":
+                result = json.loads(err.read(8192))
+                if result.get("error_code") in ("copy_package_changed", "copy_already_handed_off", "copy_not_editable"):
+                    return {"state": "source_changed"}
             raise
-        if len(data) > 12 * 1024 * 1024:
+        if len(data) > limit:
             raise ValueError("source budget exceeded")
         result = json.loads(data)
         if result.get("ok") is not True:
@@ -296,7 +319,7 @@ def catalog(read, params):
     out = read("work-packages", {"summary": 1}, timeout=70)
     assert WEEK.fullmatch(out["week"])
     package_keys = ("package_id", "label", "scene_label", "strategy_key", "strategy_version", "candidate_count",
-                    "actionable_count", "paused_count", "ready_for_generation", "state", "generated_count", "approved_count")
+                    "actionable_count", "paused_count", "ready_for_generation", "state", "generated_count", "approved_count", "run_id")
     slot_keys = ("strategy_key", "scene", "label", "matched_count", "outbound_count", "waiting_count",
                  "population_label", "waiting_label", "reason")
     return {"week": out["week"], "activityAsOf": out.get("activity_as_of"),
@@ -304,13 +327,14 @@ def catalog(read, params):
             "slots": [{k: row.get(k) for k in slot_keys} for row in out["slots"]]}
 
 
-def members(read, params):
+def package_identity(params):
     package, week = params.get("package", ""), params.get("week", "")
     if not SAFE.fullmatch(package) or not package.startswith("weekpkg-") or not WEEK.fullmatch(week):
         raise ValueError("invalid work package")
-    after = params.get("after") or "0"
-    if not re.fullmatch(r"\d{1,6}", after):
-        raise ValueError("invalid work package page")
+    return package, week
+
+
+def candidate_records(read, package, week):
     # In the original endpoint this fixed action returns the current distinct
     # candidates before the branches that create drafts or request approvals.
     out = read("codex-copy-jobs", payload={"action": "test_candidates", "package_id": package, "week": week}, timeout=70)
@@ -319,21 +343,359 @@ def members(read, params):
     if len(records) != len({row["id"] for row in records}):
         raise ValueError("duplicate identity in the original candidate response")
     revision = hashlib.sha256(json.dumps(records, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return records, revision
+
+
+def members(read, params):
+    package, week = package_identity(params)
+    after = params.get("after") or "0"
+    if not re.fullmatch(r"\d{1,6}", after):
+        raise ValueError("invalid work package page")
+    records, revision = candidate_records(read, package, week)
     if params.get("revision") not in (None, "", revision):
         return {"state": "source_changed", "records": []}
     start = int(after)
     return {"state": "ready", "records": records[start:start + 20], "total": len(records), "revision": revision,
+            "rosterDigest": roster_digest(records),
             "next": str(start + 20) if start + 20 < len(records) else ""}
 
 
+def roster_digest(records):
+    return hashlib.sha256(json.dumps(sorted(row["id"] for row in records)).encode()).hexdigest()
+
+
+def current_package(read, params):
+    package, week = package_identity(params)
+    current = catalog(read, {})
+    if current["week"] != week:
+        raise ValueError("original work package week changed")
+    row = next((row for row in current["packages"] if row["package_id"] == package), None)
+    if row is None:
+        raise ValueError("original work package is unavailable")
+    return row
+
+
+def package_run(read, params, *, preflight=False):
+    run = package_binding(read, params)
+    detail = read("copy-package", {"run_id": run, "operator_view": 1, "preflight": int(preflight)}, timeout=72)["package"]
+    if detail["run_id"] != run or detail["is_sample"]:
+        raise ValueError("original run identity changed")
+    return detail
+
+
+def package_binding(read, params):
+    package, week = package_identity(params)
+    run = params.get("run", "")
+    if not RUN.fullmatch(run):
+        raise ValueError("invalid original run")
+    # The summary binds the run to its parent without loading raw generation
+    # requests. A caller may reopen an older run of this exact work package.
+    summary = read("copy-packages", {"week": week, "summary": 1}, timeout=72)
+    if not any(row.get("run_id") == run and row.get("parent_package_id") == package and row.get("week") == week
+               and not row.get("is_sample") and not row.get("test_package") for row in summary["items"]):
+        raise ValueError("original run is outside this work package")
+    return run
+
+
+def package_history(read, params):
+    week = params.get("week", "")
+    if not WEEK.fullmatch(week):
+        raise ValueError("invalid original work package week")
+    rows = read("copy-packages", {"week": week, "summary": 1}, timeout=72)["items"]
+    return {"runs": [
+        {"package_id": item["parent_package_id"], "run_id": item["run_id"], "label": item["label"],
+         "week": week, "createdAt": item.get("created_at"), "total": item.get("total_count")}
+        for item in rows if not item.get("is_sample") and not item.get("test_package")
+        and (item.get("parent_package_id") or "").startswith("weekpkg-")
+        and RUN.fullmatch(item.get("run_id") or "") and item.get("week") == week
+    ]}
+
+
+def verified_receipts(detail):
+    delivery = detail.get("delivery_summary") or {}
+    handoff = detail.get("handoff") or {}
+    plan = delivery.get("plan_id")
+    keys = set(handoff.get("selected_item_keys") or [])
+    if (type(plan) is not int or plan <= 0 or not keys or delivery.get("digest") != handoff.get("digest")
+            or delivery.get("handoff_id") != handoff.get("id") or delivery.get("requested_count") != len(keys)):
+        return {}
+    path = ORIGINAL / "var" / "operator-delivery-receipts" / f"plan-{plan}.json"
+    try:
+        if path.is_symlink() or path.stat().st_size > 2_000_000:
+            return {}
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    items = data.get("items") or {}
+    if (data.get("version") != "verified-push-receipts.v1" or data.get("read_only") is not True
+            or data.get("run_id") != detail["run_id"] or data.get("plan_id") != plan or set(items) != keys):
+        return {}
+    return items
+
+
+def delivery_label(receipt, handoff_status):
+    if receipt.get("provider_delivery_status") == 1 and receipt.get("query_errcode") == 0 and receipt.get("provider_sent_at") and receipt.get("msgid_sha256"):
+        return "已发送", text(receipt["provider_sent_at"])
+    if receipt.get("local_execution_state") == "final_failed" and not receipt.get("provider_sent_at"):
+        return "发送失败", "CRM 已返回明确失败"
+    if handoff_status in ("mobile_pending", "provider_accepted"):
+        return "待发送", "CRM 已受理，等待手机确认或发送回执"
+    if handoff_status in ("unknown", "blocked", "final_failed"):
+        return "待发送", "交接需要核对，请查看原 CRM 回执"
+    return "待发送", "已确认，等待 CRM 回执"
+
+
+def already_delivered_slots(read, detail):
+    """Use the source ledger only to find the exact duplicate slot's receipt."""
+    pending = {item["item_key"]: item.get("safe_user_ref") for item in detail["items"] if not item.get("text")}
+    if not pending:
+        return {}
+    db = ORIGINAL / "var" / "daru.sqlite"
+    previous = {}
+    try:
+        with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=2) as conn:
+            requests = conn.execute("SELECT item_key,request_json FROM copy_batch_items WHERE run_id=?", (detail["run_id"],))
+            for key, value in requests:
+                ref = pending.get(key)
+                if not ref:
+                    continue
+                request = json.loads(value)
+                slot = (request.get("sku_pack_binding") or {}).get("slot_key")
+                if not slot or request.get("safe_user_ref") != ref:
+                    continue
+                original = conn.execute(
+                    "SELECT run_id,item_key FROM sku299_generation_slots WHERE slot_key=? AND user_ref=? AND run_id<>?",
+                    (slot, ref, detail["run_id"]),
+                ).fetchone()
+                if original and RUN.fullmatch(original[0]):
+                    previous[key] = original
+    except (sqlite3.Error, ValueError):
+        return {}
+    if not previous:
+        return {}
+    # Keep the original package read bounded. An unknown or missing receipt
+    # leaves the current draft held, never labeled sent.
+    out = {}
+    for run in list(dict.fromkeys(run for run, _ in previous.values()))[:10]:
+        try:
+            old = read("copy-package", {"run_id": run, "operator_view": 1}, timeout=4)["package"]
+        except (OSError, ValueError):
+            continue
+        if old["run_id"] != run or old["is_sample"]:
+            continue
+        receipts = verified_receipts(old)
+        old_items = {item["item_key"]: item for item in old["items"]}
+        for key, (old_run, old_key) in previous.items():
+            item = old_items.get(old_key) or {}
+            if old_run == run and old_key in receipts and item.get("safe_user_ref") == pending[key]:
+                status, receipt = delivery_label(receipts[old_key], None)
+                if status == "已发送":
+                    plan = old["delivery_summary"]["plan_id"]
+                    out[key] = {"message": item.get("text") or "", "progress": f"同一服务节点已发送 · CRM 计划 {plan} · {receipt}"}
+    return out
+
+
+def formal_status(detail):
+    # The original HTTP job status may resume a lost worker. This lookup
+    # deliberately reads the persisted result without restarting any action.
+    db = ORIGINAL / "var" / "daru.sqlite"
+    try:
+        with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=2) as conn:
+            row = conn.execute("""SELECT status FROM action_logs
+                WHERE action_type='copy_formal_preparation'
+                  AND json_extract(result_json,'$.source_run_id')=?
+                  AND json_extract(result_json,'$.source_digest')=?
+                ORDER BY updated_at DESC LIMIT 1""", (detail["run_id"], detail["digest"])).fetchone()
+    except sqlite3.Error:
+        return ""
+    return row[0] if row and row[0] in ("running", "failed") else ""
+
+
+def copy_judgment(item):
+    def mapping(value):
+        return value if isinstance(value, dict) else {}
+
+    card = mapping(item.get("judgment"))
+    service = mapping(card.get("service_decision"))
+    material = mapping(card.get("approved_material"))
+    support = mapping(card.get("service_support_decision"))
+    groups = [
+        ("为什么给他发", [card.get("goal"), service.get("this_round_service") or card.get("this_round_service")]),
+        ("本次要完成什么", [service.get("concrete_support") or card.get("specific_support"), card.get("single_next_step")]),
+        ("我们知道他什么", [mapping(card.get("need_signal")).get("summary"), mapping(card.get("mainline_decision")).get("this_action")]),
+        ("为什么推荐这个", [material.get("title"), support.get("focus_mode"), mapping(card.get("content_relevance")).get("reason")]),
+        ("这次怎么聊", [card.get("relationship_posture"), mapping(card.get("posture_decision")).get("basis")]),
+        ("需要核对什么", [item.get("operator_note"), card.get("operator_review_note"), card.get("must_not_claim")]),
+    ]
+    facts = []
+    background = card.get("background_for_understanding") or card.get("profile_focus")
+    for fact in background[:20] if isinstance(background, list) else []:
+        if isinstance(fact, dict) and isinstance(fact.get("value"), str):
+            status = ("当前已确认" if fact.get("current_confirmed") else "历史背景" if fact.get("historical")
+                      else "推测，引用前确认" if fact.get("inferred") else "来源线索，当前是否适用需核对")
+            facts.append({"text": text(fact["value"]), "time": text(fact.get("source_at")), "status": status})
+    return {"sections": [{"title": title, "lines": [clean for value in values if (clean := text(value))]} for title, values in groups],
+            "facts": facts} if card or item.get("operator_note") else None
+
+
+CARD_IMAGES = ("/api/local/v3/customer-report-archive-image", "/api/local/v3/personal-report-image")
+
+
+def card_image_url(card):
+    url = urllib.parse.urlsplit(card.get("preview_url") or "")
+    if card.get("type") == "image" and not (url.scheme or url.netloc or url.fragment) and url.path in CARD_IMAGES:
+        return url
+    return None
+
+
+def copy_attachments(item):
+    return [{"index": index, "type": text(card.get("type")), "title": text(card.get("title")),
+             "purpose": text(card.get("purpose")), "page": text(card.get("page")), "note": text(card.get("note")),
+             "verified": card.get("verified") is True, "image": card_image_url(card) is not None}
+            for index, card in enumerate(item.get("attachments") or [])]
+
+
+def package_card(read, params):
+    detail = package_run(read, params)
+    index = params.get("card", "")
+    if detail["digest"] != params.get("digest") or not re.fullmatch(r"\d{1,2}", index):
+        raise ValueError("card preview revision changed")
+    item = next((x for x in detail["items"] if x["item_key"] == params.get("item")), None)
+    cards = (item or {}).get("attachments") or []
+    if int(index) >= len(cards) or not (url := card_image_url(cards[int(index)])):
+        raise ValueError("card preview is unavailable")
+    return read(url.path.removeprefix("/api/local/v3/"), urllib.parse.parse_qsl(url.query), image=True)
+
+
+def package_detail(read, params):
+    if not params.get("run"):
+        run = current_package(read, params).get("run_id")
+        if not run:
+            return {"state": "not_generated"}
+        params = {**params, "run": run}
+    detail = package_run(read, params)
+    item_key = params.get("item", "")
+    if item_key:
+        if not SAFE.fullmatch(item_key):
+            raise ValueError("invalid original copy item")
+        detail = {**detail, "items": [item for item in detail["items"] if item["item_key"] == item_key]}
+    delivery = detail.get("delivery_summary") or {}
+    handoff = detail.get("handoff") or {}
+    review = detail.get("review") or {}
+    formal = formal_status(detail)
+    receipts = verified_receipts(detail)
+    duplicates = already_delivered_slots(read, detail)
+    handed_off = set(handoff.get("selected_item_keys") or [])
+    reviewed = set(review.get("selected_item_keys") or [])
+    rows = []
+    for item in detail["items"]:
+        key, ref = item["item_key"], item.get("safe_user_ref")
+        if not SAFE.fullmatch(key) or not ref or not SAFE.fullmatch(ref):
+            continue
+        message = item.get("text") or ""
+        usable = bool(item.get("usable") and message)
+        if key in handed_off:
+            status, progress = delivery_label(receipts.get(key) or {}, delivery.get("status"))
+        elif key in duplicates:
+            status, progress = "已发送", duplicates[key]["progress"]
+            message = duplicates[key]["message"]
+        elif key in reviewed and review.get("decision") == "approved":
+            status, progress = "待发送", "原中心已确认，等待交接"
+        elif review:
+            status, progress = "已暂缓", "该条未纳入已确认的发送名单"
+        elif formal and usable:
+            status, progress = ("待核对", "原中心正在校验本人确认") if formal == "running" else ("待核对", "原中心审核失败，请核对原包")
+        else:
+            status, progress = ("待核对" if usable else "待生成"), text(item.get("note"))
+        row = {"key": key, "id": ref, "nickname": text(item.get("name")), "status": status}
+        if item_key:
+            row.update(message=message, progress=progress, revision=item.get("edit_revision", 0), edited=item.get("edited") is True,
+                       editable=bool(usable and item.get("reviewable") and not handoff and formal != "running"),
+                       judgment=copy_judgment(item), attachments=copy_attachments(item))
+        rows.append(row)
+    return {"state": "ready", "run": detail["run_id"], "digest": detail["digest"], "rows": rows,
+            **({"rosterDigest": roster_digest(rows)} if not item_key else {}),
+            "reviewed": bool(review), "handoff": bool(handoff), "formal": formal, "plan": delivery.get("plan_id")}
+
+
+def package_prepare(read, params):
+    package, week = package_identity(params)
+    row = current_package(read, params)
+    records, revision = candidate_records(read, package, week)
+    if revision != params.get("revision") or not 1 <= len(records) <= 2500:
+        return {"state": "source_changed"}
+    ids = {item["id"] for item in records}
+    run = row.get("run_id")
+    if run:
+        detail = package_run(read, {**params, "run": run}, preflight=True)
+        if {x.get("safe_user_ref") for x in detail["items"]} == ids:
+            if detail.get("review") or detail.get("handoff"):
+                return {"state": "source_changed"}
+        else:
+            run = ""
+    if not run:
+        if not row["ready_for_generation"]:
+            return {"state": "source_changed"}
+        result = read("codex-copy-jobs", payload={"action": "prepare", "package_id": package, "week": week,
+                      "selected_user_refs": sorted(ids)}, timeout=100)
+        run = result["run_id"]
+        if result["count"] != len(ids) or result["automatic_send_allowed"] is not False:
+            raise ValueError("original generation scope changed")
+    if not RUN.fullmatch(run):
+        raise ValueError("invalid original generation run")
+    return {"state": "ready", "run": run, "total": len(ids)}
+
+
+def package_generate(read, params):
+    run = package_binding(read, params)
+    if params.get("action") == "export":
+        return read("codex-copy-jobs", payload={"action": "export", "run_id": run, "offset": int(params["offset"]), "limit": 1}, timeout=220)
+    if (params.get("action") == "import" and SAFE.fullmatch(params.get("item_key", ""))
+            and DIGEST.fullmatch(params.get("request_hash", "")) and DIGEST.fullmatch(params.get("prompt_sha256", ""))):
+        return read("codex-copy-jobs", payload={**{key: params[key] for key in ("item_key", "request_hash", "prompt_sha256", "output", "model")},
+                    "action": "import", "run_id": run}, timeout=220)
+    raise ValueError("invalid original generation operation")
+
+
+def package_edit(read, params):
+    try:
+        current = current_package(read, params)
+    except ValueError:
+        return {"state": "source_changed"}
+    if current.get("run_id") != params.get("run"):
+        return {"state": "source_changed"}
+    detail = package_run(read, params)
+    item_key, revision = params.get("item", ""), params.get("revision", "")
+    body = params.get("text", "").strip()
+    if not SAFE.fullmatch(item_key) or not re.fullmatch(r"\d{1,9}", revision) or not 2 <= len(body) <= 5000:
+        raise ValueError("invalid final copy")
+    item = next((x for x in detail["items"] if x["item_key"] == item_key), None)
+    if (detail.get("handoff") or formal_status(detail) == "running" or not item or not item.get("reviewable")
+            or not item.get("usable") or detail["digest"] != params.get("digest") or item.get("edit_revision") != int(revision)):
+        return {"state": "source_changed"}
+    if item["text"] == body:
+        return {"state": "saved", "digest": detail["digest"], "revision": int(revision)}
+    result = read("copy-package-edit", payload={"run_id": detail["run_id"], "item_key": item_key, "digest": detail["digest"],
+                  "expected_revision": int(revision), "text": body}, timeout=40)
+    if result.get("state") == "source_changed":
+        return result
+    if result.get("automatic_send_allowed") is not False or result.get("revision") != int(revision) + 1:
+        raise ValueError("original edit result is unavailable")
+    return {"state": "saved", "digest": result["digest"], "revision": result["revision"]}
+
+
 if __name__ == "__main__":
-    raw = sys.stdin.buffer.read(8193)
-    if len(raw) > 8192:
+    execute = sys.argv[1:] == ["execute"]
+    limit = 160000 if execute else 8192
+    raw = sys.stdin.buffer.read(limit + 1)
+    if len(raw) > limit:
         raise ValueError("directory request exceeds the budget")
     value = json.loads(raw)
     params = value.get("params") or {}
     if not isinstance(params, dict) or not all(isinstance(v, str) for v in params.values()):
         raise ValueError("invalid directory parameters")
-    views = {"profiles": profiles, "profile": profile, "catalog": catalog, "members": members}
-    result = views[value["view"]](reader(), params)
+    views = ({"package_prepare": package_prepare, "package_generate": package_generate, "package_edit": package_edit}
+             if execute else {"profiles": profiles, "profile": profile, "catalog": catalog, "members": members,
+                              "package": package_detail, "package_history": package_history, "package_card": package_card})
+    result = views[value["view"]](reader(allow_edit=execute and value["view"] == "package_edit"), params)
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))

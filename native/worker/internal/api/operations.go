@@ -100,6 +100,9 @@ func (a *Server) operationsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /operations/settings", a.saveOperationsSettings)
 	mux.HandleFunc("GET /operations/view", a.operationsView)
 	mux.HandleFunc("GET /operations/source", a.operationsSource)
+	mux.HandleFunc("GET /operations/source-package-status", a.operationsPackageStatus)
+	mux.HandleFunc("POST /operations/source-package", a.startOperationsPackage)
+	mux.HandleFunc("POST /operations/source-package-edit", a.editOperationsPackage)
 	mux.HandleFunc("GET /operations/profiles", a.operationsProfiles)
 	mux.HandleFunc("POST /operations/send", a.prepareOperationsSend)
 }

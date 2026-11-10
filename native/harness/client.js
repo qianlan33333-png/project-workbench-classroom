@@ -943,7 +943,7 @@ window.__ModuleLoader__.load({
       .op-tabs button[aria-selected=true]{border-color:var(--dsw-alias-brand-primary,#2860e9);color:var(--dsw-alias-brand-primary,#2860e9)}
       .op-strategy{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:clamp(8px,3vw,40px);align-items:center;padding:16px 8px;border-bottom:1px solid var(--dsw-alias-border-l3)}
       .op-title{font-size:22px;font-weight:600;margin:18px 0}
-      .op-detail{display:grid;grid-template-columns:1.1fr 1fr;border-top:1px solid var(--dsw-alias-border-l3)}
+      .op-detail{display:grid;grid-template-columns:1.1fr 1fr;align-items:start;border-top:1px solid var(--dsw-alias-border-l3)}
       .op-table{width:100%;border-collapse:collapse;table-layout:fixed;text-align:left}
       .op-table th,.op-table td{padding:12px 8px;overflow-wrap:anywhere;border-bottom:1px solid var(--dsw-alias-border-l3);vertical-align:top}
       .op-table th:first-child{width:23%}.op-table th:last-child{width:21%}
@@ -955,12 +955,19 @@ window.__ModuleLoader__.load({
       .op-message p{white-space:pre-wrap;overflow-wrap:anywhere}
       .op-message section{border-top:1px solid var(--dsw-alias-border-l3);padding:12px 0}
       .op-message section p{margin:5px 0}
+      .op-review summary{cursor:pointer;font-weight:600}
+      .op-review summary:focus-visible{outline-offset:4px}
+      .op-judgments{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0}
+      .op-judgments article,.op-card{padding:12px;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;min-width:0}
+      .op-card{margin-top:10px}.op-card code{overflow-wrap:anywhere}.op-card img{display:block;max-width:100%;height:auto;margin:8px 0}
+      .op-editor textarea{box-sizing:border-box;width:100%;min-height:160px;resize:vertical;font:inherit;padding:10px;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:inherit}
+      .op-editor .wb-actions{margin-top:8px}
       .op-profiles{display:grid}.op-profiles button{text-align:left;border:0;border-radius:0;border-bottom:1px solid var(--dsw-alias-border-l3);padding:13px 8px}
       .op-fields{max-width:760px}.op-fields div{display:grid;grid-template-columns:minmax(120px,28%) minmax(0,1fr);gap:10px;padding:14px 0;border-bottom:1px solid var(--dsw-alias-border-l3)}
       .op-fields dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
       .op-groups{display:grid;gap:20px}.op-groups h2{margin:0 0 8px}.op-field-source{display:block;margin-top:5px;color:var(--dsw-alias-text-l2);font-size:12px}.op-search{display:flex;gap:8px;margin:12px 0}.op-search input{flex:1;min-width:0}.op-packages h2{margin:16px 0 4px}.op-counts{display:flex;gap:12px;flex-wrap:wrap}
       .op-footer{padding-top:16px}.op-modal-content{padding:8px 0 0}.op-modal-content .wb-actions{justify-content:flex-end}
-      @media(max-width:650px){.op-detail{grid-template-columns:1fr}.op-message{border-left:0;padding:16px 0}.op-table th,.op-table td{padding:10px 5px}.op-fields div{grid-template-columns:minmax(90px,35%) minmax(0,1fr)}.op-header{align-items:flex-start;padding:12px 0}.op-strategy{padding-left:0;padding-right:0}.op-page .wb-actions{gap:5px}}
+      @media(max-width:650px){.op-detail,.op-judgments{grid-template-columns:1fr}.op-message{border-left:0;padding:16px 0}.op-table th,.op-table td{padding:10px 5px}.op-fields div{grid-template-columns:minmax(90px,35%) minmax(0,1fr)}.op-header{align-items:flex-start;padding:12px 0}.op-strategy{padding-left:0;padding-right:0}.op-page .wb-actions{gap:5px}}
     `;
 
     function OperationsPage({projectId}) {
@@ -970,7 +977,10 @@ window.__ModuleLoader__.load({
       const [profileMeta,setProfileMeta]=useState({}),[searchText,setSearchText]=useState(""),[query,setQuery]=useState("");
       const [catalog,setCatalog]=useState(null),[catalogError,setCatalogError]=useState("");
       const [sourcePlan,setSourcePlan]=useState(null),[members,setMembers]=useState(null),[profileBack,setProfileBack]=useState("home");
+      const [sourceCopy,setSourceCopy]=useState(null),[sourceTask,setSourceTask]=useState(null),[sourceItem,setSourceItem]=useState(null);
+      const [copyEdit,setCopyEdit]=useState(null),[copyMessage,setCopyMessage]=useState("");
       const [history,setHistory]=useState([]),[historyMore,setHistoryMore]=useState(false);
+      const [sourceHistory,setSourceHistory]=useState(null),[sourceHistoryWeek,setSourceHistoryWeek]=useState("");
       const [settings,setSettings]=useState(null),[experts,setExperts]=useState([]),[accounts,setAccounts]=useState([]);
       const [error,setError]=useState(""),[busy,setBusy]=useState(false),[review,setReview]=useState("");
       const [reload,setReload]=useState(0);
@@ -1010,7 +1020,7 @@ window.__ModuleLoader__.load({
         setBusy(true);setError("");
         try{await fn()}catch(e){setError(e.message)}finally{setBusy(false)}
       };
-      const home=()=>{setView(null);setPage("home");setRunId("");setSelected("");setProfile(null);setError("")};
+      const home=()=>{setView(null);setPage("home");setRunId("");setSelected("");setProfile(null);setCopyEdit(null);setCopyMessage("");setError("")};
       const openRun=id=>{if(id)setView(null);setRunId(id||"");setSelected("");setPage("detail")};
       const openProfile=id=>act(async()=>{
         const data=await api(path("profiles",{id,...(page==="home"&&profileMeta.snapshot?{snapshot:profileMeta.snapshot}:{})}));
@@ -1018,11 +1028,63 @@ window.__ModuleLoader__.load({
         setProfileBack(page);setProfile(data);setPage("profile");
       });
       const loadMembers=(plan,after="",revision="")=>api(path("source",{view:"members",package:plan.package_id,week:plan.week,after,revision}));
+      const loadSourceCopy=(plan,run="",item="")=>api(path("source",{view:"package",package:plan.package_id,week:plan.week,run,item}));
+      const loadSourceHistory=week=>act(async()=>{
+        setSourceHistoryWeek(week);
+        setSourceHistory(await api(path("source",{view:"package_history",week})));
+      });
       const openPlan=plan=>{
-        const selectedPlan={...plan,week:catalog.week};
-        setSourcePlan(selectedPlan);setMembers(null);setPage("source-plan");
-        act(async()=>setMembers(await loadMembers(selectedPlan)));
+        const selectedPlan={...plan,week:plan.week||catalog.week};
+        setSourcePlan(selectedPlan);setMembers(null);setSourceCopy(null);setSourceItem(null);setSelected("");setCopyEdit(null);setCopyMessage("");setPage("source-plan");
+        act(async()=>{
+          if(plan.historical){
+            const copy=await loadSourceCopy(selectedPlan,plan.run_id);
+            setMembers({state:"ready",records:[],total:copy.rows.length});setSourceCopy(copy);
+            return;
+          }
+          const [list,copy,task]=await Promise.all([loadMembers(selectedPlan),loadSourceCopy(selectedPlan),
+            api(path("source-package-status",{package:plan.package_id,week:selectedPlan.week}))]);
+          setMembers(list);setSourceCopy(copy);
+          if(task.state==="Running")setSourceTask({id:task.id,package:plan.package_id});
+        });
       };
+      const sourceTaskForPlan=!sourcePlan?.historical&&sourceTask?.package===sourcePlan?.package_id?sourceTask:null;
+      useEffect(()=>{
+        if(page!=="source-plan"||!sourceTaskForPlan||sourceTaskForPlan.finished)return;
+        let active=true,timer;
+        const task=sourceTaskForPlan;
+        const poll=async()=>{
+          try{
+            const status=await api(path("source-package-status",{id:task.id}));
+            if(!active)return;
+            if(["Completed","Failed","Canceled","Terminated","TimedOut"].includes(status.state)){
+              const copy=await loadSourceCopy(sourcePlan);
+              if(!active)return;
+              setSourceCopy(copy);
+              setSourceTask({...task,finished:true,state:status.state});
+              if(status.state!=="Completed")setError("生成未完成，原包已有结果已保留。");
+              return;
+            }
+          }catch(e){if(active)setError(e.message)}
+          if(active)timer=setTimeout(poll,4000);
+        };
+        poll();
+        return()=>{active=false;clearTimeout(timer)};
+      },[page,sourcePlan,sourceTaskForPlan]);
+      const refreshSourceCopy=()=>act(async()=>{
+        const [copy,list]=await Promise.all([loadSourceCopy(sourcePlan,sourcePlan.historical?sourceCopy.run:""),
+          sourcePlan.historical?Promise.resolve(members):loadMembers(sourcePlan)]);
+        setSourceCopy(copy);
+        setMembers(list);
+        setSourceItem(null);
+        setCopyMessage("");
+        refresh();
+      });
+      const generateSourceCopy=()=>act(async()=>{
+        const input={package:sourcePlan.package_id,week:sourcePlan.week,revision:members.revision,requestId:crypto.randomUUID()};
+        const result=await api(path("source-package"),input);
+        setSourceTask({id:result.runId,package:input.package});
+      });
       const showSettings=kind=>act(async()=>{
         if(kind==="project"){
           const list=await api("/transports");
@@ -1082,11 +1144,69 @@ window.__ModuleLoader__.load({
         run?.decision?h(React.Fragment,null,h("p",null,"发送人数 "+run.reviewCount+" 人"),h("p",null,"运营企微账号 "+run.account),h("p",null,"稿件版本 "+run.version)):
           h("p",{role:"status"},dispatchClosed?"该发送任务已结束。请在名单查看逐人状态。":run?.dispatchId?"正在校验发送资格":"正在准备确认"),
         alert(error),h("div",{className:"wb-actions"},button("返回",()=>setReview(""),{disabled:busy}),button("确认发送",confirm,{className:"wb-primary",disabled:busy||!run?.decision}))));
+      const sourceActive=sourceTaskForPlan&&!sourceTaskForPlan.finished;
+      const sourceRows=sourceCopy?.rows||[];
+      const draftByID=new Map(sourceRows.map(item=>[item.id,item]));
+      const sourceList=members?.records||[];
+      const rosterChanged=!!(sourceCopy?.rosterDigest&&members?.rosterDigest&&sourceCopy.rosterDigest!==members.rosterDigest);
+      const displayMembers=[...sourceList,...sourceRows.filter(draft=>!sourceList.some(person=>person.id===draft.id)&&
+        !members?.next).map(draft=>({id:draft.id,nickname:draft.nickname,reason:"原运行名单"}))];
+      const activeMember=displayMembers.find(item=>item.id===selected)||displayMembers[0];
+      const itemKey=activeMember&&draftByID.get(activeMember.id)?.key;
+      const draft=sourceItem?.run===sourceCopy?.run&&sourceItem?.digest===sourceCopy?.digest&&sourceItem?.rows[0]?.key===itemKey?sourceItem?.rows[0]:null;
+      useEffect(()=>{
+        if(page!=="source-plan"||!sourceCopy?.run||!itemKey)return;
+        let active=true;
+        loadSourceCopy(sourcePlan,sourceCopy.run,itemKey).then(data=>{
+          if(!active)return;
+          if(data.digest!==sourceCopy.digest){
+            setError("原工作包已更新，请刷新稿件。");
+            return;
+          }
+          setSourceItem(data);
+        }).catch(e=>{if(active)setError(e.message)});
+        return()=>{active=false};
+      },[page,sourcePlan,sourceCopy?.run,sourceCopy?.digest,itemKey,reload]);
+      const selectSourceMember=id=>{
+        if(copyEdit||id===activeMember?.id)return;
+        setSelected(id);setCopyMessage("");setError("");
+      };
+      const saveCopy=e=>{
+        e.preventDefault();
+        act(async()=>{
+          const {item,revision,digest,text}=copyEdit;
+          const input={package:sourcePlan.package_id,week:sourcePlan.week,run:sourceCopy.run,item,revision,digest,text};
+          const result=await api(path("source-package-edit"),input);
+          if(result.state!=="saved"){
+            setCopyEdit({...copyEdit,stale:true});
+            throw Error("原稿已更新，当前输入已保留。请核对新版再修改。");
+          }
+          const [copy,person]=await Promise.all([loadSourceCopy(sourcePlan,input.run),loadSourceCopy(sourcePlan,input.run,item)]);
+          if(copy.digest!==person.digest||person.rows[0]?.message!==text.trim()||person.rows[0]?.revision!==result.revision)
+            throw Error("保存结果待核对，请刷新稿件。");
+          setSourceCopy(copy);setSourceItem(person);setCopyEdit(null);setCopyMessage("最终稿已保存");
+        });
+      };
+      const cardPreview=card=>h("article",{className:"op-card",key:card.index},
+        h("strong",null,card.title||"随附卡片"),card.purpose&&h("p",null,card.purpose),
+        h("p",{className:"wb-muted"},card.verified?"原入口已核验":"原入口待核验"),
+        card.page&&h("p",null,"小程序页面 ",h("code",null,card.page)),
+        card.note&&h("p",null,card.note),
+        card.image&&h("img",{loading:"lazy",alt:card.title||"原报告图片",src:"/workbench-api"+path("source-card",{
+          package:sourcePlan.package_id,week:sourcePlan.week,run:sourceCopy.run,item:draft.key,digest:sourceCopy.digest,card:card.index,
+        })}));
       return h("section",{className:"wb-page op-page"},
-        h("header",{className:"op-header"},h("div",{className:"wb-actions"},page!=="home"&&button("返回",page==="profile"&&profileBack==="source-plan"?()=>setPage("source-plan"):home,{className:"op-link"}),h("h1",null,sectionTitle)),
+        h("header",{className:"op-header"},h("div",{className:"wb-actions"},page!=="home"&&button("返回",page==="profile"&&profileBack==="source-plan"?()=>setPage("source-plan"):page==="source-plan"&&sourcePlan?.historical?()=>setPage("history"):home,{className:"op-link",disabled:!!copyEdit}),h("h1",null,sectionTitle)),
           view&&h("div",{className:"wb-actions"},
-            page==="home"&&button("历史",()=>setPage("history"),{className:"op-link"}),
+            page==="home"&&button("历史",()=>{setPage("history");if(catalog?.week)loadSourceHistory(catalog.week)},{className:"op-link"}),
             page==="home"&&button("设置",()=>showSettings("project")),
+            page==="source-plan"&&sourceCopy&&h(React.Fragment,null,
+              sourceCopy.run&&button("刷新稿件与回执",refreshSourceCopy,{className:"op-link",disabled:busy||sourceActive||!!copyEdit}),
+              !sourcePlan?.historical&&members?.total>0&&!sourceCopy.formal&&
+                (rosterChanged?sourcePlan?.ready_for_generation:!sourceCopy.reviewed&&!sourceCopy.handoff&&
+                  (sourceCopy.run?sourceRows.some(item=>item.status==="待生成"):sourcePlan?.ready_for_generation))&&
+                button(rosterChanged?"生成最新名单话术":sourceCopy.run?"继续生成":"生成话术",generateSourceCopy,
+                  {className:"wb-primary",disabled:busy||sourceActive||!!copyEdit||members.state!=="ready"})),
             page==="detail"&&button("设置",()=>showSettings("strategy")),
             page==="detail"&&button(run?.retryReview&&run.pending?"重新核对并发送":"确认并发送",startReview,{className:"wb-primary",
               disabled:busy||!run||(!run.pending&&!run.decision&&!run.resume&&run.dispatchState!=="Running")}))),
@@ -1132,15 +1252,53 @@ window.__ModuleLoader__.load({
           ...profile.groups.map(group=>h("section",{key:group.title},h("h2",{className:"op-title"},group.title),profileFields(group.fields)))):profileFields(profile.fields)),
         page==="source-plan"&&sourcePlan&&h(React.Fragment,null,
           h("p",{className:"wb-muted"},[sourcePlan.week,sourcePlan.scene_label].filter(Boolean).join(" · ")),
-          h("p",{className:"op-counts"},"目录候选 "+displayCount(sourcePlan.candidate_count)+" 人 · 目录可处理 "+displayCount(sourcePlan.actionable_count)+" 人 · 实际名单 "+displayCount(members?.total)+(Number.isInteger(members?.total)?" 人":"")),
+          members?.state==="ready"&&h("p",{className:"op-counts"},"实际名单 "+members.total+" 人"+(sourceCopy?.run?" · 待核对 "+sourceRows.filter(item=>item.status==="待核对").length+" 人":"")),
+          sourceActive&&h("p",{role:"status"},"正在按原策略生成话术…"),
+          sourceCopy?.formal&&h("p",{role:"status"},sourceCopy.formal==="running"?"原中心正在处理本人确认。":"原中心审核失败，请核对原包。"),
+          sourceCopy?.plan&&h("p",{className:"wb-muted"},"原 CRM 计划 "+sourceCopy.plan),
           members?.state==="source_changed"?button("名单已更新，重新核对",()=>openPlan(sourcePlan)):
             members?h(React.Fragment,null,
-              members.total!==sourcePlan.actionable_count&&h("p",{role:"status"},"目录和实际名单人数有差异，请以当前来源名单核对。"),
-              members.records.length?h("table",{className:"op-table"},h("thead",null,h("tr",null,h("th",{scope:"col"},"客户昵称"),h("th",{scope:"col"},"入选依据"))),
-                h("tbody",null,...members.records.map(item=>h("tr",{key:item.id},h("td",null,button(item.nickname||"未记录称呼",()=>openProfile(item.id),{disabled:busy})),h("td",null,item.reason))))):h("p",null,"本工作包当前无可处理名单"),
+              !sourcePlan.historical&&members.total!==sourcePlan.actionable_count&&h("p",{role:"status"},"目录和实际名单人数有差异，请以当前来源名单核对。"),
+              displayMembers.length?h("div",{className:"op-detail"},
+                h("table",{className:"op-table"},h("thead",null,h("tr",null,...["客户昵称","入选依据","状态"].map(label=>h("th",{key:label,scope:"col"},label)))),
+                  h("tbody",null,...displayMembers.map(item=>h("tr",{key:item.id,"aria-selected":item.id===activeMember?.id,onClick:()=>selectSourceMember(item.id)},
+                    h("td",null,button(item.nickname||"未记录称呼",()=>selectSourceMember(item.id),{disabled:!!copyEdit})),h("td",null,h("div",{className:"op-reason"},item.reason)),
+                    h("td",null,draftByID.get(item.id)?.status||"待生成"))))),
+                activeMember&&h("article",{className:"op-message",key:activeMember.id},
+                  h("div",{className:"op-header"},h("h2",null,activeMember.nickname||"未记录称呼"),
+                    !sourcePlan.historical&&draft?.editable&&!copyEdit&&button("修改正文",()=>{
+                      setCopyMessage("");
+                      setCopyEdit({item:draft.key,revision:draft.revision,digest:sourceCopy.digest,text:draft.message});
+                    },{disabled:busy||sourceActive})),
+                  h("section",null,h("strong",null,draft?.edited?"已保存最终稿":"话术正文"),
+                    copyEdit?h("form",{className:"op-editor",onSubmit:saveCopy},
+                      h("textarea",{"aria-label":"最终稿正文",value:copyEdit.text,maxLength:5000,required:true,autoFocus:true,disabled:busy,
+                        onChange:e=>setCopyEdit({...copyEdit,text:e.target.value})}),
+                      h("div",{className:"wb-actions"},button("取消修改",()=>{setCopyEdit(null);setError("")},{disabled:busy}),
+                        h("button",{type:"submit",className:"wb-primary",disabled:busy||copyEdit.stale||copyEdit.text.trim().length<2},"保存最终稿"))):
+                      h("p",null,draft?.message||(itemKey&&!draft?"正在读取原稿…":"暂无可核对稿件"))),
+                  copyMessage&&h("p",{role:"status"},copyMessage),
+                  draft?.judgment&&h("section",null,h("details",{className:"op-review"},h("summary",null,"查看本轮判断与核对说明"),
+                    h("div",{className:"op-judgments"},...draft.judgment.sections.map(section=>h("article",{key:section.title},h("strong",null,section.title),
+                      ...section.lines.map((line,i)=>h("p",{key:i},line)),
+                      section.title==="我们知道他什么"&&draft.judgment.facts.map((fact,i)=>h("p",{key:"fact-"+i},fact.text,
+                        h("small",{className:"op-field-source"},[fact.time,fact.status].filter(Boolean).join(" · "))))))))),
+                  !!draft?.attachments.length&&h("section",null,h("details",{className:"op-review"},
+                    h("summary",null,"预览随附卡片 · "+draft.attachments.length+" 张"),...draft.attachments.map(cardPreview))),
+                  draft?.progress&&h("section",null,h("strong",null,sourceCopy.handoff||draft.status==="已发送"?"CRM 回执":"状态明细"),h("p",null,draft.progress)),
+                  h("div",{className:"wb-actions"},button("查看用户档案",()=>openProfile(activeMember.id),{disabled:busy||!!copyEdit})))):h("p",null,"本工作包当前无可处理名单"),
               members.next&&button("加载更多",()=>act(async()=>{const data=await loadMembers(sourcePlan,members.next,members.revision);setMembers(data.state==="ready"?{...data,records:[...members.records,...data.records]}:data)}),{disabled:busy})):
               busy?h("p",{role:"status"},"正在核对原工作包名单…"):button("重新核对",()=>openPlan(sourcePlan))),
-        page==="history"&&view&&h(React.Fragment,null,h("h2",{className:"op-title"},run.title),
+        page==="history"&&view&&h(React.Fragment,null,
+          readSource&&h("section",null,h("h2",{className:"op-title"},"原工作包"),
+            h("form",{className:"op-search",onSubmit:e=>{e.preventDefault();loadSourceHistory(sourceHistoryWeek)}},
+              h("input",{type:"week",required:true,value:sourceHistoryWeek,onChange:e=>setSourceHistoryWeek(e.target.value),"aria-label":"历史周"}),
+              h("button",{type:"submit",disabled:busy},"查询")),
+            sourceHistory?.runs.length===0&&h("p",{className:"wb-muted"},"本周暂无原工作包记录"),
+            ...(sourceHistory?.runs||[]).map(item=>h("div",{className:"op-strategy",key:item.run_id},
+              h("strong",null,item.label),h("span",{className:"wb-muted"},item.createdAt?new Date(item.createdAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}):item.week),
+              button("查看原包",()=>openPlan({...item,historical:true}),{disabled:busy})))),
+          h("h2",{className:"op-title"},run.title),
           history.length===0&&h("p",{className:"wb-muted"},"暂无历史运行"),
           ...history.map(item=>h("div",{className:"op-strategy",key:item.id},h("span",null,new Date(item.date).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})),null,button("查看明细",()=>openRun(item.id)))),
           historyMore&&button("加载更多",()=>act(async()=>{

@@ -10,6 +10,8 @@ import (
 
 type WriteInput struct{ RunID, ProjectID, Operation string }
 
+func ProjectWriterID(project string) string { return "writer-" + project }
+
 // Temporal itself enforces one open child ID per project. Waiting uses durable
 // timers and bounded histories; there is no separate lease or recovery engine.
 func WriteTask(ctx workflow.Context, in WriteInput) (err error) {
@@ -23,7 +25,7 @@ func WriteTask(ctx workflow.Context, in WriteInput) (err error) {
 		return failure(core.ErrInvalid)
 	}
 	child := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
-		WorkflowID: "writer-" + in.ProjectID, TaskQueue: BatchQueue,
+		WorkflowID: ProjectWriterID(in.ProjectID), TaskQueue: BatchQueue,
 		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
 		WaitForCancellation:   true, ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 	})
@@ -36,6 +38,8 @@ func WriteTask(ctx workflow.Context, in WriteInput) (err error) {
 			future = workflow.ExecuteChildWorkflow(child, Program, in.RunID)
 		case "sync":
 			future = workflow.ExecuteChildWorkflow(child, Sync, in.RunID)
+		case "operations_package":
+			future = workflow.ExecuteChildWorkflow(child, OperationsPackage, in.RunID)
 		default:
 			return failure(core.ErrInvalid)
 		}

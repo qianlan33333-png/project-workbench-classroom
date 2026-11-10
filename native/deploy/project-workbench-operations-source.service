@@ -1,6 +1,8 @@
 [Unit]
 Description=Project Workbench scoped operations source
 ConditionPathExists=/opt/project-workbench/current/components/operations-source/server.mjs
+PartOf=project-workbench.service
+Before=project-workbench.service
 
 [Service]
 Type=simple
@@ -16,4 +18,4 @@ ProtectSystem=strict
 ProtectHome=yes
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target project-workbench.service

@@ -398,11 +398,21 @@ export async function apply(ctx, config) {
                 json(res, 200, await skillCatalog(project.workspace));
                 return;
               }
-              if (req.method === "GET" && ["/operations/view", "/operations/profiles", "/operations/source"].includes(path)) {
+              if (req.method === "GET" && path === "/operations/source-card") {
+                u.searchParams.set("view", "package_card");
+                const asset = await call("/operations/source" + u.search, p, undefined, AbortSignal.timeout(87000));
+                const bytes = Buffer.from(asset.jpeg || "", "base64");
+                if (bytes.length < 3 || bytes.length > 720 * 1024 || bytes.readUIntBE(0, 3) !== 0xffd8ff)
+                  throw requestError("原卡片图片暂不可读", 404);
+                res.writeHead(200, {"content-type":"image/jpeg", "cache-control":"private, no-store", "x-content-type-options":"nosniff"});
+                res.end(bytes);
+                return;
+              }
+              if (req.method === "GET" && ["/operations/view", "/operations/profiles", "/operations/source", "/operations/source-package-status"].includes(path)) {
                 json(res, 200, await call(path + u.search, p, undefined, AbortSignal.timeout(87000)));
                 return;
               }
-              if (req.method === "POST" && ["/operations/schedule", "/operations/settings", "/operations/send"].includes(path)) {
+              if (req.method === "POST" && ["/operations/schedule", "/operations/settings", "/operations/send", "/operations/source-package", "/operations/source-package-edit"].includes(path)) {
                 if (!req.headers.origin || new URL(req.headers.origin).host !== req.headers.host) throw requestError("origin rejected", 403);
                 const input = await body(req);
                 if (path === "/operations/schedule") {
@@ -417,6 +427,8 @@ export async function apply(ctx, config) {
                   json(res, 200, await call(path, owner, {
                     projectId, knowledge: input.knowledge, transport: input.transport, staffId: input.staffId,
                   }));
+                } else if (path === "/operations/source-package" || path === "/operations/source-package-edit") {
+                  json(res, 200, await call(path, p, input, AbortSignal.timeout(133000)));
                 } else {
                   json(res, 200, await call(path, p, {runId: input.runId}));
                 }
