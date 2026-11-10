@@ -2,6 +2,7 @@ import json, sys
 from pathlib import Path
 sys.path.insert(0, '/service/scripts')
 import qa_retrieve, qa_gate
+from draft_reply import apply_draft, record_draft
 
 root = Path(sys.argv[2]).resolve()
 if root != Path('/data') and not (Path('/versions') in root.parents and root.name == 'data' and (root.parent/'published-source.json').exists()):
@@ -23,6 +24,8 @@ elif op == 'check':
     if not isinstance(data, dict):
         raise ValueError('object required')
     result = qa_gate.decide(root, data)
+    result = apply_draft(data, result)
+    record_draft(root, data, result)
     qa_gate.record_handoff(root, data, result)
 else:
     raise ValueError('unknown operation')

@@ -14,6 +14,7 @@ import { toolNamespace, namespaceOfTool } from './tool-namespace.js';
 import { installPersonalMemory } from './personal-memory.js';
 import { replyEvidenceProjection } from './reply-evidence.js';
 import { resourceDocuments } from './resource-documents.js';
+import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
 
 export const inject = [
@@ -338,10 +339,11 @@ export async function apply(ctx, config) {
           if(!agent){const w=ctx.workspaceRegistry.list().find(w=>w.sessionIds.includes(event.sessionId));if(!w)throw Error('Result Session workspace unavailable');agent=await ensureSession(event.sessionId,w.path)}
           if (delivery.stateOf(agent.session).through < event.sequence) {
             let text = `执行结果 · ${new Date(event.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}\n任务 ${event.runId} · 阶段 ${event.kind}\n${event.text}\n${JSON.stringify(event.details ?? {})}\n${event.kind==='project.reported'?'上文是目标项目助手的文字汇报；模型表述不等于业务事实，若与工具回执冲突，先查询原任务核对，不能凭汇报推翻已有接收回执。':`这是后台任务 ${event.runId} 的真实回执。`}不是让你回顾最近一轮聊天。只针对这个任务说明已做工作、结果与下一步，不把其他聊天的工具调用算入本任务。${event.kind==='personal.daily'?'上文是本次已生成的今日安排，请以该安排为主要反馈；引用的其他项目状态只是汇总依据，不能说这些工作被你重新执行了。':''}只核对原任务，不重跑业务。`;
-            if(event.kind==='message.history')text="渠道历史引用（不会触发自动应答）\n"+event.text;
+            if(event.sessionId.startsWith("object-"))text=channelContext(event);
+            else if(event.kind==='message.history')text="渠道历史引用（不会触发自动应答）\n"+event.text;
             const resultMessage=createUserMessage({
                 content: [{ type: "text", text }],
-                source: { kind: "workbench-result", sequence: event.sequence },
+                source: { kind: event.sessionId.startsWith("object-") ? "workbench-channel-result" : "workbench-result", sequence: event.sequence },
               });
             if(event.sessionId.startsWith('object-'))agent.session.append('user/message',resultMessage,{surfaceOp:'append'});else agent.followup(resultMessage);
           }
@@ -602,7 +604,7 @@ export async function apply(ctx, config) {
                 while(true){
                   const before=delivery.stateOf(agent.session).through;
                   const events=await call('/events?after='+before,identity(agent));
-                  for(const event of events){if(event.sequence<=delivery.stateOf(agent.session).through)continue;agent.session.append('user/message',createUserMessage({content:[{type:'text',text:(event.kind==='message.history'?'渠道历史引用（不会触发自动应答）':'渠道回执')+'\n'+event.text}],source:{kind:'workbench-result',sequence:event.sequence}}),{surfaceOp:'append'});await ctx.sessions.flush(agent.session);await call('/events/ack',owner,{id:event.id})}
+                  for(const event of events){if(event.sequence<=delivery.stateOf(agent.session).through)continue;agent.session.append('user/message',createUserMessage({content:[{type:'text',text:channelContext(event)}],source:{kind:'workbench-channel-result',sequence:event.sequence}}),{surfaceOp:'append'});await ctx.sessions.flush(agent.session);await call('/events/ack',owner,{id:event.id})}
                   if(events.length<200)break;
                   if(delivery.stateOf(agent.session).through<=before)throw Error('History cursor did not advance');
                 }

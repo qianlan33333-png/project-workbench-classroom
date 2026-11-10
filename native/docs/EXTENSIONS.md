@@ -109,3 +109,11 @@ toolServers:
 读取客户档案开关控制已可信关联的档案记录，不按昵称猜人，也不把公共语料当作个人档案；无关联记录时返回空资料。设置选语料只默认选一个明确板块，可在资料明细勾选，最多8个，不默认全开一个库的全部板块。
 
 后台维护程序可在 `program_run` / `program_schedule.program` 配置 `quiet:true`：成功发布/生成仍保留原 Session 事件和结果，但不推送本人成功通知。默认不静默；失败、待决定等原有通知规则保持。此选项属于通用执行参数，不按资源名称或业务场景分支。
+
+## 会话式专家包
+
+通用模板为`native/skills/customer-reply`，实例源包放`native/examples/experts`，实例不默认加入空底座。以项目知识引用、专家选择和渠道配置适配业务，原生Session承担历史恢复和压缩，不另建客户记忆库。
+
+当前预设没有任意文件读取工具。使用`python3 native/scripts/prepare-skill.py SOURCE TARGET`为部署生成自包含包：仅将SKILL中明确链接的references Markdown附入正文，assets保留给验收。生成包仍是标准Agent Skills目录；不手工修改生成正文，修改源文件后重新生成。参考总预算48KiB，不包含凭证、客户档案或当前商业政策。
+
+客户渠道结果按事实记录追加，不包含通用任务汇报指令，不触发新回复。message_context只补充近期渠道记录和允许资料，historyLimited不代表原生会话历史缺失。模型看到历史与正确理解历史分别验收。

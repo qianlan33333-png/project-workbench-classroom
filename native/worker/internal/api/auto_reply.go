@@ -329,9 +329,9 @@ func (a *Server) replyRoutes(mux *http.ServeMux) {
 }
 
 func (a *Server) startIncoming(ctx context.Context, message core.StoredMessage) error {
-	goal := message.Text + "\n\n本消息connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。先用message_context读取本客户允许资料和历史；本条原文以宿主本轮输入为准。是否检索、怎样检索及使用哪个已授权工具，按已加载专家方法决定，不要求每条消息都检索；业务事实须有可核实依据。仅通过message_reply或message_disposition提交本条消息的处理结果，普通聊天正文不会自动发给客户。"
+	goal := message.Text + "\n\n本消息connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。当前是原客户Session的继续对话，先结合已有原生历史理解本条消息。message_context只补充允许资料和近期渠道记录，historyLimited不代表原Session没有历史；本条原文以宿主本轮输入为准。是否检索、怎样检索及使用哪个已授权工具，按已加载专家方法决定，不要求每条消息都检索；业务事实须有可核实依据。仅通过message_reply或message_disposition提交本条消息的处理结果，普通聊天正文不会自动发给客户。"
 	if message.ExpertSkill != "" {
-		goal = "先调用skill加载专家方法：" + message.ExpertSkill + "。\n" + goal
+		goal = "本轮使用当前配置的专家方法，历史中的旧方法不覆盖本轮配置。先调用skill加载专家方法：" + message.ExpertSkill + "。\n" + goal
 	}
 	if message.Principal.Kind == "personal" {
 		goal = message.Text + "\n\n这是已绑定本人渠道的新消息，请作为今日Personal Agent处理；需要回复本人时使用当前消息的connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。"
