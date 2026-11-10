@@ -6,10 +6,23 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from directory import SHANGHAI, bind_daily_drafts, daily_scope, delivery_label, members, newcomer_deadline, package_binding, package_card, package_confirm, package_detail, package_edit, package_prepare, profile, profiles, reader
+from directory import SHANGHAI, bind_daily_drafts, daily_scope, delivery_label, members, newcomer_deadline, package_binding, package_card, package_confirm, package_daily, package_detail, package_edit, package_prepare, profile, profiles, reader
 
 
 class OriginalDirectoryTest(unittest.TestCase):
+    def test_daily_detail_requests_full_original_judgment(self):
+        params = {"package": "weekpkg-source", "week": "2026-W46", "run": "copybatch-" + "1"*32}
+        detail = {"run_id": params["run"], "digest": "2"*64, "items": [
+            {"item_key": "usr_1", "safe_user_ref": "usr_1", "usable": True, "text": "逐人正文", "judgment": {"goal": "原判断"}},
+        ]}
+        with patch("directory.package_run", return_value=detail) as source, \
+             patch("directory.formal_status", return_value=""), patch("directory.candidate_records", return_value=([], "")), \
+             patch("directory.daily_scope", return_value=[{"key": "usr_1"}]):
+            self.assertNotIn("judgment", package_daily(None, params)["rows"][0])
+            self.assertTrue(source.call_args.kwargs["preflight"])
+            self.assertIsNotNone(package_daily(None, {**params, "item": "usr_1"})["rows"][0]["judgment"])
+            self.assertFalse(source.call_args.kwargs["preflight"])
+
     def test_same_business_node_reuses_older_original_draft(self):
         old, new = ("copybatch-" + digit*32 for digit in ("1", "2"))
         records = [{"id": "usr_1", "reason": "当前服务节点"}]
