@@ -59,13 +59,27 @@ const listener = http.createServer(async (req, res) => {
   });
   if (sshConfig) server.registerTool('operations_read', {
     description: 'Read original operations plans, candidates or published archives. No generation or sending.',
-    inputSchema: {view: z.enum(['catalog', 'members', 'profiles', 'profile']), params: z.record(z.string(), z.string()).default({})},
+    inputSchema: {view: z.enum(['catalog', 'members', 'profiles', 'profile', 'package', 'package_history', 'package_card']), params: z.record(z.string(), z.string()).default({})},
   }, async input => {
     try {
       const result = await runJSONChild(['-F', sshConfig, 'workbench-operations-source', 'directory'], input, controller.signal, 85_000, {command: '/usr/bin/ssh'});
       return {structuredContent: result, content: [{type:'text', text:'Read original operations data.'}]};
     } catch {
       return {isError: true, content: [{type:'text', text:'Original operations data is unavailable.'}]};
+    }
+  });
+  if (sshConfig && req.headers['x-workbench-run']) server.registerTool('operations_package_action', {
+    description: 'Run one action for the owner-authorized original work package.',
+    inputSchema: {
+      view: z.enum(['package_prepare', 'package_generate', 'package_edit']),
+      params: z.record(z.string(), z.string()),
+    },
+  }, async input => {
+    try {
+      const result = await runJSONChild(['-F', sshConfig, 'workbench-operations-execute', 'package'], input, controller.signal, 315_000, {command: '/usr/bin/ssh'});
+      return {structuredContent: result, content: [{type:'text', text:'Read the original work package action result.'}]};
+    } catch {
+      return {isError: true, content: [{type:'text', text:'Original action result unavailable. Read the original package before continuing.'}]};
     }
   });
   try {

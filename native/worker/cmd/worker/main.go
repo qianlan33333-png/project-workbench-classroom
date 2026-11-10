@@ -191,6 +191,8 @@ func run() error {
 	bw.RegisterWorkflow(engine.WriteTask)
 	bw.RegisterWorkflow(engine.Program)
 	bw.RegisterWorkflow(engine.ScheduledProgram)
+	bw.RegisterWorkflow(engine.OperationsPackage)
+	bw.RegisterWorkflow(engine.OperationsPackageEdit)
 	bw.RegisterActivity(a)
 	if e = bw.Start(); e != nil {
 		return e

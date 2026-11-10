@@ -54,18 +54,48 @@ func readMCPSource(ctx context.Context, c Connection, r Run) (mcpSourceResult, e
 // ReadOperationsDirectory is a fixed read tool on the source registered to the
 // project-owned operations resource. Request data cannot choose a URL or tool.
 func (s *Store) ReadOperationsDirectory(ctx context.Context, p Principal, resourceID, view string, params map[string]string) (json.RawMessage, error) {
-	resource, e := s.canWrite(ctx, p, resourceID)
+	c, e := s.operationsSourceConnection(ctx, p, resourceID)
 	if e != nil {
 		return nil, e
+	}
+	return callMCPSource(ctx, c, Run{Principal: p}, "operations_read", map[string]any{"view": view, "params": params})
+}
+
+func (s *Store) OperationsPackageAction(ctx context.Context, run Run, view string, params map[string]string) (json.RawMessage, error) {
+	operation := "operations_package"
+	if view == "package_edit" {
+		operation = "operations_package_edit"
+	}
+	if run.Operation != operation || !ValidID(run.ID) {
+		return nil, ErrDenied
+	}
+	c, e := s.operationsSourceConnection(ctx, run.Principal, run.Destination)
+	if e != nil {
+		return nil, e
+	}
+	if e = ctx.Err(); e != nil {
+		return nil, e
+	}
+	// Once dispatched, cancellation stops subsequent steps. Keep waiting for
+	// this source mutation while the project writer still owns its slot.
+	settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), 330*time.Second)
+	defer cancel()
+	return callMCPSource(settle, c, run, "operations_package_action", map[string]any{"view": view, "params": params})
+}
+
+func (s *Store) operationsSourceConnection(ctx context.Context, p Principal, resourceID string) (Connection, error) {
+	resource, e := s.canWrite(ctx, p, resourceID)
+	if e != nil {
+		return Connection{}, e
 	}
 	c, e := s.sourceConnection(ctx, resource)
 	if e != nil {
-		return nil, e
+		return Connection{}, e
 	}
 	if c.Kind != "mcp" || c.SourceTool != "operations_refresh" {
-		return nil, ErrDenied
+		return Connection{}, ErrDenied
 	}
-	return callMCPSource(ctx, c, Run{Principal: p}, "operations_read", map[string]any{"view": view, "params": params})
+	return c, nil
 }
 
 func callMCPSource(ctx context.Context, c Connection, r Run, tool string, args any) (json.RawMessage, error) {
