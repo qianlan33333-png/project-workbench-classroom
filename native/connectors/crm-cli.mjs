@@ -302,6 +302,10 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
    try{
     const plan=await readPlan(state.planId);
     if(!validPlan(plan))return finish();
+    // A pending plan can still be edited in CRM. Only use receipt evidence
+    // once CRM has crossed the same approval boundary for this plan.
+    if(!['approved','dispatching','needs_attention','completed','completed_with_failures'].includes(plan.state))
+     return finish(plan.id);
     const params={plan_id:plan.id};
     const saved=await pages('admin.listAIAssistantRecipients',params);
     const recipientIds=validRecipients(saved);
