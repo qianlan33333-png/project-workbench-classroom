@@ -18,6 +18,7 @@ import (
 const onboardingTitle = "新人前 7 天承接"
 
 type operationsConfig struct {
+	ReadSource  bool               `json:"readSource,omitempty"`
 	ProjectID   string             `json:"projectId"`
 	Input       core.Ref           `json:"input"`
 	Eligibility core.Ref           `json:"eligibility"`
@@ -98,6 +99,7 @@ func (a *Server) operationsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /operations/method", a.refreshOperationsMethod)
 	mux.HandleFunc("POST /operations/settings", a.saveOperationsSettings)
 	mux.HandleFunc("GET /operations/view", a.operationsView)
+	mux.HandleFunc("GET /operations/source", a.operationsSource)
 	mux.HandleFunc("GET /operations/profiles", a.operationsProfiles)
 	mux.HandleFunc("POST /operations/send", a.prepareOperationsSend)
 }
@@ -152,6 +154,7 @@ func (a *Server) setupOperations(w http.ResponseWriter, r *http.Request) {
 		Eligibility core.Ref `json:"eligibility"`
 		Check       string   `json:"check"`
 		Staff       string   `json:"staffId"`
+		ReadSource  *bool    `json:"readSource"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -184,6 +187,9 @@ func (a *Server) setupOperations(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			cfg.Input, cfg.Eligibility, cfg.Check, cfg.Staff = in.Input, in.Eligibility, in.Check, in.Staff
+			if in.ReadSource != nil {
+				cfg.ReadSource = *in.ReadSource
+			}
 			err = a.saveOperations(ctx, cfg)
 		}
 	}
@@ -460,6 +466,15 @@ func (a *Server) operationsProfiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
+	if cfg.ReadSource {
+		q := r.URL.Query()
+		if id != "" {
+			a.operationsDirectory(w, r, p, cfg, "profile", map[string]string{"id": id, "snapshot_id": q.Get("snapshot")})
+		} else {
+			a.operationsDirectory(w, r, p, cfg, "profiles", map[string]string{"q": q.Get("q"), "cursor": q.Get("after"), "snapshot_id": q.Get("snapshot")})
+		}
+		return
+	}
 	if id == "" {
 		page, err := a.readOperationsPage(ctx, p, cfg.Input, r.URL.Query().Get("after"), 20)
 		items := make([]map[string]string, 0, len(page.Records))

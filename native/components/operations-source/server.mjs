@@ -57,6 +57,17 @@ const listener = http.createServer(async (req, res) => {
       return {isError: true, content: [{type:'text', text:'Source unavailable; retry with the same run.'}]};
     }
   });
+  if (sshConfig) server.registerTool('operations_read', {
+    description: 'Read original operations plans, candidates or published archives. No generation or sending.',
+    inputSchema: {view: z.enum(['catalog', 'members', 'profiles', 'profile']), params: z.record(z.string(), z.string()).default({})},
+  }, async input => {
+    try {
+      const result = await runJSONChild(['-F', sshConfig, 'workbench-operations-source', 'directory'], input, controller.signal, 85_000, {command: '/usr/bin/ssh'});
+      return {structuredContent: result, content: [{type:'text', text:'Read original operations data.'}]};
+    } catch {
+      return {isError: true, content: [{type:'text', text:'Original operations data is unavailable.'}]};
+    }
+  });
   try {
     await server.connect(transport);
     await transport.handleRequest(req, res);

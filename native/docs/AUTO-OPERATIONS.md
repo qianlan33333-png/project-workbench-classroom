@@ -14,6 +14,12 @@
 
 知识库在专项设置中选择已授权且含正文 `text` 字段的已发布板块。每次执行在工作台原资源读取门禁下固定版本，取有界正文片段给专家。HXC 返回的素材候选仅提供标题、摘要与来源版本。CRM 订单事实可以从原档案已经核验的订单摘要读取。
 
+## 原中心工作包与全量档案
+
+同一项目来源可以显式启用 `readSource`。`operations_read` 走现有 SSH 机器身份的 `directory` 固定命令。工作包读取原 `work-packages`，名单读取原 `test_candidates` 分支并核对逐人去重人数。这个分支在原系统生成、审批和发送动作之前返回。档案用原 `archive/users` 的总量、搜索与游标，单人详情再读取同一档案的发布记录、联系方式、人工修订、会话提炼、关系中心和产品判断。只有可读且身份一致的补充来源用于显示。
+
+全量档案与计划核对是查询。工作台试点名单、待发人数和原回执仍使用各自的固定记录和授权。初次核对记录见 [原计划与全量档案](../../docs/plans/2026-11-10-operations-source-parity.md)。
+
 ## 发送接线
 
 使用既有 `crm-cli` 通道。对明确授权的测试收件人登记独立资格资源，记录 ID 与原档案 ID 一致。注册现有 `RecordCheck`，从资格板块绑定 `/customerId`、`/staffId`、`/businessSlot`。`POST /operations/setup` 接收 `eligibility`、`check`、`staffId`。专项设置只列当前项目允许使用的真实 CRM 通道。

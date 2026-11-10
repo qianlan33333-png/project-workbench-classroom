@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+if [ "$#" -eq 2 ] && [ "$1" = directory ] && [ "$2" = v1 ]; then
+    exec /usr/bin/env -i /usr/bin/python3 -I /opt/workbench-operations-source/directory.py
+fi
 [ "$#" -eq 1 ] || exit 64
 case $1 in
     ''|*[!a-zA-Z0-9_-]*) exit 64 ;;

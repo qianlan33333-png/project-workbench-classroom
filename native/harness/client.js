@@ -958,6 +958,7 @@ window.__ModuleLoader__.load({
       .op-profiles{display:grid}.op-profiles button{text-align:left;border:0;border-radius:0;border-bottom:1px solid var(--dsw-alias-border-l3);padding:13px 8px}
       .op-fields{max-width:760px}.op-fields div{display:grid;grid-template-columns:minmax(120px,28%) minmax(0,1fr);gap:10px;padding:14px 0;border-bottom:1px solid var(--dsw-alias-border-l3)}
       .op-fields dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+      .op-groups{display:grid;gap:20px}.op-groups h2{margin:0 0 8px}.op-field-source{display:block;margin-top:5px;color:var(--dsw-alias-text-l2);font-size:12px}.op-search{display:flex;gap:8px;margin:12px 0}.op-search input{flex:1;min-width:0}.op-packages h2{margin:16px 0 4px}.op-counts{display:flex;gap:12px;flex-wrap:wrap}
       .op-footer{padding-top:16px}.op-modal-content{padding:8px 0 0}.op-modal-content .wb-actions{justify-content:flex-end}
       @media(max-width:650px){.op-detail{grid-template-columns:1fr}.op-message{border-left:0;padding:16px 0}.op-table th,.op-table td{padding:10px 5px}.op-fields div{grid-template-columns:minmax(90px,35%) minmax(0,1fr)}.op-header{align-items:flex-start;padding:12px 0}.op-strategy{padding-left:0;padding-right:0}.op-page .wb-actions{gap:5px}}
     `;
@@ -966,12 +967,16 @@ window.__ModuleLoader__.load({
       const [view,setView]=useState(null),[tab,setTab]=useState("work"),[page,setPage]=useState("home");
       const [runId,setRunId]=useState(""),[selected,setSelected]=useState(""),[profile,setProfile]=useState(null);
       const [profiles,setProfiles]=useState([]),[profileNext,setProfileNext]=useState(""),[profileState,setProfileState]=useState("");
+      const [profileMeta,setProfileMeta]=useState({}),[searchText,setSearchText]=useState(""),[query,setQuery]=useState("");
+      const [catalog,setCatalog]=useState(null),[catalogError,setCatalogError]=useState("");
+      const [sourcePlan,setSourcePlan]=useState(null),[members,setMembers]=useState(null),[profileBack,setProfileBack]=useState("home");
       const [history,setHistory]=useState([]),[historyMore,setHistoryMore]=useState(false);
       const [settings,setSettings]=useState(null),[experts,setExperts]=useState([]),[accounts,setAccounts]=useState([]);
       const [error,setError]=useState(""),[busy,setBusy]=useState(false),[review,setReview]=useState("");
       const [reload,setReload]=useState(0);
       const path=(name,params={})=>"/operations/"+name+"?"+new URLSearchParams({projectId,...params});
       const refresh=()=>setReload(n=>n+1);
+      const readSource=!!view?.config.readSource;
       useEffect(()=>{
         let active=true,timer;
         const read=()=>api(path("view",runId||review?{runId:runId||review}:{})).then(data=>{
@@ -985,20 +990,39 @@ window.__ModuleLoader__.load({
         return()=>{active=false;clearTimeout(timer)};
       },[projectId,runId,review,reload,page]);
       useEffect(()=>{
+        if(!readSource||tab!=="work"||page!=="home")return;
+        let active=true;
+        setCatalogError("");
+        api(path("source",{view:"catalog"})).then(data=>{if(active)setCatalog(data)})
+          .catch(e=>{if(active)setCatalogError(e.message)});
+        return()=>{active=false};
+      },[projectId,readSource,tab,page,reload]);
+      useEffect(()=>{
         if(tab!=="profiles"||page!=="home")return;
         let active=true;
-        api(path("profiles")).then(data=>{
-          if(active){setProfiles(data.records);setProfileNext(data.next);setProfileState(data.state)}
+        setProfileState("loading");setProfileNext("");
+        api(path("profiles",{q:query})).then(data=>{
+          if(active){setProfiles(data.records);setProfileNext(data.next);setProfileState(data.state);setProfileMeta(data)}
         }).catch(e=>{if(active)setError(e.message)});
         return()=>{active=false};
-      },[projectId,tab,reload,page]);
+      },[projectId,tab,reload,page,query]);
       const act=async fn=>{
         setBusy(true);setError("");
         try{await fn()}catch(e){setError(e.message)}finally{setBusy(false)}
       };
       const home=()=>{setView(null);setPage("home");setRunId("");setSelected("");setProfile(null);setError("")};
       const openRun=id=>{if(id)setView(null);setRunId(id||"");setSelected("");setPage("detail")};
-      const openProfile=id=>act(async()=>{setProfile(await api(path("profiles",{id})));setPage("profile")});
+      const openProfile=id=>act(async()=>{
+        const data=await api(path("profiles",{id,...(page==="home"&&profileMeta.snapshot?{snapshot:profileMeta.snapshot}:{})}));
+        if(data.state==="source_changed"){refresh();throw Error("档案版本已更新，请从新列表重新打开。")}
+        setProfileBack(page);setProfile(data);setPage("profile");
+      });
+      const loadMembers=(plan,after="",revision="")=>api(path("source",{view:"members",package:plan.package_id,week:plan.week,after,revision}));
+      const openPlan=plan=>{
+        const selectedPlan={...plan,week:catalog.week};
+        setSourcePlan(selectedPlan);setMembers(null);setPage("source-plan");
+        act(async()=>setMembers(await loadMembers(selectedPlan)));
+      };
       const showSettings=kind=>act(async()=>{
         if(kind==="project"){
           const list=await api("/transports");
@@ -1030,7 +1054,14 @@ window.__ModuleLoader__.load({
         await api("/decisions/answer",{id,revision,digest,answer:"发 "+run.dispatchId.slice(0,8)});
         setReview("");refresh();
       });
-      const sectionTitle=page==="profile"?profile?.nickname:page==="history"?"历史":"自动化运营";
+      const sectionTitle=page==="profile"?(profile?.nickname||"用户档案"):page==="history"?"历史":page==="source-plan"?sourcePlan?.label:"自动化运营";
+      const displayCount=value=>Number.isInteger(value)?String(value):"待核对";
+      const sourceLabels={observed_active:"来源事实",user_confirmed:"用户明确自述",observed_candidate:"待核线索",conflict:"来源冲突",unknown:"暂无证据"};
+      const profileFields=fields=>h("dl",{className:"op-fields"},...fields.map((field,i)=>{
+        const provenance=[field.source,field.observedAt,sourceLabels[field.state],field.sourceRef].filter(Boolean).join(" · ");
+        return h("div",{key:field.label+":"+i},h("dt",{className:"wb-muted"},field.label),h("dd",null,field.value||"待确认",
+          field.value&&provenance&&h("small",{className:"op-field-source"},provenance)));
+      }));
       const modal=settings&&h(UI.Modal,{open:true,title:{project:"专项设置",profile:"档案设置",strategy:"策略设置"}[settings.kind],closeLabel:"关闭",onClose:()=>{if(!busy)setSettings(null)}},h("form",{className:"wb-page wb-form op-modal-content",onSubmit:saveSettings},
         settings.kind==="project"
           ? h(React.Fragment,null,
@@ -1052,7 +1083,7 @@ window.__ModuleLoader__.load({
           h("p",{role:"status"},dispatchClosed?"该发送任务已结束。请在名单查看逐人状态。":run?.dispatchId?"正在校验发送资格":"正在准备确认"),
         alert(error),h("div",{className:"wb-actions"},button("返回",()=>setReview(""),{disabled:busy}),button("确认发送",confirm,{className:"wb-primary",disabled:busy||!run?.decision}))));
       return h("section",{className:"wb-page op-page"},
-        h("header",{className:"op-header"},h("div",{className:"wb-actions"},page!=="home"&&button("返回",home,{className:"op-link"}),h("h1",null,sectionTitle)),
+        h("header",{className:"op-header"},h("div",{className:"wb-actions"},page!=="home"&&button("返回",page==="profile"&&profileBack==="source-plan"?()=>setPage("source-plan"):home,{className:"op-link"}),h("h1",null,sectionTitle)),
           view&&h("div",{className:"wb-actions"},
             page==="home"&&button("历史",()=>setPage("history"),{className:"op-link"}),
             page==="home"&&button("设置",()=>showSettings("project")),
@@ -1065,17 +1096,50 @@ window.__ModuleLoader__.load({
           h("div",{className:"op-tabs",role:"tablist","aria-label":"自动化运营"},
             button("待我处理",()=>setTab("work"),{role:"tab","aria-selected":tab==="work"}),
             button("用户档案",()=>setTab("profiles"),{role:"tab","aria-selected":tab==="profiles"})),
-          tab==="work"?h("div",{className:"op-strategy"},h("strong",null,run.title),
-            h("span",{className:"wb-muted"},run.state==="ready"?"待发 "+run.pending+" 人":stateText[run.state]),
-            button("核对名单",()=>openRun(""))):
+          tab==="work"?h(React.Fragment,null,
+            readSource&&h("div",{className:"op-packages"},h("h2",{className:"op-title"},"原中心工作包"),
+              catalogError?h("p",{role:"status"},"上下文中心计划暂不可读。 ",button("重试",refresh)):!catalog?h("p",{role:"status"},"正在读取本周工作包…"):null,
+              catalog&&h("p",{className:"wb-muted"},catalog.week+(catalog.activityAsOf?" · 活动水位 "+catalog.activityAsOf:"")),
+              ...(catalog?.packages||[]).map(plan=>h("div",{className:"op-strategy",key:plan.package_id},
+                h("strong",null,[plan.label,plan.scene_label].filter(Boolean).join(" · ")),
+                h("span",{className:"op-counts wb-muted"},"原候选 "+displayCount(plan.candidate_count)," · 目录可处理 "+displayCount(plan.actionable_count)),
+                button("核对名单",()=>openPlan(plan),{"aria-label":"核对名单 · "+plan.label+" · "+plan.scene_label}))),
+              catalog&&h("details",null,h("summary",null,"策略人群口径 · "+catalog.slots.length+" 项"),
+                ...catalog.slots.map(slot=>h("div",{className:"op-strategy",key:slot.strategy_key+"/"+slot.scene},h("strong",null,slot.label),
+                  h("span",{className:"wb-muted",title:slot.reason},(slot.population_label||"候选")+" "+displayCount(slot.matched_count)+" · 外发候选 "+displayCount(slot.outbound_count))))),
+              ),
+            h("div",{className:"op-strategy"},h("strong",null,readSource?"工作台试点稿件 · "+run.title:run.title),
+              h("span",{className:"wb-muted"},run.state==="ready"?"待发 "+run.pending+" 人":stateText[run.state]),
+              button(readSource?"查看试点稿件":"核对名单",()=>openRun("")))):
             h(React.Fragment,null,
               h("div",{className:"op-header"},h("h2",{className:"op-title"},"用户档案"),button("档案设置",()=>showSettings("profile"))),
+              readSource&&h("form",{className:"op-search",onSubmit:e=>{e.preventDefault();setQuery(searchText.trim());refresh()}},
+                h("input",{type:"search",value:searchText,onChange:e=>setSearchText(e.target.value),placeholder:"搜索昵称或档案资料","aria-label":"搜索用户档案",maxLength:120}),
+                h("button",{type:"submit"},"搜索")),
+              profileState==="ready"&&Number.isInteger(profileMeta.total)&&h("p",{className:"wb-muted"},(query?"搜索结果 ":"共 ")+profileMeta.total.toLocaleString("zh-CN")+" 人"),
               profileState==="unconfigured"&&h("p",{className:"wb-muted"},"等待接入已授权的真实资料"),
-              h("div",{className:"op-profiles"},...profiles.map(item=>button(item.nickname||"未记录称呼",()=>openProfile(item.id),{key:item.id}))),
+              profileState==="loading"&&h("p",{role:"status"},"正在读取档案…"),
+              profileState==="source_changed"&&button("档案已更新，重新读取",refresh),
+              profileState==="ready"&&h("div",{className:"op-profiles"},...profiles.map(item=>button(item.nickname||"未记录称呼",()=>openProfile(item.id),{key:item.id,disabled:busy}))),
               profileNext&&h("div",{className:"op-footer"},button("加载更多",()=>act(async()=>{
-                const data=await api(path("profiles",{after:profileNext}));setProfiles(items=>[...items,...data.records]);setProfileNext(data.next);
-              }))))),
-        page==="profile"&&profile&&h("dl",{className:"op-fields"},...profile.fields.map(f=>h("div",{key:f.label},h("dt",{className:"wb-muted"},f.label),h("dd",null,f.value)))),
+                const data=await api(path("profiles",{after:profileNext,q:query,...(profileMeta.snapshot?{snapshot:profileMeta.snapshot}:{})}));
+                if(data.state==="source_changed"){refresh();return}
+                setProfiles(items=>[...items,...data.records]);setProfileNext(data.next);
+              }),{disabled:busy})))),
+        page==="profile"&&profile&&(profile.groups?h("div",{className:"op-groups"},
+          profile.snapshot&&h("p",{className:"wb-muted"},"档案来源版本 "+profile.snapshot),
+          !!profile.missingSources?.length&&h("p",{role:"status"},"部分实时补充资料暂不可读，以下保留可读来源。"),
+          ...profile.groups.map(group=>h("section",{key:group.title},h("h2",{className:"op-title"},group.title),profileFields(group.fields)))):profileFields(profile.fields)),
+        page==="source-plan"&&sourcePlan&&h(React.Fragment,null,
+          h("p",{className:"wb-muted"},[sourcePlan.week,sourcePlan.scene_label].filter(Boolean).join(" · ")),
+          h("p",{className:"op-counts"},"目录候选 "+displayCount(sourcePlan.candidate_count)+" 人 · 目录可处理 "+displayCount(sourcePlan.actionable_count)+" 人 · 实际名单 "+displayCount(members?.total)+(Number.isInteger(members?.total)?" 人":"")),
+          members?.state==="source_changed"?button("名单已更新，重新核对",()=>openPlan(sourcePlan)):
+            members?h(React.Fragment,null,
+              members.total!==sourcePlan.actionable_count&&h("p",{role:"status"},"目录和实际名单人数有差异，请以当前来源名单核对。"),
+              members.records.length?h("table",{className:"op-table"},h("thead",null,h("tr",null,h("th",{scope:"col"},"客户昵称"),h("th",{scope:"col"},"入选依据"))),
+                h("tbody",null,...members.records.map(item=>h("tr",{key:item.id},h("td",null,button(item.nickname||"未记录称呼",()=>openProfile(item.id),{disabled:busy})),h("td",null,item.reason))))):h("p",null,"本工作包当前无可处理名单"),
+              members.next&&button("加载更多",()=>act(async()=>{const data=await loadMembers(sourcePlan,members.next,members.revision);setMembers(data.state==="ready"?{...data,records:[...members.records,...data.records]}:data)}),{disabled:busy})):
+              busy?h("p",{role:"status"},"正在核对原工作包名单…"):button("重新核对",()=>openPlan(sourcePlan))),
         page==="history"&&view&&h(React.Fragment,null,h("h2",{className:"op-title"},run.title),
           history.length===0&&h("p",{className:"wb-muted"},"暂无历史运行"),
           ...history.map(item=>h("div",{className:"op-strategy",key:item.id},h("span",null,new Date(item.date).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})),null,button("查看明细",()=>openRun(item.id)))),

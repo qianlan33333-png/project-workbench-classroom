@@ -394,8 +394,8 @@ export async function apply(ctx, config) {
                 json(res, 200, await skillCatalog(project.workspace));
                 return;
               }
-              if (req.method === "GET" && ["/operations/view", "/operations/profiles"].includes(path)) {
-                json(res, 200, await call(path + u.search, p));
+              if (req.method === "GET" && ["/operations/view", "/operations/profiles", "/operations/source"].includes(path)) {
+                json(res, 200, await call(path + u.search, p, undefined, AbortSignal.timeout(87000)));
                 return;
               }
               if (req.method === "POST" && ["/operations/schedule", "/operations/settings", "/operations/send"].includes(path)) {

@@ -91,3 +91,9 @@ final result: passed
 正式 09 版复验：侧栏单行入口无展开层，档案列表读回 8 条及原字段，专项设置显示实际企微账号和知识库，390px 下可返回并打开历史，无横向溢出或页面错误。正式浏览器只读操作。
 
 final result: passed
+
+## 2026-11-10 原工作包与全量档案
+
+Product Design 对照用户附图。保留工作台现有样式，将同名工作包按场景分开，核对页同时展示目录候选、可处理与实际名单。档案页增加全量计数和原中心搜索，逐人明细按来源分组。当前事实、待核线索、历史补充在字段旁说明。隔离 Harness 的桌面与 390px 截图已查看，浏览器验证名单、搜索、来源标记与返回。截图 `.var/operations/parity-package.png`、`parity-profile.png`、`parity-mobile.png` 均使用合成界面数据。真实同人来源和人数见验收记录。
+
+final result: passed
