@@ -77,6 +77,35 @@ func DescribeConnection(ctx context.Context, c core.Transport) (ConnectionAccoun
 	return v, e
 }
 
+func ResolveContactIdentity(ctx context.Context, c core.Transport, contactID string) (string, error) {
+	session, e := connectConnector(ctx, c)
+	if e != nil {
+		return "", e
+	}
+	defer session.Close()
+	result, e := session.CallTool(ctx, &mcp.CallToolParams{Name: "contact_identity", Arguments: map[string]string{"connectionId": c.ID, "contactId": contactID}})
+	if e != nil {
+		return "", e
+	}
+	if result.IsError {
+		return "", errors.New("contact identity unavailable")
+	}
+	raw, e := json.Marshal(result.StructuredContent)
+	if e != nil {
+		return "", e
+	}
+	var out struct {
+		ExternalUserID string `json:"externalUserId"`
+	}
+	if e = json.Unmarshal(raw, &out); e != nil {
+		return "", e
+	}
+	if !core.ValidID(out.ExternalUserID) {
+		return "", core.ErrInvalid
+	}
+	return out.ExternalUserID, nil
+}
+
 // A read-only MCP initialize is safe to wait for before prepared is claimed.
 // A channel that has not started must not become an unknown external send.
 func connectorReady(ctx context.Context, c core.Transport) (bool, error) {

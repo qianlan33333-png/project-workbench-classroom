@@ -9,7 +9,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
+	"log"
 	"net/http"
+	"time"
 	"workbench-native/internal/core"
 	"workbench-native/internal/engine"
 )
@@ -42,13 +44,16 @@ func (a *Server) messageTools(s *mcp.Server, p core.Principal) {
 		HistoryLimited bool                   `json:"historyLimited"`
 	}
 	mcp.AddTool(s, &mcp.Tool{Name: "message_context", Description: "Read only this customer's fixed profile records, allowed knowledge references and supplemental recent channel history, excluding the current event. Native Session history remains the primary conversation context; historyLimited only describes this supplemental result, not all remembered conversation. Use the Host-provided current message as the question; the loaded expert chooses authorized knowledge tools. Human history can have missing text; never invent it."}, func(ctx context.Context, _ *mcp.CallToolRequest, in MessageKey) (*mcp.CallToolResult, ContextResult, error) {
-		records, e := a.Store.MessageContext(ctx, p, in.ConnectionID, in.EventID)
-		if e != nil {
-			return nil, ContextResult{}, e
-		}
 		m, e := a.Store.Message(ctx, p, in.ConnectionID, in.EventID)
 		if e != nil {
 			return nil, ContextResult{}, e
+		}
+		profileCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		records, profileErr := a.Store.ResolveReplyProfile(profileCtx, p, m, engine.ResolveContactIdentity)
+		cancel()
+		if profileErr != nil {
+			log.Printf("Optional customer profile unavailable: %v", profileErr)
+			records = []core.Record{}
 		}
 		history, e := a.Store.MessageHistory(ctx, p, in.ConnectionID, in.EventID)
 		out := ContextResult{Records: records, Knowledge: m.Knowledge, History: history, HistoryLimited: true}

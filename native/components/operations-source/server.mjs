@@ -20,6 +20,7 @@ if (!project || !token || token.length < 32 || (!sshConfig && !(refs && state &&
   throw Error('operations source configuration missing');
 }
 
+const profileProjects = JSON.parse(process.env.WORKBENCH_OPERATIONS_PROFILE_PROJECTS || '[]');
 const collector = fileURLToPath(new URL('./collect.py', import.meta.url));
 const auth = Buffer.from('Bearer ' + token);
 const active = new Set();
@@ -29,10 +30,11 @@ const listener = http.createServer(async (req, res) => {
     res.writeHead(404).end();
     return;
   }
+  const operationsCaller=req.headers['x-workbench-project']===project && req.headers['x-workbench-session']==='operations-'+project;
+  const profileCaller=profileProjects.includes(req.headers['x-workbench-project']) && /^object-[0-9a-f-]{36}$/.test(req.headers['x-workbench-session']||'');
   if (presented.length !== auth.length || !timingSafeEqual(presented, auth) ||
       req.headers['x-workbench-kind'] !== 'project' ||
-      req.headers['x-workbench-project'] !== project ||
-      req.headers['x-workbench-session'] !== 'operations-' + project) {
+      (!operationsCaller && !profileCaller)) {
     res.writeHead(403).end();
     return;
   }
@@ -41,7 +43,7 @@ const listener = http.createServer(async (req, res) => {
   res.on('close', () => controller.abort());
   const server = new McpServer({name: 'operations-source', version: '1.0.0'});
   const transport = new StreamableHTTPServerTransport({sessionIdGenerator: undefined});
-  server.registerTool('operations_refresh', {
+  if(operationsCaller) server.registerTool('operations_refresh', {
     description: 'Read the authorized archive and HXC pilot references.',
     inputSchema: {operationKey: z.string().regex(/^[A-Za-z0-9_-]{1,96}$/)},
   }, async ({operationKey}) => {
@@ -57,7 +59,7 @@ const listener = http.createServer(async (req, res) => {
       return {isError: true, content: [{type:'text', text:'Source unavailable; retry with the same run.'}]};
     }
   });
-  if (sshConfig) server.registerTool('operations_read', {
+  if (operationsCaller && sshConfig) server.registerTool('operations_read', {
     description: 'Read original operations plans, candidates or published archives. No generation or sending.',
     inputSchema: {view: z.enum(['catalog', 'members', 'profiles', 'profile', 'package', 'package_daily', 'package_history', 'package_card']), params: z.record(z.string(), z.string()).default({})},
   }, async input => {
@@ -68,7 +70,7 @@ const listener = http.createServer(async (req, res) => {
       return {isError: true, content: [{type:'text', text:'Original operations data is unavailable.'}]};
     }
   });
-  if (sshConfig && req.headers['x-workbench-run']) server.registerTool('operations_package_action', {
+  if (operationsCaller && sshConfig && req.headers['x-workbench-run']) server.registerTool('operations_package_action', {
     description: 'Run one action for the owner-authorized original work package.',
     inputSchema: {
       view: z.enum(['package_prepare', 'package_generate', 'package_edit', 'package_confirm']),
@@ -84,6 +86,16 @@ const listener = http.createServer(async (req, res) => {
     } catch {
       return {isError: true, content: [{type:'text', text:'Original action result unavailable. Read the original package before continuing.'}]};
     }
+  });
+  if (profileCaller && sshConfig) server.registerTool('profile_lookup', {
+    description: 'Read the existing profile for one verified external contact ID. No creation or sending.',
+    inputSchema: {externalUserId: z.string().regex(/^[A-Za-z0-9_-]{1,191}$/)},
+  }, async ({externalUserId}) => {
+    try {
+      const result=await runJSONChild(['-F',sshConfig,'workbench-operations-source','directory'],
+        {view:'profile_lookup',params:{externalUserId}},controller.signal,4500,{command:'/usr/bin/ssh'});
+      return {structuredContent:result,content:[{type:'text',text:'Read bound customer profile.'}]};
+    } catch {return {isError:true,content:[{type:'text',text:'Customer profile unavailable.'}]};}
   });
   try {
     await server.connect(transport);
