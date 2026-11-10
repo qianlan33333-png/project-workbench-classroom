@@ -18,6 +18,15 @@ func ReceiptSweep(ctx workflow.Context) error {
 	if e := workflow.ExecuteActivity(ctx, "QueueReceiptChecks").Get(ctx, nil); e != nil {
 		return e
 	}
+	if workflow.GetVersion(ctx, "operations-batch-sweep", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		if e := workflow.ExecuteActivity(ctx, "QueueOperationsBatchReceipts").Get(ctx, nil); e != nil {
+			return e
+		}
+		maintenance := operationsPackageActivityContext(ctx)
+		if e := workflow.ExecuteActivity(maintenance, "QueueOperationsReviewMaintenance").Get(ctx, nil); e != nil {
+			return e
+		}
+	}
 	return workflow.ExecuteActivity(ctx, "SummarizeBatchReceipts").Get(ctx, nil)
 }
 func (a *Activities) QueueReceiptChecks(ctx context.Context) error {

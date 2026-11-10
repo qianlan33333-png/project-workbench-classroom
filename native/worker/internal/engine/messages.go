@@ -33,11 +33,15 @@ func (a connectorAuth) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(copy)
 }
 func connectConnector(ctx context.Context, c core.Transport) (*mcp.ClientSession, error) {
+	return connectConnectorWithTimeout(ctx, c, 35*time.Second)
+}
+
+func connectConnectorWithTimeout(ctx context.Context, c core.Transport, timeout time.Duration) (*mcp.ClientSession, error) {
 	token := os.Getenv(c.TokenEnv)
 	if len(token) < 32 {
 		return nil, temporal.NewNonRetryableApplicationError("connector token not configured", "Invalid", nil)
 	}
-	httpClient := &http.Client{Timeout: 35 * time.Second, Transport: connectorAuth{token}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	httpClient := &http.Client{Timeout: timeout, Transport: connectorAuth{token}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	client := mcp.NewClient(&mcp.Implementation{Name: "workbench-worker", Version: "0.1.0"}, nil)
 	return client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: c.Endpoint, HTTPClient: httpClient}, nil)
 }

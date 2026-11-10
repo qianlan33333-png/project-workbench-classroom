@@ -101,6 +101,7 @@ func (a *Server) operationsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /operations/view", a.operationsView)
 	mux.HandleFunc("GET /operations/source", a.operationsSource)
 	mux.HandleFunc("GET /operations/source-today", a.operationsToday)
+	mux.HandleFunc("GET /operations/batch-manifest", a.operationsBatchManifest)
 	mux.HandleFunc("POST /operations/original-schedule", a.configureOriginalOperationsSchedule)
 	mux.HandleFunc("POST /operations/source-confirm", a.confirmDailyOperations)
 	mux.HandleFunc("GET /operations/source-package-status", a.operationsPackageStatus)
@@ -886,7 +887,7 @@ func (a *Server) operationsView(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	respond(w, map[string]any{"config": cfg, "run": run, "history": history, "next": next, "knowledge": knowledge}, nil)
+	respond(w, map[string]any{"config": cfg, "run": run, "history": history, "next": next, "knowledge": knowledge, "staffName": operationsStaffName(cfg)}, nil)
 }
 
 func (a *Server) prepareOperationsSend(w http.ResponseWriter, r *http.Request) {

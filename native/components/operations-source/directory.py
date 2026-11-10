@@ -2,6 +2,7 @@
 """Expose the original plan and archive reads to the scoped workbench account."""
 import base64
 import concurrent.futures
+from contextlib import closing
 import hashlib
 import json
 import re
@@ -613,7 +614,7 @@ def package_detail(read, params, *, detail=None):
         else:
             status, progress = ("待核对" if usable else "待生成"), text(item.get("note"))
         row = {"key": key, "id": ref, "nickname": text(item.get("name")), "status": status}
-        if item_key:
+        if item_key or params.get("review_page"):
             row.update(message=message, progress=progress, revision=item.get("edit_revision", 0), edited=item.get("edited") is True,
                        editable=bool(usable and item.get("reviewable") and not handoff and formal != "running"),
                        judgment=copy_judgment(item), attachments=copy_attachments(item))
@@ -809,7 +810,12 @@ def daily_scope(read, params, records, *, now=None, detail=None):
                                 or any(old_binding.get(field) != binding.get(field) for field in ("slot_key", "cycle_key", "node"))):
                             raise ValueError("existing original draft uses a different node or method")
                         reuse = {"reuseRun": old_run, "reuseItem": old_key, "reusePackage": old_package, "reuseWeek": old_week}
-            scope.append({"offset": offset, "key": key, "id": ref, "reason": record["reason"],
+            action = ["service-node", ref, binding["slot_key"], binding["cycle_key"], binding["node"]] if (
+                binding.get("primary_identity") == "299" and binding.get("slot_key")
+            ) else ["scheduled-service", ref, params["strategy"], task[0]] if params["strategy"] != "hxc:onboarding" else [
+                "newcomer-window", ref, params["strategy"], binding.get("window_start"), binding.get("window_end")]
+            slot = hashlib.sha256(json.dumps(action, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+            scope.append({"offset": offset, "key": key, "id": ref, "reason": record["reason"], "slot": slot,
                           "expiresAt": end.isoformat() if end else None, "expert": text(request.get("skill_key")),
                           "strategyVersion": request.get("strategy_version"), **reuse})
     return scope
@@ -825,6 +831,88 @@ def package_daily(read, params):
         keys = {row["key"] for row in daily_scope(read, params, records, detail=detail)}
         out["rows"] = [row for row in out["rows"] if row["key"] in keys]
     return out
+
+
+def review_archive():
+    # Use the current published immutable index used by the original archive.
+    # The public archive view redacts the exact CRM identity.
+    sys.path.insert(0, str(ORIGINAL / "ops"))
+    import canonical_archive_index as archive
+    source = ORIGINAL / "var/private-data/canonical_users_live.json"
+    signature = archive.signature(source)
+    path = ORIGINAL / "var/canonical-read-index" / (archive.cache_key(signature) + ".sqlite")
+    if not path.is_file():
+        raise ValueError("original archive index is unavailable")
+    version = hashlib.sha256(json.dumps(signature).encode()).hexdigest()
+    return archive, source, path, signature, version
+
+
+def review_recipients(refs, published):
+    archive, source, path, signature, _ = published
+    resolved = {}
+    ambiguous = set()
+    with closing(archive.connect(path)) as conn:
+        for ref, raw in conn.execute(
+            "SELECT workbench_ref,body FROM users WHERE workbench_ref IN (SELECT value FROM json_each(?))",
+            (json.dumps(refs),),
+        ):
+            if ref in resolved:
+                ambiguous.add(ref)
+                continue
+            user = json.loads(raw)
+            safety = user.get("allocation_safety") or {}
+            customer = user.get("customer_id")
+            exact = user.get("customer_mapping_status") == "resolved" and re.fullmatch(r"[1-9][0-9]{0,18}", str(customer))
+            contact_allowed = not user.get("operational_excluded") and not any(safety.get(key) for key in (
+                "is_do_not_contact", "high_risk", "manual_handoff"))
+            resolved[ref] = (nickname(user), str(customer) if exact and contact_allowed else "")
+    if archive.signature(source) != signature:
+        raise ValueError("original archive changed during review publication")
+    return {ref: value for ref, value in resolved.items() if ref not in ambiguous}
+
+
+def review_materials(item):
+    materials = []
+    for card in item.get("attachments") or []:
+        if card.get("type") not in ("mini_program", "miniprogram") or card.get("verified") is not True:
+            return None
+        material = card.get("material_id")
+        if not re.fullmatch(r"[1-9][0-9]{0,18}", str(material)):
+            return None
+        materials.append(str(material))
+    return materials
+
+
+def package_review_page(read, params):
+    offset = params.get("offset", "0")
+    if not re.fullmatch(r"[0-9]{1,4}", offset):
+        raise ValueError("invalid review page")
+    detail = package_run(read, params)
+    if detail.get("review") or detail.get("handoff") or formal_status(detail):
+        return {"state": "source_changed"}
+    published = review_archive()
+    if params.get("version") == "1":
+        return {"state": "ready", "digest": detail["digest"], "identityVersion": published[-1],
+                "exclusive": not ORIGINAL_SEND_FLAG.exists()}
+    records, _ = candidate_records(read, params.get("currentPackage") or params["package"],
+                                   params.get("currentWeek") or params["week"])
+    scope = daily_scope(read, params, records, detail=detail)
+    start = int(offset)
+    page = scope[start:start + 20]
+    members = {member["key"]: member for member in page}
+    items = [item for item in detail["items"] if item["item_key"] in members]
+    result = package_detail(read, {**params, "review_page": "1"}, detail={**detail, "items": items})
+    items = {item["item_key"]: item for item in items}
+    rows = [row for row in result["rows"] if row["status"] == "待核对" and row["editable"]]
+    names = {row["id"]: row["nickname"] for row in records}
+    identities = review_recipients([row["id"] for row in rows], published)
+    for row in rows:
+        name, customer = identities.get(row["id"], ("", ""))
+        row.update(nickname=names[row["id"]] or name or row["nickname"], customer=customer,
+                   slot=members[row["key"]]["slot"], reason=members[row["key"]]["reason"],
+                   materials=review_materials(items[row["key"]]))
+    return {"state": "ready", "run": detail["run_id"], "digest": detail["digest"], "identityVersion": published[-1], "rows": rows,
+            "next": start + len(page) if start + len(page) < len(scope) else 0}
 
 
 def daily_generation_open(params, run):
@@ -979,7 +1067,7 @@ if __name__ == "__main__":
     views = ({"package_prepare": package_prepare, "package_generate": package_generate,
               "package_edit": package_edit, "package_confirm": package_confirm}
              if execute else {"profiles": profiles, "profile": profile, "catalog": catalog, "members": members,
-                              "package": package_detail, "package_daily": package_daily,
+                              "package": package_detail, "package_daily": package_daily, "package_review": package_review_page,
                               "package_history": package_history, "package_card": package_card})
     result = views[value["view"]](reader(allow_edit=execute and value["view"] in ("package_edit", "package_confirm")), params)
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))

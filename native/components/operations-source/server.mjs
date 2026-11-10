@@ -59,7 +59,7 @@ const listener = http.createServer(async (req, res) => {
   });
   if (sshConfig) server.registerTool('operations_read', {
     description: 'Read original operations plans, candidates or published archives. No generation or sending.',
-    inputSchema: {view: z.enum(['catalog', 'members', 'profiles', 'profile', 'package', 'package_daily', 'package_history', 'package_card']), params: z.record(z.string(), z.string()).default({})},
+    inputSchema: {view: z.enum(['catalog', 'members', 'profiles', 'profile', 'package', 'package_daily', 'package_history', 'package_card', 'package_review']), params: z.record(z.string(), z.string()).default({})},
   }, async input => {
     try {
       const result = await runJSONChild(['-F', sshConfig, 'workbench-operations-source', 'directory'], input, controller.signal, 85_000, {command: '/usr/bin/ssh'});

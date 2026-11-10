@@ -136,7 +136,7 @@ func (a *Server) editOperationsPackage(w http.ResponseWriter, r *http.Request) {
 	if in.Daily != "" {
 		parent, roster, err := a.dailyOperationsRoster(ctx, p, in.Daily)
 		if err != nil || roster.Run != in.Run ||
-			a.operationsExecution(ctx, in.Daily) != "Completed" {
+			parent.Destination != cfg.Input.ResourceID {
 			respond(w, nil, core.ErrConflict)
 			return
 		}
@@ -240,7 +240,7 @@ func (a *Server) operationsPackageStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	run, err := a.Store.Run(r.Context(), p, q.Get("id"))
-	if err != nil || (run.Operation != "operations_package" && run.Operation != "operations_package_confirm") {
+	if err != nil || (run.Operation != "operations_package" && run.Operation != "operations_package_confirm" && run.Operation != "operations_batch_confirm") {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
@@ -250,6 +250,14 @@ func (a *Server) operationsPackageStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	out := map[string]string{"state": status.WorkflowExecutionInfo.Status.String()}
+	if run.Operation == "operations_batch_confirm" {
+		head, err := a.Store.OperationsReview(r.Context(), run.ParentRunID)
+		if err == nil && head.Confirm == run.ID {
+			out["state"], out["result"] = "Completed", "recorded"
+		} else if out["state"] == "Completed" {
+			out["result"] = "source_changed"
+		}
+	}
 	if run.Operation == "operations_package_confirm" && out["state"] == "Completed" {
 		result, err := a.Store.Item(r.Context(), run.ID, engine.OriginalOperationsConfirmation)
 		if err != nil {

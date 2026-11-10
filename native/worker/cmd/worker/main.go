@@ -195,6 +195,7 @@ func run() error {
 	bw.RegisterWorkflow(engine.OperationsPackage)
 	bw.RegisterWorkflow(engine.OperationsPackageEdit)
 	bw.RegisterWorkflow(engine.OperationsPackageConfirm)
+	bw.RegisterWorkflow(engine.ConfirmOperationsBatch)
 	bw.RegisterActivity(a)
 	if e = bw.Start(); e != nil {
 		return e
@@ -213,6 +214,7 @@ func run() error {
 	iw.RegisterWorkflow(engine.SubmitMessage)
 	iw.RegisterWorkflow(engine.ReceiptSweep)
 	iw.RegisterWorkflow(engine.AutomaticReceipt)
+	iw.RegisterWorkflow(engine.OperationsBatchDelivery)
 	iw.RegisterActivity(a)
 	if e = iw.Start(); e != nil {
 		return e

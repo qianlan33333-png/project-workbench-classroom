@@ -124,3 +124,87 @@ test('a lost reservation response reads back only the caller’s own attempt',as
   assert.equal(f.calls.filter(x=>x==='admin.createAIAssistantPlan').length,1);
  }
 });
+
+function operationsBatchFixture(count,{lostApproval=false,invalid=false}={}){
+ const states=new Map(),calls=[];
+ const runId='12345678-1234-4abc-8123-123456789abc';
+ const rows=Array.from({length:count},(_,i)=>({key:'item-'+i,customer:String(i+1),message:'逐人正文 '+i,materials:i===0?['1070']:[]}));
+ if(invalid)rows.push({key:'missing',customer:'',message:'需要精确客户身份',materials:[]});
+ let saved,plan,approved=false;
+ const invoke=async(operation,options={})=>{
+  calls.push({operation,options});
+  switch(operation){
+   case 'admin.createAIAssistantPlan':
+    saved=options.body;
+    plan={id:42,source_kind:saved.source_kind,source_digest:saved.source_digest,target_count:saved.recipients.length,version:1,state:'pending_review'};
+    return {plan};
+   case 'admin.getAIAssistantPlan': return {plan};
+   case 'admin.previewAIAssistantPlanApproval':
+    assert.equal(options.body.expected_version,1);
+    return {eligible_count:saved.recipients.length,plan_version:1,preview_digest:'preview'};
+   case 'admin.approveAIAssistantPlan':
+    approved=true;plan={...plan,state:'dispatching',version:2};
+    if(lostApproval)throw Error('lost response');
+    return {plan};
+   case 'admin.listAIAssistantRecipients':
+    return {items:saved.recipients.map((row,i)=>({id:10000+i,customer_id:row.customer_id,staff_id:row.staff_id}))};
+   case 'admin.listAIAssistantExecutionReceipts': {
+    assert(approved);
+    const receipts=saved.recipients.map((row,i)=>({recipient_id:10000+i,customer_id:row.customer_id,staff_id:row.staff_id,
+     receipt:{receipt_found:true,msgid:'original-'+i,query_state:'observed',query_errcode:0,provider_delivery_status:i%3===0?1:i%3===1?2:0,provider_sent_at:'2026-11-11T00:01:00Z'}}));
+    const offset=Number(options.query.cursor||0),end=offset+200;
+    return {items:receipts.slice(offset,end),next_cursor:end<receipts.length?String(end):''};
+   }
+   default: throw Error(operation);
+  }
+ };
+ const workerCall=async(path,input)=>{
+  if(path.startsWith('/operations/batch-manifest?'))return {staff:'20',rows,sendEnabled:true};
+  if(path.startsWith('/connector-state?'))return states.get(new URL(path,'http://local').searchParams.get('id'))||{};
+  assert.equal(path,'/connector-state/compare');
+  assert.deepEqual(states.get(input.id)||{},input.expected);
+  states.set(input.id,input.value);
+  return {ok:true};
+ };
+ const crm=createCRM({id:'batch-test',allowedCustomerIds:Array.from({length:count},(_,i)=>i+1)},workerCall,invoke);
+ return {crm,runId,calls,rows};
+}
+
+test('one confirmed work package creates and approves one CRM plan of 5000 personalized recipients',async()=>{
+ const f=operationsBatchFixture(5000);
+ const out=await f.crm.batch({runId:f.runId},true);
+ const created=f.calls.filter(x=>x.operation==='admin.createAIAssistantPlan');
+ assert.equal(created.length,1);
+ assert.equal(created[0].options.body.recipients.length,5000);
+ assert.deepEqual(created[0].options.body.recipients[0].content,[{kind:'text',text:'逐人正文 0'},{kind:'mini_program',material_id:1070}]);
+ assert.equal(f.calls.filter(x=>x.operation==='admin.approveAIAssistantPlan').length,1);
+ assert.equal(out.entries['item-4999'].state,'accepted');
+ const receipts=await f.crm.batch({runId:f.runId},false);
+ assert.equal(receipts.entries['item-0'].state,'sent');
+ assert.equal(receipts.entries['item-1'].state,'failed');
+ assert.equal(receipts.entries['item-2'].state,'pending_confirmation');
+ assert.equal(Object.keys(receipts.entries).length,5000);
+ assert.equal(f.calls.filter(x=>x.operation==='admin.listAIAssistantExecutionReceipts').length,25);
+});
+
+test('batch excludes a missing identity, recovers a lost approval and never creates or approves again',async()=>{
+ const f=operationsBatchFixture(3,{lostApproval:true,invalid:true});
+ const first=await f.crm.batch({runId:f.runId},true);
+ assert.equal(first.entries.missing.state,'failed');
+ assert.equal(first.entries['item-0'].state,'unknown');
+ const read=await f.crm.batch({runId:f.runId},true);
+ assert.equal(read.plan,'42');
+ assert.equal(read.entries['item-0'].state,'sent');
+ assert.equal(read.entries['item-1'].state,'failed');
+ assert.equal(read.entries['item-2'].state,'pending_confirmation');
+ assert.equal(f.calls.filter(x=>x.operation==='admin.createAIAssistantPlan').length,1);
+ assert.equal(f.calls.filter(x=>x.operation==='admin.approveAIAssistantPlan').length,1);
+});
+
+test('a batch exceeding the CRM body limit is reported without automatic splitting',async()=>{
+ const f=operationsBatchFixture(700);
+ for(const row of f.rows)row.message='x'.repeat(6500);
+ const out=await f.crm.batch({runId:f.runId},true);
+ assert.match(out.entries['item-0'].error,/请求大小/);
+ assert.equal(f.calls.length,0);
+});

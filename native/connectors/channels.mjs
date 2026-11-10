@@ -128,5 +128,9 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   const dispatcher=new lark.EventDispatcher({}).register({'im.message.receive_v1':event=>ingestFeishu(c,event,workerCall)});
   await ws.start({eventDispatcher:dispatcher});if(!signal.aborted)await new Promise(r=>signal.addEventListener('abort',r,{once:true}));ws.close({force:true});
  }
- return{send,receipt,describe:async({connectionId})=>{entry(connectionId);const g=gateways.get(connectionId);if(!g)throw Error('This connection has no account directory');return g.describe()},ingestControl:async(id,raw,headers)=>{const c=controls.get(id);if(!c)throw Object.assign(Error('not_bound'),{status:404,code:'not_bound'});return c.handle(raw,headers)},ingestGateway:async(id,raw,headers)=>{const g=gateways.get(id);if(!g)throw Error('Unknown gateway');return g.ingest(raw,headers)},start:async signal=>Promise.all(config.filter(c=>c.enabled&&c.receive).map(c=>c.kind==='wechat'?pollWechat(c,signal):c.kind==='feishu'?pollFeishu(c,signal):c.kind==='wecom-gateway'&&c.receiveMode==='poll'?gateways.get(c.id).poll(signal):Promise.resolve()))};
+ return{send,receipt,operationsBatch:({connectionId,runId},send,options)=>{
+  const crm=crms.get(connectionId);
+  if(!crm)throw Error('CRM batch connector unavailable');
+  return crm.batch({runId},send,options);
+ },describe:async({connectionId})=>{entry(connectionId);const g=gateways.get(connectionId);if(!g)throw Error('This connection has no account directory');return g.describe()},ingestControl:async(id,raw,headers)=>{const c=controls.get(id);if(!c)throw Object.assign(Error('not_bound'),{status:404,code:'not_bound'});return c.handle(raw,headers)},ingestGateway:async(id,raw,headers)=>{const g=gateways.get(id);if(!g)throw Error('Unknown gateway');return g.ingest(raw,headers)},start:async signal=>Promise.all(config.filter(c=>c.enabled&&c.receive).map(c=>c.kind==='wechat'?pollWechat(c,signal):c.kind==='feishu'?pollFeishu(c,signal):c.kind==='wecom-gateway'&&c.receiveMode==='poll'?gateways.get(c.id).poll(signal):Promise.resolve()))};
 }

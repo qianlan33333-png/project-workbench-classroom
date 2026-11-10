@@ -61,6 +61,7 @@ func OperationsPackage(ctx workflow.Context, id string) (err error) {
 	if batch.Daily && batch.State == "empty" {
 		return nil
 	}
+	publish := batch.Daily && workflow.GetVersion(ctx, "operations-local-review", workflow.DefaultVersion, 1) != workflow.DefaultVersion
 	if batch.State != "ready" || batch.Total < 1 || batch.Total > 2500 {
 		return failure(core.ErrConflict)
 	}
@@ -93,10 +94,15 @@ func OperationsPackage(ctx workflow.Context, id string) (err error) {
 			}
 		}
 	}
+	if publish {
+		if err := workflow.ExecuteActivity(ctx, "PublishOriginalOperationsReview", id, batch).Get(ctx, nil); err != nil {
+			return err
+		}
+	}
 	if failed > 0 {
 		return fmt.Errorf("%d original copy items need review", failed)
 	}
-	if batch.Daily {
+	if batch.Daily && !publish {
 		return workflow.ExecuteActivity(ctx, "VerifyOriginalOperationsDrafts", id, batch).Get(ctx, nil)
 	}
 	return nil
@@ -206,7 +212,27 @@ func (a *Activities) EditOriginalOperationsItem(ctx context.Context, id string) 
 			return json.RawMessage(`{"state":"source_changed"}`), nil
 		}
 	}
-	return a.Store.OperationsPackageAction(ctx, run, "package_edit", params)
+	if params["daily"] == "" {
+		return a.Store.OperationsPackageAction(ctx, run, "package_edit", params)
+	}
+	revision, err := strconv.Atoi(params["revision"])
+	if err != nil {
+		return nil, failure(core.ErrInvalid)
+	}
+	if err = a.Store.BeginOperationsEdit(ctx, params["daily"], run.ID, params["digest"], params["item"], revision); err != nil {
+		if errors.Is(err, core.ErrConflict) {
+			return json.RawMessage(`{"state":"source_changed"}`), nil
+		}
+		return nil, err
+	}
+	result, err := a.Store.OperationsPackageAction(ctx, run, "package_edit", params)
+	if err != nil {
+		return nil, err
+	}
+	if err = a.refreshEditedOperationsReview(ctx, params["daily"], run.ID); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (a *Activities) originalOperationsItemsAllowed(ctx context.Context, params map[string]string, keys []string) (bool, error) {

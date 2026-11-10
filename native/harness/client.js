@@ -1021,7 +1021,7 @@ window.__ModuleLoader__.load({
       const [profileMeta,setProfileMeta]=useState({}),[searchText,setSearchText]=useState(""),[query,setQuery]=useState("");
       const [today,setToday]=useState(null),[todayError,setTodayError]=useState("");
       const [sourcePlan,setSourcePlan]=useState(null),[profileBack,setProfileBack]=useState("home");
-      const [sourceCopy,setSourceCopy]=useState(null),[sourceConfirm,setSourceConfirm]=useState(null),[sourceSubmission,setSourceSubmission]=useState(""),[excluded,setExcluded]=useState([]),[sourceItem,setSourceItem]=useState(null);
+      const [sourceCopy,setSourceCopy]=useState(null),[sourceConfirm,setSourceConfirm]=useState(null),[sourceSubmission,setSourceSubmission]=useState(""),[sourceItem,setSourceItem]=useState(null);
       const [copyEdit,setCopyEdit]=useState(null),[copyMessage,setCopyMessage]=useState("");
       const [history,setHistory]=useState([]),[historyMore,setHistoryMore]=useState(false);
       const [sourceHistory,setSourceHistory]=useState(null),[sourceHistoryWeek,setSourceHistoryWeek]=useState("");
@@ -1072,59 +1072,72 @@ window.__ModuleLoader__.load({
         if(data.state==="source_changed"){refresh();throw Error("档案版本已更新，请从新列表重新打开。")}
         setProfileBack(page);setProfile(data);setPage("profile");
       });
-      const loadSourceCopy=(plan,run="",item="")=>plan.daily
-        ? api(path("source-today",{daily:plan.daily,item}))
+      const loadSourceCopy=(plan,run="",item="",after="")=>plan.daily
+        ? api(path("source-today",{daily:plan.daily,item,after}))
         : api(path("source",{view:"package",package:plan.package_id,week:plan.week,run,item}));
       const loadSourceHistory=week=>act(async()=>{
         setSourceHistoryWeek(week);
-        setSourceHistory(await api(path("source",{view:"package_history",week})));
+        const [local,original]=await Promise.allSettled([
+          api(path("source-today",{history:1})),api(path("source",{view:"package_history",week}))
+        ]);
+        if(local.status==="rejected"&&original.status==="rejected")throw original.reason;
+        const published=(local.value?.packages||[]).filter(plan=>plan.week===week);
+        const localRuns=new Set(published.map(plan=>plan.run_id));
+        setSourceHistory({runs:[...published,...(original.value?.runs||[]).filter(plan=>!localRuns.has(plan.run_id))]});
       });
       const openPlan=plan=>{
         setSourcePlan(plan);setSourceCopy(null);setSourceItem(null);setSelected("");setCopyEdit(null);setCopyMessage("");
-        setExcluded([]);setSourceConfirm(null);setSourceSubmission("");setPage("source-plan");
+        setSourceConfirm(null);setSourceSubmission("");setPage("source-plan");
         act(async()=>setSourceCopy(await loadSourceCopy(plan,plan.run_id)));
       };
-      const refreshSourceCopy=()=>act(async()=>{
-        const copy=await loadSourceCopy(sourcePlan,sourcePlan.run_id);
-        setSourceCopy(copy);setSourceItem(null);setCopyMessage("");
-        refresh();
-      });
       const confirmSource=()=>act(async()=>{
-        const result=await api(path("source-confirm"),sourceConfirm);
+        const {daily,reviewVersion}=sourceConfirm;
+        const result=await api(path("source-confirm"),{daily,reviewVersion});
         setSourceConfirm(null);
         setSourceSubmission(result.runId);
-        setCopyMessage("正在查回本次确认结果。");
+        setCopyMessage("正在记录本次确认。");
       });
       useEffect(()=>{
-        if(page!=="source-plan"||!sourceSubmission)return;
+        if(page!=="source-plan"||!sourcePlan?.daily||!sourceCopy||copyEdit||sourceConfirm)return;
         let live=true,timer;
         const poll=async()=>{
           try{
-            const result=await api(path("source-package-status",{id:sourceSubmission}));
-            if(!live)return;
-            if(result.state==="Completed"){
-              const data=await loadSourceCopy(sourcePlan,sourcePlan.run_id);
+            if(sourceSubmission){
+              const result=await api(path("source-package-status",{id:sourceSubmission}));
               if(!live)return;
-              setSourceCopy(data);
-              setSourceItem(null);
-              setCopyMessage(result.result==="source_changed"?"名单或稿件有变化，请重新核对。":result.result==="needs_check"?"原中心交接结果待核实，请查看原包回执。":"原中心已记录本次确认，可在原包查看交接。");
-              setSourceSubmission("");
-              return;
+              if(result.state==="Completed"){
+                setCopyMessage(result.result==="source_changed"?"名单、稿件或发送入口有变化，请重新核对。":"已确认发送，可在本包查看逐人进度。");
+                setSourceSubmission("");
+              }else if(["Failed","Canceled","Terminated","TimedOut"].includes(result.state)){
+                setCopyMessage("本次确认未完成，请查看包内状态。");
+                setSourceSubmission("");
+              }
             }
-            if(["Failed","Canceled","Terminated","TimedOut"].includes(result.state)){
-              setCopyMessage("确认结果待核实，请刷新原稿与回执。");
-              return;
+            const data=await loadSourceCopy(sourcePlan,sourcePlan.run_id);
+            if(!live)return;
+            setSourceCopy(previous=>{
+              if(previous.reviewVersion!==data.reviewVersion)return data;
+              const byKey=new Map(data.rows.map(row=>[row.key,row]));
+              return {...data,rows:previous.rows.map(row=>byKey.get(row.key)||row),next:previous.next};
+            });
+            if(selected&&selected!==data.first?.key){
+              const person=await loadSourceCopy(sourcePlan,data.run,selected);
+              if(live)setSourceItem(person);
             }
-          }catch(e){if(live)setError(e.message)}
-          if(live)timer=setTimeout(poll,3500);
+          }catch(e){if(live&&sourceSubmission)setError(e.message)}
+          if(live)timer=setTimeout(poll,5000);
         };
-        poll();
+        timer=setTimeout(poll,sourceSubmission?800:5000);
         return()=>{live=false;clearTimeout(timer)};
-      },[page,sourcePlan,sourceSubmission]);
+      },[page,sourcePlan,sourceCopy?.run,sourceSubmission,sourceConfirm,copyEdit,selected]);
       const showSettings=kind=>act(async()=>{
         if(kind==="project"){
-          const list=await api("/transports");
-          setAccounts(list.filter(account=>account.kind==="crm-cli"&&account.enabled&&account.projects?.includes(projectId)));
+          if(view.config.readSource){
+            setAccounts(view.staffName?[{id:view.config.transport,name:view.staffName}]:[]);
+          }else{
+            const list=await api("/transports");
+            setAccounts(list.filter(account=>account.kind==="crm-cli"&&account.enabled&&account.projects?.includes(projectId)));
+          }
           setSettings({kind,knowledge:view.config.knowledge,transport:view.config.transport,staffId:view.config.staffId});
         }else{
           setExperts(await api(path("experts")));
@@ -1168,7 +1181,7 @@ window.__ModuleLoader__.load({
             }},h("option",{value:"/"},"请选择"),...(view.knowledge||[]).map(item=>h("option",{key:item.resourceId+"/"+item.section,value:item.resourceId+"/"+item.section},item.label)))),
             field("运营企微账号",h("select",{value:settings.transport,onChange:e=>setSettings({...settings,transport:e.target.value})},
               h("option",{value:""},"请选择"),...accounts.map(account=>h("option",{key:account.id,value:account.id},account.name)))),
-            settings.transport&&!settings.staffId&&h("p",{className:"wb-muted"},"此账号等待后台登记员工发送身份。"))
+            settings.transport&&(!settings.staffId||!accounts.length)&&h("p",{className:"wb-muted"},"待登记实际运营企微账号。"))
           : h(React.Fragment,null,
             field(settings.kind==="profile"?"清洗时间":"自动运行时间",h("input",{type:"time",required:true,value:settings.time,onChange:e=>setSettings({...settings,time:e.target.value})})),
             field("专家",h("select",{required:true,value:settings.expert,onChange:e=>setSettings({...settings,expert:e.target.value})},h("option",{value:""},"请选择"),...experts.map(expert=>h("option",{key:expert.name,value:expert.name},({"operations-onboarding":"新人承接专家","operations-profile":"用户档案专家"}[expert.name]||expert.name))))),
@@ -1179,30 +1192,32 @@ window.__ModuleLoader__.load({
         run?.decision?h(React.Fragment,null,h("p",null,"发送人数 "+run.reviewCount+" 人"),h("p",null,"运营企微账号 "+run.account),h("p",null,"稿件版本 "+run.version)):
           h("p",{role:"status"},dispatchClosed?"该发送任务已结束。请在名单查看逐人状态。":run?.dispatchId?"正在校验发送资格":"正在准备确认"),
         alert(error),h("div",{className:"wb-actions"},button("返回",()=>setReview(""),{disabled:busy}),button("确认发送",confirm,{className:"wb-primary",disabled:busy||!run?.decision}))));
-      const sourceRows=sourceCopy?.rows||[];
-      const draftByID=new Map(sourceRows.map(item=>[item.id,item]));
-      const displayMembers=sourceRows;
-      const sendKeys=sourceRows.filter(item=>item.status==="待核对"&&!excluded.includes(item.key)).map(item=>item.key);
-      const activeMember=displayMembers.find(item=>item.id===selected)||displayMembers[0];
-      const itemKey=activeMember&&draftByID.get(activeMember.id)?.key;
-      const draft=sourceItem?.run===sourceCopy?.run&&sourceItem?.digest===sourceCopy?.digest&&sourceItem?.rows[0]?.key===itemKey?sourceItem?.rows[0]:null;
+      const displayMembers=sourceCopy?.rows||[];
+      const activeMember=displayMembers.find(item=>item.key===selected)||displayMembers[0];
+      const itemKey=activeMember?.key;
+      const draft=sourceCopy?.first&&sourceCopy.first.key===itemKey?sourceCopy.first:
+        sourceItem?.run===sourceCopy?.run&&sourceItem?.digest===sourceCopy?.digest&&sourceItem?.rows[0]?.key===itemKey?sourceItem?.rows[0]:null;
+      const firstKey=sourceCopy?.first?.key;
       useEffect(()=>{
-        if(page!=="source-plan"||!sourceCopy?.run||!itemKey)return;
+        if(page!=="source-plan"||!sourceCopy?.run||!itemKey||itemKey===firstKey)return;
         let active=true;
         loadSourceCopy(sourcePlan,sourceCopy.run,itemKey).then(data=>{
-          if(!active)return;
-          if(data.digest!==sourceCopy.digest){
-            setError("原工作包已更新，请刷新稿件。");
-            return;
-          }
-          setSourceItem(data);
+          if(active)setSourceItem(data);
         }).catch(e=>{if(active)setError(e.message)});
         return()=>{active=false};
-      },[page,sourcePlan,sourceCopy?.run,sourceCopy?.digest,itemKey,reload]);
-      const selectSourceMember=id=>{
-        if(copyEdit||id===activeMember?.id)return;
-        setSelected(id);setCopyMessage("");setError("");
+      },[page,sourcePlan,sourceCopy?.run,sourceCopy?.digest,itemKey,firstKey,reload]);
+      const selectSourceMember=key=>{
+        if(copyEdit||key===itemKey)return;
+        setSelected(key);setCopyMessage("");setError("");
       };
+      const moreSourceMembers=()=>act(async()=>{
+        const next=await loadSourceCopy(sourcePlan,sourceCopy.run,"",sourceCopy.next);
+        if(next.reviewVersion!==sourceCopy.reviewVersion){
+          setSourceCopy(await loadSourceCopy(sourcePlan,sourceCopy.run));
+          return;
+        }
+        setSourceCopy(current=>({...current,rows:[...current.rows,...next.rows],next:next.next}));
+      });
       const saveCopy=e=>{
         e.preventDefault();
         act(async()=>{
@@ -1213,9 +1228,10 @@ window.__ModuleLoader__.load({
             setCopyEdit({...copyEdit,stale:true});
             throw Error("原稿已更新，当前输入已保留。请核对新版再修改。");
           }
-          const [copy,person]=await Promise.all([loadSourceCopy(sourcePlan,input.run),loadSourceCopy(sourcePlan,input.run,item)]);
+          const copy=await loadSourceCopy(sourcePlan,input.run);
+          const person=copy.first?.key===item?{...copy,rows:[copy.first]}:await loadSourceCopy(sourcePlan,input.run,item);
           if(copy.digest!==person.digest||person.rows[0]?.message!==text.trim()||person.rows[0]?.revision!==result.revision)
-            throw Error("保存结果待核对，请刷新稿件。");
+            throw Error("保存结果待核对。");
           setSourceCopy(copy);setSourceItem(person);setCopyEdit(null);setCopyMessage("最终稿已保存");
         });
       };
@@ -1232,11 +1248,9 @@ window.__ModuleLoader__.load({
           view&&h("div",{className:"wb-actions"},
             page==="home"&&button("历史",()=>{setPage("history");if(readSource)loadSourceHistory(shanghaiWeek())},{className:"op-link"}),
             page==="home"&&button("设置",()=>showSettings("project")),
-            page==="source-plan"&&sourceCopy&&h(React.Fragment,null,
-              sourceCopy.run&&button("刷新稿件与回执",refreshSourceCopy,{className:"op-link",disabled:busy||!!copyEdit}),
-              sourcePlan.daily&&sourceCopy.sendEnabled&&!sourceCopy.reviewed&&!sourceCopy.handoff&&!sourceCopy.formal&&
-                button("确认并发送",()=>setSourceConfirm({daily:sourcePlan.daily,digest:sourceCopy.digest,keys:sendKeys,account:sourceCopy.sendAccount,transport:sourceCopy.sendTransport}),
-                  {className:"wb-primary",disabled:busy||!!copyEdit||!!sourceSubmission||!sendKeys.length})),
+            page==="source-plan"&&sourcePlan?.daily&&!sourcePlan.historical&&sourceCopy?.sendEnabled&&
+              button("审核并确认发送",()=>setSourceConfirm({daily:sourcePlan.daily,reviewVersion:sourceCopy.reviewVersion,count:sourceCopy.pending,account:sourceCopy.sendAccount}),
+                {className:"wb-primary",disabled:busy||!!copyEdit||!!sourceSubmission}),
             page==="detail"&&button("设置",()=>showSettings("strategy")),
             page==="detail"&&button(run?.retryReview&&run.pending?"重新核对并发送":"确认并发送",startReview,{className:"wb-primary",
               disabled:busy||!run||(!run.pending&&!run.decision&&!run.resume&&run.dispatchState!=="Running")}))),
@@ -1279,15 +1293,16 @@ window.__ModuleLoader__.load({
           !!profile.missingSources?.length&&h("p",{role:"status"},"部分实时补充资料暂不可读，以下保留可读来源。"),
           ...profile.groups.map(group=>h("section",{key:group.title},h("h2",{className:"op-title"},group.title),profileFields(group.fields)))):profileFields(profile.fields)),
         page==="source-plan"&&sourcePlan&&h(React.Fragment,null,
-          sourcePlan.daily&&sourceCopy&&!sourceCopy.sendEnabled&&h("p",{className:"wb-muted"},"当前开放核对与改稿，CRM 交接未启用。"),
+          sourcePlan.daily&&!sourcePlan.historical&&sourceCopy&&!sourceCopy.sendEnabled&&!sourceCopy.reviewed&&!sourceCopy.syncing&&h("p",{className:"wb-muted"},"当前开放核对与改稿，发送尚未启用。"),
+          sourceCopy?.syncing&&h("p",{role:"status"},"正在核对原稿保存结果。"),
           sourceCopy?.formal&&h("p",{role:"status"},sourceCopy.formal==="running"?"原中心正在处理本人确认。":"原中心审核失败，请核对原包。"),
           sourceCopy?.plan&&h("p",{className:"wb-muted"},"原 CRM 计划 "+sourceCopy.plan),
           sourceCopy?h(React.Fragment,null,
               displayMembers.length?h("div",{className:"op-detail"},
                 h("table",{className:"op-table"},h("thead",null,h("tr",null,...["客户昵称","入选依据","状态"].map(label=>h("th",{key:label,scope:"col"},label)))),
-                  h("tbody",null,...displayMembers.map(item=>h("tr",{key:item.id,"aria-selected":item.id===activeMember?.id,onClick:()=>selectSourceMember(item.id)},
-                    h("td",null,button(item.nickname||"未记录称呼",()=>selectSourceMember(item.id),{disabled:!!copyEdit})),h("td",null,h("div",{className:"op-reason"},item.reason||"原运行名单")),
-                    h("td",null,item.status,sourcePlan.daily&&sourceCopy.sendEnabled&&item.status==="待核对"&&h("label",{className:"wb-muted"},h("input",{type:"checkbox",checked:!excluded.includes(item.key),"aria-label":"纳入发送 · "+item.nickname,onClick:e=>e.stopPropagation(),onChange:e=>setExcluded(e.target.checked?excluded.filter(key=>key!==item.key):[...excluded,item.key])})," 纳入")))))),
+                  h("tbody",null,...displayMembers.map(item=>h("tr",{key:item.key,"aria-selected":item.key===itemKey,onClick:()=>selectSourceMember(item.key)},
+                    h("td",null,button(item.nickname||"未记录称呼",()=>selectSourceMember(item.key),{disabled:!!copyEdit})),h("td",null,h("div",{className:"op-reason"},item.reason||"原运行名单")),
+                    h("td",null,item.status))))),
                 activeMember&&h("article",{className:"op-message",key:activeMember.id},
                   h("div",{className:"op-header"},h("h2",null,activeMember.nickname||"未记录称呼"),
                     !sourcePlan.historical&&draft?.editable&&!copyEdit&&button("修改正文",()=>{
@@ -1307,14 +1322,15 @@ window.__ModuleLoader__.load({
                       ...section.lines.map((line,i)=>h("p",{key:i},line)),
                       section.title==="我们知道他什么"&&draft.judgment.facts.map((fact,i)=>h("p",{key:"fact-"+i},fact.text,
                         h("small",{className:"op-field-source"},[fact.time,fact.status].filter(Boolean).join(" · "))))))))),
-                  !!draft?.attachments.length&&h("section",null,h("details",{className:"op-review"},
+                  !!draft?.attachments?.length&&h("section",null,h("details",{className:"op-review"},
                     h("summary",null,"预览随附卡片 · "+draft.attachments.length+" 张"),...draft.attachments.map(cardPreview))),
-                  draft?.progress&&h("section",null,h("strong",null,sourceCopy.handoff||draft.status==="已发送"?"CRM 回执":"状态明细"),h("p",null,draft.progress)),
+                  draft?.progress&&h("section",null,h("strong",null,sourceCopy.reviewed||sourceCopy.handoff||draft.status==="已发送"?"CRM 回执":"状态明细"),h("p",null,draft.progress)),
                   h("div",{className:"wb-actions"},button("查看用户档案",()=>openProfile(activeMember.id),{disabled:busy||!!copyEdit})))):h("p",null,"本工作包当前无可处理名单"),
-              null):busy?h("p",{role:"status"},"正在读取原工作包…"):button("重新核对",()=>openPlan(sourcePlan))),
-        sourceConfirm&&h(UI.Modal,{open:true,title:"确认并发送",closeLabel:"关闭",onClose:()=>{if(!busy)setSourceConfirm(null)}},
+              sourceCopy.next&&h("div",{className:"op-footer"},button("加载更多",moreSourceMembers,{disabled:busy||!!copyEdit})),
+              null):busy?h("p",{role:"status"},"正在读取工作包…"):button("重新核对",()=>openPlan(sourcePlan))),
+        sourceConfirm&&h(UI.Modal,{open:true,title:"审核并确认发送",closeLabel:"关闭",onClose:()=>{if(!busy)setSourceConfirm(null)}},
           h("section",{className:"wb-page wb-form op-modal-content"},
-            h("p",null,"将 "+sourceConfirm.keys.length+" 人的已核对稿件交给原中心。"),
+            h("p",null,"本次发送 "+sourceConfirm.count+" 人"),
             h("p",{className:"wb-muted"},"运营企微账号 "+sourceConfirm.account),
             alert(error),h("div",{className:"wb-actions"},button("返回",()=>setSourceConfirm(null),{disabled:busy}),
               button("确认发送",confirmSource,{className:"wb-primary",disabled:busy})))),
@@ -1324,8 +1340,8 @@ window.__ModuleLoader__.load({
               h("input",{type:"week",required:true,value:sourceHistoryWeek,onChange:e=>setSourceHistoryWeek(e.target.value),"aria-label":"历史周"}),
               h("button",{type:"submit",disabled:busy},"查询")),
             sourceHistory?.runs.length===0&&h("p",{className:"wb-muted"},"本周暂无原工作包记录"),
-            ...(sourceHistory?.runs||[]).map(item=>h("div",{className:"op-strategy",key:item.run_id},
-              h("strong",null,item.label),h("span",{className:"wb-muted"},item.createdAt?new Date(item.createdAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}):item.week),
+            ...(sourceHistory?.runs||[]).map(item=>h("div",{className:"op-strategy",key:item.daily||item.run_id},
+              h("strong",null,item.label),h("span",{className:"wb-muted"},item.createdAt?new Date(item.createdAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}):item.day||item.week),
               button("查看原包",()=>openPlan({...item,historical:true}),{disabled:busy})))),
           !readSource&&h("h2",{className:"op-title"},run.title),
           !readSource&&history.length===0&&h("p",{className:"wb-muted"},"暂无历史运行"),

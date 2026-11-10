@@ -8,7 +8,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -94,71 +94,6 @@ func (a *Server) dailyOperationsRoster(ctx context.Context, p core.Principal, id
 	return run, roster, err
 }
 
-func (a *Server) dailyOperationsPackage(ctx context.Context, p core.Principal, cfg operationsConfig, id, item string) (map[string]any, int, error) {
-	run, roster, err := a.dailyOperationsRoster(ctx, p, id)
-	if err != nil || roster.State != "ready" {
-		return nil, 0, errors.Join(err, core.ErrConflict)
-	}
-	allowed := make(map[string]int, len(roster.Scope))
-	now := time.Now()
-	for i, member := range roster.Scope {
-		if member.ExpiresAt == nil || now.Before(*member.ExpiresAt) {
-			allowed[member.Key] = i
-		}
-	}
-	if _, ok := allowed[item]; item != "" && !ok {
-		return nil, 0, core.ErrConflict
-	}
-	packID, week := roster.originalBinding(run)
-	data, err := a.Store.ReadOperationsDirectory(ctx, p, cfg.Input.ResourceID, "package_daily", map[string]string{
-		"package": packID, "week": week, "run": roster.Run, "item": item,
-		"strategy": run.Shared["strategy"].(string), "day": run.Shared["day"].(string),
-		"currentPackage": run.Shared["package"].(string), "currentWeek": run.Shared["week"].(string),
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	var doc map[string]any
-	if err = json.Unmarshal(data, &doc); err != nil || doc["run"] != roster.Run {
-		return nil, 0, core.ErrInvalid
-	}
-	rows, ok := doc["rows"].([]any)
-	if !ok {
-		return nil, 0, core.ErrInvalid
-	}
-	filtered := make([]any, 0, len(allowed))
-	pending := 0
-	for _, value := range rows {
-		row, ok := value.(map[string]any)
-		if !ok {
-			return nil, 0, core.ErrInvalid
-		}
-		key, _ := row["key"].(string)
-		i, exists := allowed[key]
-		if !exists {
-			continue
-		}
-		if row["id"] != roster.Scope[i].ID {
-			return nil, 0, core.ErrConflict
-		}
-		row["reason"] = roster.Scope[i].Reason
-		filtered = append(filtered, row)
-		if row["status"] == "待核对" && doc["formal"] == "" {
-			pending++
-		}
-	}
-	if item != "" && len(filtered) != 1 {
-		return nil, 0, core.ErrConflict
-	}
-	doc["rows"] = filtered
-	doc["sendEnabled"] = originalSendEnabled(cfg)
-	if doc["sendEnabled"] == true {
-		doc["sendAccount"] = cfg.Staff
-		doc["sendTransport"] = cfg.Transport
-	}
-	return doc, pending, nil
-}
-
 func (a *Server) operationsToday(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	p := principal(ctx)
@@ -167,72 +102,182 @@ func (a *Server) operationsToday(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
-	if id := r.URL.Query().Get("daily"); id != "" {
-		if a.operationsExecution(ctx, id) != "Completed" {
-			respond(w, nil, core.ErrConflict)
-			return
-		}
-		doc, _, err := a.dailyOperationsPackage(ctx, p, cfg, id, r.URL.Query().Get("item"))
+	q := r.URL.Query()
+	day := operationsDay(time.Now())
+	if id := q.Get("daily"); id != "" {
+		doc, err := a.operationsReviewView(ctx, p, cfg, id, q.Get("item"), q.Get("after"))
 		respond(w, doc, err)
 		return
 	}
-	day := operationsDay(time.Now())
-	rows, err := a.Store.DB.QueryContext(ctx, `SELECT id FROM wb_runs WHERE project_id=? AND session_id=?
-		AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.operation'))='operations_package'
-		AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.shared.day'))=? ORDER BY created_at,id`, p.ProjectID, p.SessionID, day)
+	history := q.Get("history") == "1"
+	rows, err := a.Store.DB.QueryContext(ctx, `SELECT r.body, COALESCE(JSON_UNQUOTE(JSON_EXTRACT(i.body,'$.text')),''),
+		COALESCE(JSON_UNQUOTE(JSON_EXTRACT(roster.body,'$.text')),'')
+		FROM wb_runs r LEFT JOIN wb_items i ON i.run_id=r.id AND i.item_id=?
+		LEFT JOIN wb_items roster ON roster.run_id=r.id AND roster.item_id=?
+		WHERE r.project_id=? AND r.session_id=? AND JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.operation'))='operations_package'
+		AND (JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.shared.day'))=? OR (? AND i.item_id IS NOT NULL))
+		ORDER BY r.created_at DESC,r.id DESC`, core.OperationsReviewItem, engine.OriginalOperationsRoster, p.ProjectID, p.SessionID, day, history)
 	if err != nil {
 		respond(w, nil, err)
 		return
 	}
-	var ids []string
+	defer rows.Close()
+	packages := []map[string]any{}
+	var unresolved []string
+	attention, running := false, false
+	seen := map[string]bool{}
 	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
-			break
+		var raw, header, roster string
+		var run core.Run
+		var review core.OperationsReview
+		if err = rows.Scan(&raw, &header, &roster); err != nil {
+			respond(w, nil, err)
+			return
 		}
-		ids = append(ids, id)
+		if json.Unmarshal([]byte(raw), &run) != nil || run.Destination != cfg.Input.ResourceID {
+			continue
+		}
+		if header == "" {
+			if !history {
+				var initial dailyOperationsRoster
+				_ = json.Unmarshal([]byte(roster), &initial)
+				if initial.State != "empty" {
+					unresolved = append(unresolved, run.ID)
+				}
+			}
+			continue
+		}
+		if json.Unmarshal([]byte(header), &review) != nil {
+			attention = true
+			continue
+		}
+		if !history {
+			key := core.Digest([]any{run.Shared["strategy"], run.Shared["scene"]})
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		processed := review.Confirm != "" || run.Shared["day"] != day
+		if history != processed || review.Count == 0 {
+			continue
+		}
+		packages = append(packages, map[string]any{"daily": run.ID, "run_id": review.Run, "package_id": review.Package,
+			"label": run.Title, "scene_label": run.Shared["scene"], "week": review.Week, "day": run.Shared["day"], "pending": review.Count})
 	}
-	if err == nil {
-		err = rows.Err()
+	if err = rows.Err(); err != nil {
+		respond(w, nil, err)
+		return
 	}
 	rows.Close()
-	if err != nil {
-		respond(w, nil, err)
-		return
-	}
-	packages := []map[string]any{}
-	attention := false
-	running := false
-	for _, id := range ids {
-		switch a.operationsExecution(ctx, id) {
-		case "Completed":
-		case "Running":
-			running = true
-			continue
-		default:
-			attention = true
-			continue
-		}
-		run, roster, err := a.dailyOperationsRoster(ctx, p, id)
+	for _, id := range unresolved {
+		var ended bool
+		err = a.Store.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM wb_events WHERE run_id=? AND event_kind IN ('run.failed','run.canceled'))`, id).Scan(&ended)
 		if err != nil {
-			attention = true
-			continue
+			respond(w, nil, err)
+			return
 		}
-		if roster.State == "empty" {
-			continue
-		}
-		_, pending, err := a.dailyOperationsPackage(ctx, p, cfg, id, "")
-		if err != nil {
-			attention = true
-			continue
-		}
-		if pending > 0 {
-			packID, week := roster.originalBinding(run)
-			packages = append(packages, map[string]any{"daily": id, "run_id": roster.Run, "package_id": packID,
-				"label": run.Title, "scene_label": run.Shared["scene"], "week": week, "pending": pending})
-		}
+		running = running || !ended
+		attention = attention || ended
 	}
 	respond(w, map[string]any{"day": day, "packages": packages, "attention": attention, "running": running}, nil)
+}
+
+func (a *Server) operationsReviewView(ctx context.Context, p core.Principal, cfg operationsConfig, id, item, after string) (map[string]any, error) {
+	run, err := a.Store.Run(ctx, p, id)
+	if err != nil || run.Operation != "operations_package" || run.Destination != cfg.Input.ResourceID {
+		return nil, core.ErrDenied
+	}
+	head, err := a.Store.OperationsReview(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	receipts := core.OperationsBatchStatus{}
+	if head.Confirm != "" {
+		receipts, err = a.Store.OperationsBatchResult(ctx, head.Confirm)
+		if err != nil && !core.IsMissing(err) {
+			return nil, err
+		}
+	}
+	name := operationsStaffName(cfg)
+	strategy, _ := run.Shared["strategy"].(string)
+	editable := head.Confirm == "" && head.Edit == "" && run.Shared["day"] == operationsDay(time.Now())
+	canSend := editable && head.Count > 0 && name != "" && engine.OperationsBatchEnabled(strategy, cfg.Staff)
+	view := map[string]any{"state": "ready", "run": head.Run, "digest": head.Digest,
+		"reviewVersion": core.OperationsReviewVersion(head, cfg.Transport, cfg.Staff, name), "sendEnabled": canSend,
+		"sendAccount": name, "pending": head.Count, "reviewed": head.Confirm != "", "syncing": head.Edit != "", "plan": receipts.Plan}
+	show := func(row core.OperationsReviewRow, detail bool) map[string]any {
+		state, progress := operationsDeliveryLabel(head, receipts.Entries[row.Key], row)
+		out := map[string]any{"key": row.Key, "id": row.ID, "nickname": row.Nickname, "reason": row.Reason, "status": state}
+		if detail {
+			out["message"], out["progress"], out["revision"] = row.Message, progress, row.Revision
+			out["edited"], out["editable"] = row.Edited, editable && row.Editable
+			out["judgment"], out["attachments"] = row.Judgment, row.Attachments
+		}
+		return out
+	}
+	result := []map[string]any{}
+	if item != "" {
+		row, err := a.Store.OperationsReviewRow(ctx, id, item)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, show(row, true))
+	} else {
+		if after != "" && !core.ValidID(after) {
+			return nil, core.ErrInvalid
+		}
+		rows, err := a.Store.OperationsReviewRows(ctx, id, after, 101)
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) > 100 {
+			rows = rows[:100]
+			view["next"] = rows[99].Key
+		}
+		for _, row := range rows {
+			result = append(result, show(row, false))
+		}
+		if after == "" && len(rows) > 0 {
+			first, err := a.Store.OperationsReviewRow(ctx, id, rows[0].Key)
+			if err != nil {
+				return nil, err
+			}
+			view["first"] = show(first, true)
+		}
+	}
+	if current, err := a.Store.OperationsReview(ctx, id); err != nil || current != head {
+		return nil, errors.Join(err, core.ErrConflict)
+	}
+	view["rows"] = result
+	return view, nil
+}
+
+func operationsDeliveryLabel(head core.OperationsReview, receipt core.OperationsBatchReceipt, row core.OperationsReviewRow) (string, string) {
+	if head.Confirm == "" {
+		return "待核对", row.Progress
+	}
+	switch receipt.State {
+	case "sent":
+		return "已发送", receipt.At
+	case "failed":
+		return "发送失败", receipt.Error
+	case "unknown":
+		return "回执待核实", "正在核对原 CRM 计划。"
+	case "pending_confirmation":
+		return "待发送", "企微已受理，等待员工在企微端确认。"
+	case "accepted":
+		return "待发送", "CRM 已受理。"
+	default:
+		return "待发送", "正在提交 CRM 批量计划。"
+	}
+}
+
+func operationsStaffName(cfg operationsConfig) string {
+	if cfg.Transport == "" || cfg.Staff == "" || os.Getenv("WORKBENCH_OPERATIONS_ORIGINAL_STAFF_ID") != cfg.Staff {
+		return ""
+	}
+	return strings.TrimSpace(os.Getenv("WORKBENCH_OPERATIONS_STAFF_NAME"))
 }
 
 func (a *Server) configureOriginalOperationsSchedule(w http.ResponseWriter, r *http.Request) {
@@ -316,109 +361,69 @@ func (a *Server) confirmDailyOperations(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	p := principal(ctx)
 	cfg, err := a.readOperations(ctx, p.ProjectID)
-	if err != nil || p != operationsPrincipal(p.ProjectID) || !originalSendEnabled(cfg) {
+	if err != nil || p != operationsPrincipal(p.ProjectID) || !cfg.ReadSource {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
-	var in struct {
-		Daily, Digest, Account, Transport string
-		Keys                              []string
-	}
+	var in struct{ Daily, ReviewVersion string }
 	if !decode(w, r, &in) {
 		return
 	}
-	if in.Account != cfg.Staff || in.Transport != cfg.Transport || !operationsDigest.MatchString(in.Digest) ||
-		len(in.Keys) == 0 || len(in.Keys) > 2500 || a.operationsExecution(ctx, in.Daily) != "Completed" {
+	if !core.ValidID(in.Daily) || !operationsDigest.MatchString(in.ReviewVersion) {
 		respond(w, nil, core.ErrInvalid)
 		return
 	}
-	parent, roster, err := a.dailyOperationsRoster(ctx, p, in.Daily)
-	if err != nil || roster.State != "ready" || parent.Destination != cfg.Input.ResourceID {
+	parent, err := a.Store.Run(ctx, p, in.Daily)
+	if err != nil || parent.Operation != "operations_package" || parent.Destination != cfg.Input.ResourceID {
+		respond(w, nil, core.ErrDenied)
+		return
+	}
+	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.ProjectID+"/operations-batch/"+in.Daily+"/"+in.ReviewVersion)).String()
+	head, err := a.Store.OperationsReview(ctx, parent.ID)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if head.Confirm == id {
+		respond(w, RunRef{RunID: id}, nil)
+		return
+	}
+	strategy, _ := parent.Shared["strategy"].(string)
+	name := operationsStaffName(cfg)
+	if !engine.OperationsBatchEnabled(strategy, cfg.Staff) || name == "" {
+		respond(w, nil, core.ErrDenied)
+		return
+	}
+	if parent.Shared["day"] != operationsDay(time.Now()) || head.Confirm != "" || head.Edit != "" || head.Count == 0 ||
+		in.ReviewVersion != core.OperationsReviewVersion(head, cfg.Transport, cfg.Staff, name) {
 		respond(w, nil, core.ErrConflict)
 		return
 	}
-	allowed := make(map[string]bool, len(roster.Scope))
-	for _, member := range roster.Scope {
-		allowed[member.Key] = member.ExpiresAt == nil || time.Now().Before(*member.ExpiresAt)
-	}
-	for _, key := range in.Keys {
-		if !allowed[key] {
-			respond(w, nil, core.ErrConflict)
-			return
-		}
-		delete(allowed, key)
-	}
-	slices.Sort(in.Keys)
-	keys, _ := json.Marshal(in.Keys)
-	base := p.ProjectID + "/original-confirm/" + roster.Run
-	a.operationsMu.Lock()
-	defer a.operationsMu.Unlock()
-	var id string
-	var existing core.Run
-	for attempt := 0; attempt < 10; attempt++ {
-		candidate := uuid.NewSHA1(uuid.NameSpaceURL, []byte(base+"/"+strconv.Itoa(attempt))).String()
-		old, err := a.Store.Run(ctx, p, candidate)
-		if core.IsMissing(err) {
-			id = candidate
-			break
-		}
-		if err != nil {
-			respond(w, nil, err)
-			return
-		}
-		result, err := a.Store.Item(ctx, old.ID, engine.OriginalOperationsConfirmation)
-		if err == nil && result.Text == "source_changed" {
-			continue
-		}
-		if err != nil && !core.IsMissing(err) {
-			respond(w, nil, err)
-			return
-		}
-		if old.Operation != "operations_package_confirm" || old.Shared["keys"] != string(keys) || old.Shared["digest"] != in.Digest ||
-			old.Shared["staff"] != cfg.Staff || old.Shared["transport"] != cfg.Transport || old.Destination != parent.Destination {
-			respond(w, nil, core.ErrConflict)
-			return
-		}
-		id = candidate
-		existing = old
-		break
-	}
-	if id == "" {
-		respond(w, nil, core.ErrConflict)
+	run := core.Run{ID: id, Principal: p, Operation: "operations_batch_confirm", ParentRunID: parent.ID,
+		Title: "运营工作包确认发送", ExplicitInputs: true, Quiet: true, Destination: parent.Destination,
+		Shared: map[string]any{"version": in.ReviewVersion, "staff": cfg.Staff, "transport": cfg.Transport, "strategy": strategy}}
+	if err = a.Store.SaveRun(ctx, run); err != nil {
+		respond(w, nil, err)
 		return
-	}
-	run := existing
-	if run.ID == "" {
-		packID, week := roster.originalBinding(parent)
-		run = core.Run{ID: id, Principal: p, Operation: "operations_package_confirm", Destination: parent.Destination,
-			Title: "确认原工作包", ExplicitInputs: true, Quiet: true,
-			Shared: map[string]any{"package": packID, "week": week, "day": parent.Shared["day"],
-				"strategy": parent.Shared["strategy"], "run": roster.Run, "digest": in.Digest, "keys": string(keys),
-				"staff": cfg.Staff, "transport": cfg.Transport, "currentPackage": parent.Shared["package"], "currentWeek": parent.Shared["week"],
-				"daily": parent.ID}}
-		if err = a.Store.SaveRun(ctx, run); err != nil {
-			respond(w, nil, err)
-			return
-		}
-	} else {
-		state := a.operationsExecution(ctx, id)
-		if state != "NotFound" {
-			respond(w, RunRef{RunID: id}, nil)
-			return
-		}
-		if run.Shared["daily"] != parent.ID {
-			respond(w, nil, core.ErrConflict)
-			return
-		}
 	}
 	_, err = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: engine.BatchQueue,
-		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.WriteTask,
+		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY}, engine.WriteTask,
 		engine.WriteInput{RunID: id, ProjectID: p.ProjectID, Operation: run.Operation})
 	respond(w, RunRef{RunID: id}, accepted(err))
 }
 
-func originalSendEnabled(cfg operationsConfig) bool {
-	return cfg.ReadSource && cfg.Transport != "" && cfg.Staff != "" &&
-		os.Getenv("WORKBENCH_OPERATIONS_ORIGINAL_SEND") == "1" &&
-		os.Getenv("WORKBENCH_OPERATIONS_ORIGINAL_STAFF_ID") == cfg.Staff
+func (a *Server) operationsBatchManifest(w http.ResponseWriter, r *http.Request) {
+	p := principal(r.Context())
+	if !p.IsOwner() || p.SessionID != "channel-connector" {
+		respond(w, nil, core.ErrDenied)
+		return
+	}
+	run, rows, err := a.Store.OperationsBatchManifest(r.Context(), r.URL.Query().Get("id"))
+	if err != nil || run.Shared["transport"] != r.URL.Query().Get("connection") {
+		respond(w, nil, core.ErrDenied)
+		return
+	}
+	strategy, _ := run.Shared["strategy"].(string)
+	staff, _ := run.Shared["staff"].(string)
+	respond(w, map[string]any{"staff": staff, "rows": rows, "sendEnabled": engine.OperationsBatchEnabled(strategy, staff)}, nil)
 }
