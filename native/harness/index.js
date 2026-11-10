@@ -10,6 +10,7 @@ import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { attachmentText } from "./attachment-text.js";
 import { deliveryProjection } from "./delivery-state.js";
 import { modelCapacity, admittedStream } from './model-capacity.js';
+import { sessionModelOptions, applyProjectReasoning } from './model-options.js';
 import { toolNamespace, namespaceOfTool } from './tool-namespace.js';
 import { installPersonalMemory } from './personal-memory.js';
 import { replyEvidenceProjection } from './reply-evidence.js';
@@ -270,7 +271,7 @@ export async function apply(ctx, config) {
     let agent=ctx.agents.get(sessionId);
     if(!agent){
       const persisted=await ctx.sessionPersistence.stat(sessionId);
-      const options={provider:config.provider,model:config.model,reasoningEffort:'off',maxTokens:4000};
+      const options=sessionModelOptions(config,idOf(path));
       const setup=agentCtx=>ctx.agentPresets.mount(agentCtx,'workbench').then(()=>undefined);
       const handle=persisted
        ? await ctx.agents.resume({resumeSessionId:sessionId,agentOptions:options,setup})
@@ -278,6 +279,7 @@ export async function apply(ctx, config) {
       agentHandles.set(sessionId,handle);agent=handle.agent;
     }
     if(agent.session.header.cwd!==path)throw requestError('Session workspace mismatch',403);
+    applyProjectReasoning(agent,config,idOf(path));
     if(!await ctx.sessions.flush(agent.session))throw Error('Session was not persisted');
     return agent;
   }

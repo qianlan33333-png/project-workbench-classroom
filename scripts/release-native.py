@@ -2,7 +2,7 @@
 """Native format support for the existing workbench release lock/controller.
 No CLI and no independent lock: release-common.py owns the transaction.
 """
-import hashlib, json, os, pwd, re, shutil, sqlite3, subprocess, tarfile, time, urllib.error, urllib.request
+import hashlib, json, os, pwd, re, shutil, sqlite3, subprocess, tarfile, tempfile, time, urllib.error, urllib.request
 from pathlib import Path
 
 UNITS=('project-workbench-channels','project-workbench','project-workbench-worker','project-workbench-temporal')
@@ -78,7 +78,50 @@ def stop(c):
                 or (result.returncode and state.get('LoadState')!='not-found')):
                 raise RuntimeError('Workbench service did not stop: '+name)
 
+# Owner-installed method configurations follow the same current/previous and
+# recovery path as code. This registry is deployment metadata, not Agent policy.
+METHOD_BINDINGS=Path('/var/lib/project-workbench-native/project-method-releases.json')
+PROJECT_ROOT=Path('/var/lib/project-workbench-native/projects')
+METHOD_BACKUPS=Path('/var/lib/project-workbench-native/config-previous')
+
+def restore_project_methods(path):
+    if not METHOD_BINDINGS.exists():return
+    registry=json.loads(METHOD_BINDINGS.read_text())
+    packages=registry.get(str(path.resolve()),[])
+    prepared=[]
+    for item in packages:
+        source=Path(item['source']);target=Path(item['target'])
+        if (not source.is_dir() or source.is_symlink() or
+            not (source.resolve().is_relative_to(path.resolve()) or source.resolve().is_relative_to(METHOD_BACKUPS.resolve())) or
+            not target.parent.resolve().is_relative_to(PROJECT_ROOT.resolve()) or
+            target.parent.name!='skills' or target.parent.parent.name!='.agents' or
+            target.is_symlink() or target.name in ('','.','..')):
+            raise RuntimeError('Invalid project method package path')
+        files={}
+        for f in source.rglob('*'):
+            if f.is_symlink():raise RuntimeError('Project methods cannot contain symlinks')
+            if f.is_file():files[str(f.relative_to(source))]=hashlib.sha256(f.read_bytes()).hexdigest()
+        if files!=item['files'] or 'SKILL.md' not in files:
+            raise RuntimeError('Project method package checksum mismatch')
+        if any(target==other for _,other in prepared):raise RuntimeError('Duplicate project method target')
+        prepared.append((source,target))
+    account=pwd.getpwnam('projectwb') if prepared else None
+    # All packages validate before the first target changes. Interrupted installs
+    # are safe to repeat from the immutable package before starting consumers.
+    for source,target in prepared:
+        target.parent.mkdir(parents=True,exist_ok=True)
+        stage=Path(tempfile.mkdtemp(prefix='.method-release-',dir=target.parent))
+        try:
+            shutil.copytree(source,stage,dirs_exist_ok=True)
+            for f in [stage,*stage.rglob('*')]:os.chown(f,account.pw_uid,account.pw_gid)
+            if target.exists():shutil.rmtree(target)
+            os.rename(stage,target)
+        finally:
+            if stage.exists():shutil.rmtree(stage)
+
+
 def start(c,path,channels=False):
+    if is_native(path):restore_project_methods(path)
     configure_units(c,path)
     c.point('current',path)
     if not is_native(path):

@@ -166,4 +166,30 @@ class DependencyTest(unittest.TestCase):
    path=Path(temp);(path/'native.service').write_text('WorkingDirectory=/retiring-native\n')
    def command(*args,**kwargs):return types.SimpleNamespace(stdout='moved\n' if args[1]=='ps' else json.dumps([{'Name':'external','Mounts':[{'Source':'/integrations/tools'}]}]))
    n.check_container_dependencies(types.SimpleNamespace(as_user=command),[Path('/retiring')],[path])
+class MethodPackages(unittest.TestCase):
+ def test_version_switch_and_interrupted_restore(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp).resolve();projects=root/'projects';target=projects/'p/.agents/skills/expert';target.mkdir(parents=True);(target/'SKILL.md').write_text('initial')
+   old=root/'old';new=root/'new';registry={}
+   for release,value in [(old,'previous method'),(new,'candidate method')]:
+    source=release/'methods/expert';source.mkdir(parents=True);(source/'SKILL.md').write_text(value)
+    registry[str(release)]=[{'source':str(source),'target':str(target),'files':{'SKILL.md':n.hashlib.sha256(value.encode()).hexdigest()}}]
+   bindings=root/'bindings.json';bindings.write_text(json.dumps(registry));account=types.SimpleNamespace(pw_uid=n.os.getuid(),pw_gid=n.os.getgid())
+   with patch.object(n,'METHOD_BINDINGS',bindings),patch.object(n,'PROJECT_ROOT',projects),patch.object(n,'METHOD_BACKUPS',root/'backup'),patch.object(n.pwd,'getpwnam',return_value=account):
+    n.restore_project_methods(new);self.assertEqual((target/'SKILL.md').read_text(),'candidate method')
+    n.restore_project_methods(old);self.assertEqual((target/'SKILL.md').read_text(),'previous method')
+    n.shutil.rmtree(target) # process died after removing target, before rename
+    n.restore_project_methods(old);self.assertEqual((target/'SKILL.md').read_text(),'previous method')
+    (new/'methods/expert/SKILL.md').write_text('unexpected bytes')
+    with self.assertRaisesRegex(RuntimeError,'checksum'):n.restore_project_methods(new)
+    self.assertEqual((target/'SKILL.md').read_text(),'previous method')
+    (new/'methods/expert/SKILL.md').write_text('candidate method');(new/'methods/expert/link').symlink_to(target/'SKILL.md')
+    with self.assertRaisesRegex(RuntimeError,'symlinks'):n.restore_project_methods(new)
+ def test_start_restores_before_services(self):
+  order=[];c=types.SimpleNamespace(run=lambda *a,**kw:order.append('run'),point=lambda *a:None)
+  response=types.SimpleNamespace(close=lambda:None)
+  with patch.object(n,'is_native',return_value=True),patch.object(n,'restore_project_methods',side_effect=lambda p:order.append('restore')),patch.object(n,'configure_units'),patch.object(n,'health'),patch.object(n.urllib.request,'urlopen',return_value=response):
+   n.start(c,Path('/selected'))
+  self.assertEqual(order[0],'restore')
+
 if __name__=='__main__':unittest.main()
