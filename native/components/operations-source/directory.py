@@ -151,7 +151,7 @@ def profile_lookup(read, params):
         metadata = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata WHERE key IN ('__read_index','snapshot_id')")}
         if metadata.get("__read_index", {}).get("source_signature") != signature:
             raise ValueError("archive index is stale")
-        rows = db.execute("SELECT safe_ref FROM users WHERE json_extract(body,'$.external_userid')=? LIMIT 2", (external,)).fetchall()
+        rows = db.execute("SELECT workbench_ref FROM users WHERE json_extract(body,'$.external_userid')=? LIMIT 2", (external,)).fetchall()
     if len(rows) > 1:
         raise ValueError("ambiguous external contact identity")
     result = {"externalUserId": external, "records": []}

@@ -15,7 +15,7 @@ class ProfileLookupTest(unittest.TestCase):
             module=types.SimpleNamespace(signature=lambda _:signature,cache_key=lambda _:'key',
                 connect=lambda p:sqlite3.connect('file:'+str(p)+'?mode=ro&immutable=1',uri=True))
             with sqlite3.connect(path) as db:
-                db.execute('CREATE TABLE metadata(key,value)');db.execute('CREATE TABLE users(safe_ref,body)')
+                db.execute('CREATE TABLE metadata(key,value)');db.execute('CREATE TABLE users(workbench_ref,body)')
                 db.executemany('INSERT INTO metadata VALUES(?,?)',[('__read_index',json.dumps({'source_signature':signature})),('snapshot_id','"v1"')])
                 db.execute('INSERT INTO users VALUES(?,?)',('usr_one',json.dumps({'external_userid':'wm_one'})))
             doc={'state':'ready','id':'usr_one','snapshot':'v1','nickname':'Synthetic','groups':[]}
@@ -27,7 +27,7 @@ class ProfileLookupTest(unittest.TestCase):
                 with sqlite3.connect(path) as db:db.execute('INSERT INTO users VALUES(?,?)',('usr_two',json.dumps({'external_userid':'wm_one'})))
                 with self.assertRaises(ValueError):profile_lookup(None,{'externalUserId':'wm_one'})
                 read.assert_not_called()
-                with sqlite3.connect(path) as db:db.execute("DELETE FROM users WHERE safe_ref='usr_two'")
+                with sqlite3.connect(path) as db:db.execute("DELETE FROM users WHERE workbench_ref='usr_two'")
                 read.side_effect=lambda *_:(setattr(module,'signature',lambda _:['changed']) or doc)
                 with self.assertRaises(ValueError):profile_lookup(None,{'externalUserId':'wm_one'})
                 module.signature=lambda _:signature
