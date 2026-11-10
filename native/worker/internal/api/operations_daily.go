@@ -102,6 +102,11 @@ func (a *Server) operationsToday(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
+	resource, err := a.Store.Resource(ctx, cfg.Input.ResourceID)
+	if err != nil || resource.OwnerProject != p.ProjectID && resource.MaintainerProject != p.ProjectID {
+		respond(w, nil, core.ErrDenied)
+		return
+	}
 	q := r.URL.Query()
 	day := operationsDay(time.Now())
 	if id := q.Get("daily"); id != "" {

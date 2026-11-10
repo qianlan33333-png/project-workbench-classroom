@@ -288,7 +288,12 @@ func (s *Store) Items(ctx context.Context, p Principal, run, after string) ([]It
 		}
 		return []ItemResult{}, nil
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT body FROM wb_items WHERE run_id=? AND item_id>? ORDER BY item_id LIMIT 200`, run, after)
+	query := `SELECT body FROM wb_items WHERE run_id=? AND item_id>?`
+	if r.Operation == "operations_package" || r.Operation == "operations_batch_confirm" {
+		// The review projection contains connector-only customer and material IDs.
+		query += ` AND item_id NOT LIKE 'original-review-row-%' AND item_id NOT IN ('original-review','original-batch-result')`
+	}
+	rows, e := s.DB.QueryContext(ctx, query+` ORDER BY item_id LIMIT 200`, run, after)
 	if e != nil {
 		return nil, e
 	}

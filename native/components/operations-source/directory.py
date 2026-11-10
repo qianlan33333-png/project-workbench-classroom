@@ -881,6 +881,9 @@ def review_recipients(refs, published):
     resolved = {}
     ambiguous = set()
     with closing(archive.connect(path)) as conn:
+        metadata = conn.execute("SELECT value FROM metadata WHERE key='__read_index'").fetchone()
+        if not metadata or json.loads(metadata[0]).get("source_signature") != signature:
+            raise ValueError("original archive index is stale")
         for ref, raw in conn.execute(
             "SELECT workbench_ref,body FROM users WHERE workbench_ref IN (SELECT value FROM json_each(?))",
             (json.dumps(refs),),

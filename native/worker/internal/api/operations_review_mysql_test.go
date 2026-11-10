@@ -53,6 +53,11 @@ func TestMySQLOperationsReviewLocalAndFrozen(t *testing.T) {
 		Reason: "原策略 D2", Message: "旧稿", Editable: true, Slot: core.Digest(id)}
 	review := core.OperationsReview{Run: "copybatch-" + strings.Repeat("1", 32), Digest: core.Digest("original"), Week: "2026-W46", Package: "weekpkg-source"}
 	must(s.PublishOperationsReview(ctx, parent.ID, review, []core.OperationsReviewRow{draft}))
+	items, err := s.Items(ctx, p, parent.ID, "")
+	must(err)
+	if len(items) != 0 {
+		t.Fatal("generic run reader exposed connector-only review data")
+	}
 	get := func(url string) string {
 		t.Helper()
 		r := httptest.NewRequest("GET", url, nil)
