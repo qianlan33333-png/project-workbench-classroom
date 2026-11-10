@@ -1075,6 +1075,16 @@ window.__ModuleLoader__.load({
       const loadSourceCopy=(plan,run="",item="",after="")=>plan.daily
         ? api(path("source-today",{daily:plan.daily,item,after}))
         : api(path("source",{view:"package",package:plan.package_id,week:plan.week,run,item}));
+      const loadVisibleSourceCopy=async(plan,count)=>{
+        const data=await loadSourceCopy(plan,plan.run_id);
+        while(data.next&&data.rows.length<count){
+          const page=await loadSourceCopy(plan,data.run,"",data.next);
+          if(page.reviewVersion!==data.reviewVersion)return loadSourceCopy(plan,plan.run_id);
+          data.rows.push(...page.rows);
+          data.next=page.next;
+        }
+        return data;
+      };
       const loadSourceHistory=week=>act(async()=>{
         setSourceHistoryWeek(week);
         const [local,original]=await Promise.allSettled([
@@ -1113,13 +1123,9 @@ window.__ModuleLoader__.load({
                 setSourceSubmission("");
               }
             }
-            const data=await loadSourceCopy(sourcePlan,sourcePlan.run_id);
+            const data=await loadVisibleSourceCopy(sourcePlan,sourceCopy.rows.length);
             if(!live)return;
-            setSourceCopy(previous=>{
-              if(previous.reviewVersion!==data.reviewVersion)return data;
-              const byKey=new Map(data.rows.map(row=>[row.key,row]));
-              return {...data,rows:previous.rows.map(row=>byKey.get(row.key)||row),next:previous.next};
-            });
+            setSourceCopy(data);
             if(selected&&selected!==data.first?.key){
               const person=await loadSourceCopy(sourcePlan,data.run,selected);
               if(live)setSourceItem(person);
@@ -1129,11 +1135,13 @@ window.__ModuleLoader__.load({
         };
         timer=setTimeout(poll,sourceSubmission?800:5000);
         return()=>{live=false;clearTimeout(timer)};
-      },[page,sourcePlan,sourceCopy?.run,sourceSubmission,sourceConfirm,copyEdit,selected]);
+      },[page,sourcePlan,sourceCopy?.run,sourceCopy?.rows.length,sourceSubmission,sourceConfirm,copyEdit,selected]);
       const showSettings=kind=>act(async()=>{
         if(kind==="project"){
           if(view.config.readSource){
-            setAccounts(view.staffName?[{id:view.config.transport,name:view.staffName}]:[]);
+            const list=(await api("/transports")).filter(account=>account.kind==="crm-cli"&&account.enabled&&account.projects?.includes(projectId));
+            const binding=list.find(account=>account.id===view.config.transport)||(list.length===1?list[0]:null);
+            setAccounts(view.staffName&&binding?[{id:binding.id,name:view.staffName}]:[]);
           }else{
             const list=await api("/transports");
             setAccounts(list.filter(account=>account.kind==="crm-cli"&&account.enabled&&account.projects?.includes(projectId)));
@@ -1228,7 +1236,7 @@ window.__ModuleLoader__.load({
             setCopyEdit({...copyEdit,stale:true});
             throw Error("原稿已更新，当前输入已保留。请核对新版再修改。");
           }
-          const copy=await loadSourceCopy(sourcePlan,input.run);
+          const copy=await loadVisibleSourceCopy(sourcePlan,sourceCopy.rows.length);
           const person=copy.first?.key===item?{...copy,rows:[copy.first]}:await loadSourceCopy(sourcePlan,input.run,item);
           if(copy.digest!==person.digest||person.rows[0]?.message!==text.trim()||person.rows[0]?.revision!==result.revision)
             throw Error("保存结果待核对。");
@@ -1248,9 +1256,9 @@ window.__ModuleLoader__.load({
           view&&h("div",{className:"wb-actions"},
             page==="home"&&button("历史",()=>{setPage("history");if(readSource)loadSourceHistory(shanghaiWeek())},{className:"op-link"}),
             page==="home"&&button("设置",()=>showSettings("project")),
-            page==="source-plan"&&sourcePlan?.daily&&!sourcePlan.historical&&sourceCopy?.sendEnabled&&
+            page==="source-plan"&&sourcePlan?.daily&&!sourcePlan.historical&&sourceCopy&&!sourceCopy.reviewed&&sourceCopy.pending>0&&
               button("审核并确认发送",()=>setSourceConfirm({daily:sourcePlan.daily,reviewVersion:sourceCopy.reviewVersion,count:sourceCopy.pending,account:sourceCopy.sendAccount}),
-                {className:"wb-primary",disabled:busy||!!copyEdit||!!sourceSubmission}),
+                {className:"wb-primary",disabled:busy||!sourceCopy.sendEnabled||!!copyEdit||!!sourceSubmission}),
             page==="detail"&&button("设置",()=>showSettings("strategy")),
             page==="detail"&&button(run?.retryReview&&run.pending?"重新核对并发送":"确认并发送",startReview,{className:"wb-primary",
               disabled:busy||!run||(!run.pending&&!run.decision&&!run.resume&&run.dispatchState!=="Running")}))),

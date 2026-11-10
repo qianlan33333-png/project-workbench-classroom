@@ -207,7 +207,7 @@ func (a *Server) operationsReviewView(ctx context.Context, p core.Principal, cfg
 	name := operationsStaffName(cfg)
 	strategy, _ := run.Shared["strategy"].(string)
 	editable := head.Confirm == "" && head.Edit == "" && run.Shared["day"] == operationsDay(time.Now())
-	canSend := editable && head.Count > 0 && name != "" && engine.OperationsBatchEnabled(strategy, cfg.Staff)
+	canSend := editable && head.Count > 0 && name != "" && cfg.Transport != "" && engine.OperationsBatchEnabled(strategy, cfg.Staff)
 	view := map[string]any{"state": "ready", "run": head.Run, "digest": head.Digest,
 		"reviewVersion": core.OperationsReviewVersion(head, cfg.Transport, cfg.Staff, name), "sendEnabled": canSend,
 		"sendAccount": name, "pending": head.Count, "reviewed": head.Confirm != "", "syncing": head.Edit != "", "plan": receipts.Plan}
@@ -279,7 +279,7 @@ func operationsDeliveryLabel(head core.OperationsReview, receipt core.Operations
 }
 
 func operationsStaffName(cfg operationsConfig) string {
-	if cfg.Transport == "" || cfg.Staff == "" || os.Getenv("WORKBENCH_OPERATIONS_ORIGINAL_STAFF_ID") != cfg.Staff {
+	if cfg.Staff == "" || os.Getenv("WORKBENCH_OPERATIONS_ORIGINAL_STAFF_ID") != cfg.Staff {
 		return ""
 	}
 	return strings.TrimSpace(os.Getenv("WORKBENCH_OPERATIONS_STAFF_NAME"))
@@ -395,7 +395,7 @@ func (a *Server) confirmDailyOperations(w http.ResponseWriter, r *http.Request) 
 	}
 	strategy, _ := parent.Shared["strategy"].(string)
 	name := operationsStaffName(cfg)
-	if !engine.OperationsBatchEnabled(strategy, cfg.Staff) || name == "" {
+	if !engine.OperationsBatchEnabled(strategy, cfg.Staff) || name == "" || cfg.Transport == "" {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
@@ -418,17 +418,66 @@ func (a *Server) confirmDailyOperations(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *Server) operationsBatchManifest(w http.ResponseWriter, r *http.Request) {
-	p := principal(r.Context())
+	ctx := r.Context()
+	p := principal(ctx)
 	if !p.IsOwner() || p.SessionID != "channel-connector" {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
-	run, rows, err := a.Store.OperationsBatchManifest(r.Context(), r.URL.Query().Get("id"))
-	if err != nil || run.Shared["transport"] != r.URL.Query().Get("connection") {
+	q := r.URL.Query()
+	if q.Get("check") == "write" {
+		ok, err := a.operationsBatchWriteAllowed(ctx, q.Get("id"), q.Get("connection"))
+		respond(w, map[string]bool{"sendEnabled": ok}, err)
+		return
+	}
+	run, rows, err := a.Store.OperationsBatchManifest(ctx, q.Get("id"))
+	if err != nil || run.Shared["transport"] != q.Get("connection") {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
 	strategy, _ := run.Shared["strategy"].(string)
 	staff, _ := run.Shared["staff"].(string)
 	respond(w, map[string]any{"staff": staff, "rows": rows, "sendEnabled": engine.OperationsBatchEnabled(strategy, staff)}, nil)
+}
+
+func (a *Server) operationsBatchWriteAllowed(ctx context.Context, id, connection string) (bool, error) {
+	run, err := a.Store.ExecutionRun(ctx, id)
+	if err != nil || run.Operation != "operations_batch_confirm" || run.Shared["transport"] != connection {
+		return false, core.ErrDenied
+	}
+	parent, err := a.Store.Run(ctx, run.Principal, run.ParentRunID)
+	if err != nil || parent.Shared["day"] != operationsDay(time.Now()) {
+		return false, err
+	}
+	head, err := a.Store.OperationsReview(ctx, parent.ID)
+	if err != nil || head.Confirm != id {
+		return false, err
+	}
+	cfg, err := a.readOperations(ctx, run.Principal.ProjectID)
+	if err != nil {
+		return false, err
+	}
+	strategy, _ := run.Shared["strategy"].(string)
+	if !cfg.ReadSource || cfg.Input.ResourceID != parent.Destination || cfg.Transport != connection ||
+		run.Shared["staff"] != cfg.Staff || !engine.OperationsBatchEnabled(strategy, cfg.Staff) {
+		return false, nil
+	}
+	transport, err := a.Store.Transport(ctx, run.Principal, connection)
+	if err != nil || transport.Kind != "crm-cli" {
+		return false, err
+	}
+	raw, err := a.Store.ReadOperationsDirectory(ctx, run.Principal, parent.Destination, "package_review",
+		map[string]string{"package": head.Package, "week": head.Week, "run": head.Run, "version": "authority"})
+	if err != nil {
+		return false, err
+	}
+	var check struct {
+		State, Digest, IdentityVersion string
+		Exclusive                      bool
+	}
+	if err = json.Unmarshal(raw, &check); err != nil {
+		return false, err
+	}
+	return check.State == "ready" && check.Exclusive && check.Digest == head.Digest &&
+		check.IdentityVersion == head.IdentityVersion, nil
 }

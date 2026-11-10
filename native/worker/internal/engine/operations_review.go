@@ -130,7 +130,9 @@ func (a *Activities) FreezeOperationsBatch(ctx context.Context, id string) error
 		head.Edit != "" || head.Confirm != "" || version != core.OperationsReviewVersion(head, transport, staff, name) {
 		return a.operationsBatchSourceChanged(ctx, id, version)
 	}
-	params := map[string]string{"package": head.Package, "week": head.Week, "run": head.Run, "version": "1"}
+	params := map[string]string{"package": head.Package, "week": head.Week, "run": head.Run, "version": "1",
+		"day": sharedString(parent, "day"), "strategy": sharedString(parent, "strategy"),
+		"currentPackage": sharedString(parent, "package"), "currentWeek": sharedString(parent, "week")}
 	raw, err := a.Store.ReadOperationsDirectory(ctx, run.Principal, parent.Destination, "package_review", params)
 	if err != nil {
 		return err
@@ -138,6 +140,7 @@ func (a *Activities) FreezeOperationsBatch(ctx context.Context, id string) error
 	var checked struct {
 		State, Digest, IdentityVersion string
 		Exclusive                      bool
+		ActiveKeys                     []string
 	}
 	if json.Unmarshal(raw, &checked) != nil || checked.State != "ready" || !checked.Exclusive || checked.IdentityVersion == "" {
 		return a.operationsBatchSourceChanged(ctx, id, version)
@@ -159,7 +162,7 @@ func (a *Activities) FreezeOperationsBatch(ctx context.Context, id string) error
 	if err != nil || c.Kind != "crm-cli" {
 		return failure(errors.Join(err, core.ErrDenied))
 	}
-	if err = a.Store.ConfirmOperationsReview(ctx, parent, id, version, staff, transport, name); errors.Is(err, core.ErrConflict) {
+	if err = a.Store.ConfirmOperationsReview(ctx, parent, id, version, staff, transport, name, checked.ActiveKeys); errors.Is(err, core.ErrConflict) {
 		return a.operationsBatchSourceChanged(ctx, id, version)
 	}
 	if err != nil {
@@ -210,7 +213,7 @@ func (a *Activities) ReadOrSubmitOperationsBatch(ctx context.Context, id string)
 	if err != nil || transport.Kind != "crm-cli" {
 		return errors.Join(err, core.ErrDenied)
 	}
-	send := len(previous.Entries) == 0 && OperationsBatchEnabled(sharedString(run, "strategy"), sharedString(run, "staff"))
+	send := OperationsBatchEnabled(sharedString(run, "strategy"), sharedString(run, "staff"))
 	session, err := connectConnectorWithTimeout(ctx, transport, 11*time.Minute)
 	if err != nil {
 		return err

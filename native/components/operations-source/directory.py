@@ -911,7 +911,9 @@ def review_materials(item):
         material = card.get("material_id")
         if not re.fullmatch(r"[1-9][0-9]{0,18}", str(material)):
             return None
-        materials.append(str(material))
+        if not all(isinstance(card.get(key), str) and card[key] for key in ("title", "appid", "page")):
+            return None
+        materials.append({"id": str(material), "title": card["title"], "appId": card["appid"], "page": card["page"]})
     return materials
 
 
@@ -923,12 +925,15 @@ def package_review_page(read, params):
     if detail.get("review") or detail.get("handoff") or formal_status(detail):
         return {"state": "source_changed"}
     published = review_archive()
-    if params.get("version") == "1":
+    if params.get("version") == "authority":
         return {"state": "ready", "digest": detail["digest"], "identityVersion": published[-1],
                 "exclusive": not ORIGINAL_SEND_FLAG.exists()}
     records, _ = candidate_records(read, params.get("currentPackage") or params["package"],
                                    params.get("currentWeek") or params["week"])
     scope = daily_scope(read, params, records, detail=detail)
+    if params.get("version") == "1":
+        return {"state": "ready", "digest": detail["digest"], "identityVersion": published[-1],
+                "activeKeys": [row["key"] for row in scope], "exclusive": not ORIGINAL_SEND_FLAG.exists()}
     start = int(offset)
     page = scope[start:start + 20]
     members = {member["key"]: member for member in page}
@@ -942,6 +947,7 @@ def package_review_page(read, params):
         name, customer = identities.get(row["id"], ("", ""))
         row.update(nickname=names[row["id"]] or name or row["nickname"], customer=customer,
                    slot=members[row["key"]]["slot"], reason=members[row["key"]]["reason"],
+                   expiresAt=members[row["key"]]["expiresAt"],
                    materials=review_materials(items[row["key"]]))
     return {"state": "ready", "run": detail["run_id"], "digest": detail["digest"], "identityVersion": published[-1], "rows": rows,
             "next": start + len(page) if start + len(page) < len(scope) else 0}

@@ -23,29 +23,38 @@ type OperationsReview struct {
 }
 
 type OperationsReviewRow struct {
-	Key         string          `json:"key"`
-	ID          string          `json:"id"`
-	Nickname    string          `json:"nickname"`
-	Reason      string          `json:"reason"`
-	Message     string          `json:"message"`
-	Progress    string          `json:"progress"`
-	Revision    int             `json:"revision"`
-	Edited      bool            `json:"edited"`
-	Editable    bool            `json:"editable"`
-	Judgment    json.RawMessage `json:"judgment"`
-	Attachments json.RawMessage `json:"attachments"`
-	Customer    string          `json:"customer"`
-	Slot        string          `json:"slot"`
-	Materials   []string        `json:"materials"`
-	Blocked     string          `json:"blocked,omitempty"`
+	Key         string               `json:"key"`
+	ID          string               `json:"id"`
+	Nickname    string               `json:"nickname"`
+	Reason      string               `json:"reason"`
+	Message     string               `json:"message"`
+	Progress    string               `json:"progress"`
+	Revision    int                  `json:"revision"`
+	Edited      bool                 `json:"edited"`
+	Editable    bool                 `json:"editable"`
+	Judgment    json.RawMessage      `json:"judgment"`
+	Attachments json.RawMessage      `json:"attachments"`
+	Customer    string               `json:"customer"`
+	Slot        string               `json:"slot"`
+	Materials   []OperationsMaterial `json:"materials"`
+	ExpiresAt   *time.Time           `json:"expiresAt,omitempty"`
+	Blocked     string               `json:"blocked,omitempty"`
+}
+
+type OperationsMaterial struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	AppID string `json:"appId"`
+	Page  string `json:"page"`
 }
 
 type OperationsBatchItem struct {
-	Key       string   `json:"key"`
-	Customer  string   `json:"customer"`
-	Message   string   `json:"message"`
-	Materials []string `json:"materials"`
-	Blocked   string   `json:"blocked,omitempty"`
+	Key       string               `json:"key"`
+	Customer  string               `json:"customer"`
+	Message   string               `json:"message"`
+	Materials []OperationsMaterial `json:"materials"`
+	ExpiresAt *time.Time           `json:"expiresAt,omitempty"`
+	Blocked   string               `json:"blocked,omitempty"`
 }
 
 type OperationsBatchStatus struct {
@@ -206,7 +215,7 @@ func (s *Store) OperationsReviewRows(ctx context.Context, run, after string, lim
 
 // Claim original action keys and record confirmation in one transaction. A new
 // day's draft or a changed sender cannot acquire the same original action.
-func (s *Store) ConfirmOperationsReview(ctx context.Context, parent Run, confirm, version, staff, transport, name string) error {
+func (s *Store) ConfirmOperationsReview(ctx context.Context, parent Run, confirm, version, staff, transport, name string, activeKeys []string) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -245,7 +254,18 @@ func (s *Store) ConfirmOperationsReview(ctx context.Context, parent Run, confirm
 	if len(rows) != head.Count {
 		return ErrConflict
 	}
+	active := make(map[string]bool, len(activeKeys))
+	for _, key := range activeKeys {
+		active[key] = true
+	}
 	for _, row := range rows {
+		if !active[row.Key] || (row.ExpiresAt != nil && !time.Now().Before(*row.ExpiresAt)) {
+			row.Blocked = "原服务动作已经失效。"
+			if err = storeOperationsItem(ctx, tx, parent.ID, operationsRowPrefix+row.Key, row); err != nil {
+				return err
+			}
+			continue
+		}
 		result, err := tx.ExecContext(ctx, `INSERT IGNORE INTO wb_connector_state(id,body) VALUES(?,JSON_OBJECT('confirmation',?))`, "op-action-"+row.Slot, confirm)
 		if err != nil {
 			return err
@@ -283,7 +303,7 @@ func (s *Store) OperationsBatchManifest(ctx context.Context, id string) (Run, []
 	}
 	out := make([]OperationsBatchItem, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, OperationsBatchItem{Key: row.Key, Customer: row.Customer, Message: row.Message, Materials: row.Materials, Blocked: row.Blocked})
+		out = append(out, OperationsBatchItem{Key: row.Key, Customer: row.Customer, Message: row.Message, Materials: row.Materials, ExpiresAt: row.ExpiresAt, Blocked: row.Blocked})
 	}
 	return run, out, nil
 }
@@ -314,6 +334,7 @@ func (s *Store) SaveOperationsBatchResult(ctx context.Context, run string, resul
 	for key, old := range previous.Entries {
 		next, found := result.Entries[key]
 		if !found || old.State == "sent" || old.State == "failed" && next.State != "sent" ||
+			old.State == "pending_confirmation" && next.State == "accepted" ||
 			(old.State == "accepted" || old.State == "pending_confirmation") && (next.State == "unknown" || strings.TrimSpace(next.State) == "") {
 			result.Entries[key] = old
 		}
