@@ -38,4 +38,4 @@
 
 在 Worker 的本人接口 `POST /operations/original-schedule` 登记 `projectId`、原策略键 `strategy` 和北京时间 `time`（HH:MM）。这条日程复用项目写入槽及原工作包，运行固定到北京时间业务日期、原策略和场景。切换一个已验收的原策略时先核对它的真实 next 和原包，再暂停同名试点日程。源可读而没有合格条目才完成为零；源故障或稿件未齐从一级定时任务查看。
 
-待我处理只显示当天定时成功且仍可核对的原稿。工作台将原包、逐人条目和服务有效期持久化为现有运行条目。恢复时使用原编号和已确认稿件，回执仍从原包读取。原中心确认路径复用它的原稿摘要、逐人选集和带卡片交接；只有工作台 Worker 和来源 MCP 均启用 `WORKBENCH_OPERATIONS_ORIGINAL_SEND=1`、Worker 登记的 `WORKBENCH_OPERATIONS_ORIGINAL_STAFF_ID` 匹配专项企微身份、来源主机有管理员开启的 `allow-crm-handoff` 文件才允许调用。发布验稿配置保持关闭。
+待我处理只显示当天定时成功且仍可核对的原稿。工作台将原包、逐人条目和服务有效期持久化为现有运行条目。恢复时使用原编号和已确认稿件，回执仍从原包读取。原中心确认路径复用它的原稿摘要、逐人选集和带卡片交接；只有工作台 Worker 和来源 MCP 均启用 `WORKBENCH_OPERATIONS_ORIGINAL_SEND=1`、Worker 登记的 `WORKBENCH_OPERATIONS_ORIGINAL_STAFF_ID` 匹配专项企微身份、来源主机管理员持有的 `allow-crm-handoff` JSON 同时匹配 `staff` 与 `transport`才允许调用。发布验稿配置保持关闭。

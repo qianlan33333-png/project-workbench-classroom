@@ -132,10 +132,16 @@ func (a *Server) editOperationsPackage(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 130*time.Second)
 	defer cancel()
+	var day, strategy, currentPackage, currentWeek any
 	if in.Daily != "" {
 		parent, roster, err := a.dailyOperationsRoster(ctx, p, in.Daily)
-		if err != nil || roster.Run != in.Run || parent.Shared["package"] != in.Package || parent.Shared["week"] != in.Week ||
+		if err != nil || roster.Run != in.Run ||
 			a.operationsExecution(ctx, in.Daily) != "Completed" {
+			respond(w, nil, core.ErrConflict)
+			return
+		}
+		packID, week := roster.originalBinding(parent)
+		if packID != in.Package || week != in.Week {
 			respond(w, nil, core.ErrConflict)
 			return
 		}
@@ -150,12 +156,19 @@ func (a *Server) editOperationsPackage(w http.ResponseWriter, r *http.Request) {
 			respond(w, nil, core.ErrConflict)
 			return
 		}
+		day, strategy = parent.Shared["day"], parent.Shared["strategy"]
+		currentPackage, currentWeek = parent.Shared["package"], parent.Shared["week"]
 	}
 	run := core.Run{ID: uuid.NewString(), Principal: p, Operation: "operations_package_edit", Destination: cfg.Input.ResourceID,
 		Title: "保存原工作包最终稿", ExplicitInputs: true, Quiet: true}
 	run.Shared = map[string]any{
 		"package": in.Package, "week": in.Week, "run": in.Run, "item": in.Item,
 		"digest": in.Digest, "revision": strconv.Itoa(in.Revision), "text": in.Text,
+	}
+	if in.Daily != "" {
+		run.Shared["day"], run.Shared["strategy"] = day, strategy
+		run.Shared["currentPackage"], run.Shared["currentWeek"] = currentPackage, currentWeek
+		run.Shared["daily"] = in.Daily
 	}
 	if err = a.Store.SaveRun(ctx, run); err != nil {
 		respond(w, nil, err)

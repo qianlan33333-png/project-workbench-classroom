@@ -6,10 +6,28 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from directory import SHANGHAI, daily_scope, delivery_label, members, newcomer_deadline, package_binding, package_card, package_confirm, package_detail, package_edit, package_prepare, profile, profiles, reader
+from directory import SHANGHAI, bind_daily_drafts, daily_scope, delivery_label, members, newcomer_deadline, package_binding, package_card, package_confirm, package_detail, package_edit, package_prepare, profile, profiles, reader
 
 
 class OriginalDirectoryTest(unittest.TestCase):
+    def test_same_business_node_reuses_older_original_draft(self):
+        old, new = ("copybatch-" + digit*32 for digit in ("1", "2"))
+        records = [{"id": "usr_1", "reason": "当前服务节点"}]
+        scope = [{"id": "usr_1", "key": "new", "offset": 0, "reuseRun": old, "reuseItem": "old",
+                  "reusePackage": "weekpkg-old", "reuseWeek": "2026-W45", "expiresAt": "2026-11-10T16:00:00+08:00"}]
+        old_scope = [{"id": "usr_1", "key": "old", "offset": 1, "expiresAt": "2026-11-10T18:00:00+08:00"}]
+        detail = {"items": [{"item_key": "irrelevant"}, {"item_key": "old", "usable": True, "reviewable": True, "text": "原正文"}]}
+        with patch("directory.package_run", return_value=detail) as read_old, patch("directory.daily_scope", return_value=old_scope):
+            result = bind_daily_drafts(None, {"week": "2026-W46", "package": "weekpkg-new"}, records, new, 1, scope)
+            self.assertEqual(read_old.call_args.args[1]["week"], "2026-W45")
+            self.assertEqual(read_old.call_args.args[1]["currentWeek"], "2026-W46")
+        self.assertEqual(result, {"state": "ready", "run": old, "total": 2,
+                                  "package": "weekpkg-old", "week": "2026-W45",
+                                  "scope": [{"id": "usr_1", "key": "old", "offset": 1, "existing": True,
+                                             "expiresAt": "2026-11-10T16:00:00+08:00"}]})
+        with self.assertRaisesRegex(ValueError, "multiple original runs"):
+            bind_daily_drafts(None, {}, records, new, 2, [*scope, {"id": "usr_2", "key": "new_2"}])
+
     def test_newcomer_window_is_inclusive_only_at_its_start(self):
         paid = datetime(2026, 11, 1, 9, tzinfo=SHANGHAI)
         for node, start, end in (("D2", 24, 96), ("D4", 96, 168), ("D7", 168, 192)):

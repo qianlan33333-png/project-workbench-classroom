@@ -24,18 +24,22 @@ type ProgramSchedule struct {
 	Paused  bool           `json:"paused"`
 }
 type scheduleView struct {
-	ID        string      `json:"id"`
-	Title     string      `json:"title"`
-	SessionID string      `json:"sessionId"`
-	Hours     []int       `json:"hours"`
-	Minute    int         `json:"minute"`
-	Paused    bool        `json:"paused"`
-	Next      []time.Time `json:"next"`
-	State     string      `json:"state"`
-	ProjectID string      `json:"projectId,omitempty"`
-	Strategy  string      `json:"strategy,omitempty"`
-	Last      time.Time   `json:"last,omitzero"`
-	Result    string      `json:"result,omitempty"`
+	ID             string      `json:"id"`
+	Title          string      `json:"title"`
+	SessionID      string      `json:"sessionId"`
+	Hours          []int       `json:"hours"`
+	Minute         int         `json:"minute"`
+	Paused         bool        `json:"paused"`
+	Next           []time.Time `json:"next"`
+	State          string      `json:"state"`
+	ProjectID      string      `json:"projectId,omitempty"`
+	Strategy       string      `json:"strategy,omitempty"`
+	Last           time.Time   `json:"last,omitzero"`
+	Result         string      `json:"result,omitempty"`
+	Source         string      `json:"source,omitempty"`
+	SourceResource string      `json:"sourceResource,omitempty"`
+	Experts        []string    `json:"experts,omitempty"`
+	Versions       []int       `json:"versions,omitempty"`
 }
 
 func (a *Server) configureProgram(ctx context.Context, p core.Principal, in ProgramSchedule) (string, error) {
@@ -134,6 +138,9 @@ func (a *Server) scheduleRoutes(mux *http.ServeMux) {
 			return
 		}
 		for i, v := range out {
+			if v.Strategy != "" {
+				a.originalScheduleEvidence(r.Context(), &out[i])
+			}
 			d, err := a.Temporal.ScheduleClient().GetHandle(r.Context(), v.ID).Describe(r.Context())
 			if err != nil {
 				out[i].State = "unavailable"

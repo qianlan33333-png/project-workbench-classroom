@@ -771,7 +771,9 @@ window.__ModuleLoader__.load({
           h("div",null,s.state!=="ready"?"定时状态待核实":s.paused?"已暂停":"下次 "+time(s.next?.[0])),
           s.last&&h("div",{className:"wb-muted"},"上次 "+time(s.last)+" · "+(results[s.result]||"结果待核实")),
           s.strategy&&h("details",null,h("summary",null,"执行信息"),
-            h("p",null,"原策略 "+s.strategy+" · 按原专家生成并保存逐人稿件"),
+            h("p",null,"原策略 "+s.strategy+(s.versions?.length?" · 原包冻结版本 "+s.versions.join("、"):"")),
+            h("p",null,s.experts?.length?"原专家方法 "+s.experts.join("、"):"等待原工作包回读实际专家"),
+            s.source&&h("p",{className:"wb-muted"},"MCP 连接 "+s.source+" · 原包读取与稿件执行"),
             openPanel&&h("div",{className:"wb-actions"},
               button("专家",()=>openPanel("wb-experts")),button("MCP 插件",()=>openPanel("wb-mcp"))),
             edit?.id===s.id?h("form",{className:"wb-form",onSubmit:e=>{e.preventDefault();act(async()=>{
