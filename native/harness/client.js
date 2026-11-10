@@ -761,6 +761,39 @@ window.__ModuleLoader__.load({
     const time = value => value ? new Date(value).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "尚未记录";
     const stateText = r => r.stats?.failed ? `已保留 ${r.stats.succeeded} 条 · ${r.stats.failed} 条失败` : ({Running:"执行中",Completed:r.published?"结果已发布":"执行已结束",Failed:"执行失败",Canceled:"已停止",Terminated:"已终止",TimedOut:"已超时",Unknown:"状态待核实"}[r.execution]||r.execution);
     const receiptText = r => {const s=r.deliveries?.states;if(!s)return "";return `渠道回执：待提交 ${s.prepared||0} · 已受理 ${s.accepted||0} · 待手机确认 ${s.pending_confirmation||0} · 已发送 ${s.sent||0} · 已送达 ${s.delivered||0} · 失败 ${s.failed||0} · 待核实 ${(s.unknown||0)+(s.submitting||0)}`};
+    const scheduleHours=s=>s.hours.map(hour=>String(hour).padStart(2,"0")+":"+String(s.minute).padStart(2,"0")).join("、");
+    function ScheduleRows({rows, openSession, act, busy, openPanel}) {
+      const [edit,setEdit]=useState(null);
+      const results={Running:"执行中",Completed:"执行完成",Failed:"执行失败",Canceled:"已停止",TimedOut:"已超时",Terminated:"已终止"};
+      return rows.map(s=>h("div",{key:s.id,className:"wb-row"},
+        h("div",{className:"wb-row-main"},h("strong",null,s.title),
+          h("div",{className:"wb-muted"},scheduleHours(s)+" · 北京时间"),
+          h("div",null,s.state!=="ready"?"定时状态待核实":s.paused?"已暂停":"下次 "+time(s.next?.[0])),
+          s.last&&h("div",{className:"wb-muted"},"上次 "+time(s.last)+" · "+(results[s.result]||"结果待核实")),
+          s.strategy&&h("details",null,h("summary",null,"执行信息"),
+            h("p",null,"原策略 "+s.strategy+" · 按原专家生成并保存逐人稿件"),
+            openPanel&&h("div",{className:"wb-actions"},
+              button("专家",()=>openPanel("wb-experts")),button("MCP 插件",()=>openPanel("wb-mcp"))),
+            edit?.id===s.id?h("form",{className:"wb-form",onSubmit:e=>{e.preventDefault();act(async()=>{
+              await api("/operations/original-schedule?projectId="+encodeURIComponent(s.projectId),{strategy:s.strategy,time:edit.time});
+              setEdit(null);
+            })}},field("自动运行时间",h("input",{type:"time",required:true,value:edit.time,onChange:e=>setEdit({...edit,time:e.target.value})})),
+              h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:busy},"保存"),button("取消",()=>setEdit(null))))
+              :button("调整时间",()=>setEdit({id:s.id,time:scheduleHours(s)}),{disabled:busy}))),
+        !s.strategy&&button("查看对话",()=>openSession(s.sessionId)),
+        button(s.paused?"恢复":"暂停",()=>act(()=>api("/schedules/pause",{id:s.id,paused:!s.paused})),{disabled:busy||s.state!=="ready"})));
+    }
+    function SchedulesPage({openSession,openPanel}) {
+      const [rows,setRows]=useState(null),[error,setError]=useState(""),[busy,setBusy]=useState(false);
+      const load=()=>api("/schedules").then(setRows);
+      useEffect(()=>{let live=true;const refresh=()=>load().catch(e=>{if(live)setError(e.message)});refresh();
+        const timer=setInterval(refresh,15000);return()=>{live=false;clearInterval(timer)}},[]);
+      const act=async fn=>{setBusy(true);setError("");try{await fn();await load()}catch(e){setError(e.message)}finally{setBusy(false)}};
+      return h("section",{className:"wb-page"},h("style",null,css),h("div",{className:"wb-content"},
+        h("div",{className:"wb-heading"},h("h1",null,"定时任务")),alert(error),
+        !rows?h("p",{role:"status"},"正在读取定时任务…"):
+          rows.length?h(ScheduleRows,{rows,openSession,act,busy,openPanel}):h("p",{className:"wb-muted"},"暂无定时任务。")));
+    }
     function TodayPage({ openSession, embedded }) {
       const [data,setData]=useState(),[error,setError]=useState(""),[notice,setNotice]=useState(""),[busy,setBusy]=useState(false),[edit,setEdit]=useState(),[answers,setAnswers]=useState({}),[settings,setSettings]=useState(),[notifications,setNotifications]=useState();
       const load=async()=>{const [runs,decisions,memory,config,notify,targets,schedules]=await Promise.all([api("/runs"),api("/decisions"),api("/memory"),api("/personal/settings"),api("/notifications"),api("/notification-targets"),api("/schedules")]);setError("");setData({runs,decisions,memory,config,targets,schedules});setSettings(v=>v||config);setNotifications(v=>v||{...notify,sessionId:config.sessionId,targets:notify.targets||[]})};
@@ -781,7 +814,7 @@ window.__ModuleLoader__.load({
           edit&&h("form",{className:"wb-form",onSubmit:e=>{e.preventDefault();act(async()=>{await api("/memory",{...edit,confirmed:true});setEdit(undefined)})}},field("记忆内容",h("textarea",{required:true,value:edit.text,onChange:e=>setEdit({...edit,text:e.target.value})})),field("来源",h("input",{required:true,value:edit.source,onChange:e=>setEdit({...edit,source:e.target.value})})),h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:busy},"确认保存"),button("取消",()=>setEdit(undefined))))),
         data&&h("details",{className:"wb-section"},h("summary",null,`定时工作 · ${data.schedules.length}`),
           h("p",{className:"wb-muted"},"在项目对话中说明资料、方法和执行时间即可配置；每次结果回到原对话，上一轮未结束时跳过重叠执行。"),
-          data.schedules.map(s=>h("div",{key:s.id,className:"wb-row"},h("div",{className:"wb-row-main"},h("strong",null,s.title),h("div",{className:"wb-muted"},s.hours.map(hour=>String(hour).padStart(2,"0")+":"+String(s.minute).padStart(2,"0")).join("、")+" · 北京时间"),h("div",null,s.state!=="ready"?"定时状态待核实":s.paused?"已暂停":`下次 ${time(s.next?.[0])}`)),button("查看对话",()=>openSession(s.sessionId)),button(s.paused?"恢复":"暂停",()=>act(()=>api("/schedules/pause",{id:s.id,paused:!s.paused})),{disabled:busy||s.state!=="ready"})))),
+          h(ScheduleRows,{rows:data.schedules,openSession,act,busy})),
         notifications&&data&&h("details",{className:"wb-section"},h("summary",null,"本人消息通知"),
  h("p",{className:"wb-muted"},"只通知有实质结果、异常和需要你决定的事项；不会因此重新执行原任务。"),
  data.targets.length===0?h("p",null,"尚未连接本人微信或飞书。完成绑定后，可在这里选择通知渠道。"):
@@ -970,14 +1003,23 @@ window.__ModuleLoader__.load({
       @media(max-width:650px){.op-detail,.op-judgments{grid-template-columns:1fr}.op-message{border-left:0;padding:16px 0}.op-table th,.op-table td{padding:10px 5px}.op-fields div{grid-template-columns:minmax(90px,35%) minmax(0,1fr)}.op-header{align-items:flex-start;padding:12px 0}.op-strategy{padding-left:0;padding-right:0}.op-page .wb-actions{gap:5px}}
     `;
 
-    function OperationsPage({projectId}) {
+    function shanghaiWeek() {
+      const day=new Date(Date.now()+8*3600*1000);
+      day.setUTCHours(0,0,0,0);
+      day.setUTCDate(day.getUTCDate()+4-(day.getUTCDay()||7));
+      const year=day.getUTCFullYear();
+      const week=Math.ceil(((day-new Date(Date.UTC(year,0,1)))/86400000+1)/7);
+      return year+"-W"+String(week).padStart(2,"0");
+    }
+
+    function OperationsPage({projectId, openSchedules}) {
       const [view,setView]=useState(null),[tab,setTab]=useState("work"),[page,setPage]=useState("home");
       const [runId,setRunId]=useState(""),[selected,setSelected]=useState(""),[profile,setProfile]=useState(null);
       const [profiles,setProfiles]=useState([]),[profileNext,setProfileNext]=useState(""),[profileState,setProfileState]=useState("");
       const [profileMeta,setProfileMeta]=useState({}),[searchText,setSearchText]=useState(""),[query,setQuery]=useState("");
-      const [catalog,setCatalog]=useState(null),[catalogError,setCatalogError]=useState("");
-      const [sourcePlan,setSourcePlan]=useState(null),[members,setMembers]=useState(null),[profileBack,setProfileBack]=useState("home");
-      const [sourceCopy,setSourceCopy]=useState(null),[sourceTask,setSourceTask]=useState(null),[sourceItem,setSourceItem]=useState(null);
+      const [today,setToday]=useState(null),[todayError,setTodayError]=useState("");
+      const [sourcePlan,setSourcePlan]=useState(null),[profileBack,setProfileBack]=useState("home");
+      const [sourceCopy,setSourceCopy]=useState(null),[sourceConfirm,setSourceConfirm]=useState(null),[sourceSubmission,setSourceSubmission]=useState(""),[excluded,setExcluded]=useState([]),[sourceItem,setSourceItem]=useState(null);
       const [copyEdit,setCopyEdit]=useState(null),[copyMessage,setCopyMessage]=useState("");
       const [history,setHistory]=useState([]),[historyMore,setHistoryMore]=useState(false);
       const [sourceHistory,setSourceHistory]=useState(null),[sourceHistoryWeek,setSourceHistoryWeek]=useState("");
@@ -1002,10 +1044,11 @@ window.__ModuleLoader__.load({
       useEffect(()=>{
         if(!readSource||tab!=="work"||page!=="home")return;
         let active=true;
-        setCatalogError("");
-        api(path("source",{view:"catalog"})).then(data=>{if(active)setCatalog(data)})
-          .catch(e=>{if(active)setCatalogError(e.message)});
-        return()=>{active=false};
+        const load=()=>api(path("source-today")).then(data=>{if(active){setToday(data);setTodayError("")}})
+          .catch(e=>{if(active)setTodayError(e.message)});
+        load();
+        const timer=setInterval(load,30000);
+        return()=>{active=false;clearInterval(timer)};
       },[projectId,readSource,tab,page,reload]);
       useEffect(()=>{
         if(tab!=="profiles"||page!=="home")return;
@@ -1027,64 +1070,55 @@ window.__ModuleLoader__.load({
         if(data.state==="source_changed"){refresh();throw Error("档案版本已更新，请从新列表重新打开。")}
         setProfileBack(page);setProfile(data);setPage("profile");
       });
-      const loadMembers=(plan,after="",revision="")=>api(path("source",{view:"members",package:plan.package_id,week:plan.week,after,revision}));
-      const loadSourceCopy=(plan,run="",item="")=>api(path("source",{view:"package",package:plan.package_id,week:plan.week,run,item}));
+      const loadSourceCopy=(plan,run="",item="")=>plan.daily
+        ? api(path("source-today",{daily:plan.daily,item}))
+        : api(path("source",{view:"package",package:plan.package_id,week:plan.week,run,item}));
       const loadSourceHistory=week=>act(async()=>{
         setSourceHistoryWeek(week);
         setSourceHistory(await api(path("source",{view:"package_history",week})));
       });
       const openPlan=plan=>{
-        const selectedPlan={...plan,week:plan.week||catalog.week};
-        setSourcePlan(selectedPlan);setMembers(null);setSourceCopy(null);setSourceItem(null);setSelected("");setCopyEdit(null);setCopyMessage("");setPage("source-plan");
-        act(async()=>{
-          if(plan.historical){
-            const copy=await loadSourceCopy(selectedPlan,plan.run_id);
-            setMembers({state:"ready",records:[],total:copy.rows.length});setSourceCopy(copy);
-            return;
-          }
-          const [list,copy,task]=await Promise.all([loadMembers(selectedPlan),loadSourceCopy(selectedPlan),
-            api(path("source-package-status",{package:plan.package_id,week:selectedPlan.week}))]);
-          setMembers(list);setSourceCopy(copy);
-          if(task.state==="Running")setSourceTask({id:task.id,package:plan.package_id});
-        });
+        setSourcePlan(plan);setSourceCopy(null);setSourceItem(null);setSelected("");setCopyEdit(null);setCopyMessage("");
+        setExcluded([]);setSourceConfirm(null);setSourceSubmission("");setPage("source-plan");
+        act(async()=>setSourceCopy(await loadSourceCopy(plan,plan.run_id)));
       };
-      const sourceTaskForPlan=!sourcePlan?.historical&&sourceTask?.package===sourcePlan?.package_id?sourceTask:null;
-      useEffect(()=>{
-        if(page!=="source-plan"||!sourceTaskForPlan||sourceTaskForPlan.finished)return;
-        let active=true,timer;
-        const task=sourceTaskForPlan;
-        const poll=async()=>{
-          try{
-            const status=await api(path("source-package-status",{id:task.id}));
-            if(!active)return;
-            if(["Completed","Failed","Canceled","Terminated","TimedOut"].includes(status.state)){
-              const copy=await loadSourceCopy(sourcePlan);
-              if(!active)return;
-              setSourceCopy(copy);
-              setSourceTask({...task,finished:true,state:status.state});
-              if(status.state!=="Completed")setError("生成未完成，原包已有结果已保留。");
-              return;
-            }
-          }catch(e){if(active)setError(e.message)}
-          if(active)timer=setTimeout(poll,4000);
-        };
-        poll();
-        return()=>{active=false;clearTimeout(timer)};
-      },[page,sourcePlan,sourceTaskForPlan]);
       const refreshSourceCopy=()=>act(async()=>{
-        const [copy,list]=await Promise.all([loadSourceCopy(sourcePlan,sourcePlan.historical?sourceCopy.run:""),
-          sourcePlan.historical?Promise.resolve(members):loadMembers(sourcePlan)]);
-        setSourceCopy(copy);
-        setMembers(list);
-        setSourceItem(null);
-        setCopyMessage("");
+        const copy=await loadSourceCopy(sourcePlan,sourcePlan.run_id);
+        setSourceCopy(copy);setSourceItem(null);setCopyMessage("");
         refresh();
       });
-      const generateSourceCopy=()=>act(async()=>{
-        const input={package:sourcePlan.package_id,week:sourcePlan.week,revision:members.revision,requestId:crypto.randomUUID()};
-        const result=await api(path("source-package"),input);
-        setSourceTask({id:result.runId,package:input.package});
+      const confirmSource=()=>act(async()=>{
+        const result=await api(path("source-confirm"),sourceConfirm);
+        setSourceConfirm(null);
+        setSourceSubmission(result.runId);
+        setCopyMessage("正在查回本次确认结果。");
       });
+      useEffect(()=>{
+        if(page!=="source-plan"||!sourceSubmission)return;
+        let live=true,timer;
+        const poll=async()=>{
+          try{
+            const result=await api(path("source-package-status",{id:sourceSubmission}));
+            if(!live)return;
+            if(result.state==="Completed"){
+              const data=await loadSourceCopy(sourcePlan,sourcePlan.run_id);
+              if(!live)return;
+              setSourceCopy(data);
+              setSourceItem(null);
+              setCopyMessage(result.result==="source_changed"?"名单或稿件有变化，请重新核对。":result.result==="needs_check"?"原中心交接结果待核实，请查看原包回执。":"原中心已记录本次确认，可在原包查看交接。");
+              setSourceSubmission("");
+              return;
+            }
+            if(["Failed","Canceled","Terminated","TimedOut"].includes(result.state)){
+              setCopyMessage("确认结果待核实，请刷新原稿与回执。");
+              return;
+            }
+          }catch(e){if(live)setError(e.message)}
+          if(live)timer=setTimeout(poll,3500);
+        };
+        poll();
+        return()=>{live=false;clearTimeout(timer)};
+      },[page,sourcePlan,sourceSubmission]);
       const showSettings=kind=>act(async()=>{
         if(kind==="project"){
           const list=await api("/transports");
@@ -1117,7 +1151,6 @@ window.__ModuleLoader__.load({
         setReview("");refresh();
       });
       const sectionTitle=page==="profile"?(profile?.nickname||"用户档案"):page==="history"?"历史":page==="source-plan"?sourcePlan?.label:"自动化运营";
-      const displayCount=value=>Number.isInteger(value)?String(value):"待核对";
       const sourceLabels={observed_active:"来源事实",user_confirmed:"用户明确自述",observed_candidate:"待核线索",conflict:"来源冲突",unknown:"暂无证据"};
       const profileFields=fields=>h("dl",{className:"op-fields"},...fields.map((field,i)=>{
         const provenance=[field.source,field.observedAt,sourceLabels[field.state],field.sourceRef].filter(Boolean).join(" · ");
@@ -1144,13 +1177,10 @@ window.__ModuleLoader__.load({
         run?.decision?h(React.Fragment,null,h("p",null,"发送人数 "+run.reviewCount+" 人"),h("p",null,"运营企微账号 "+run.account),h("p",null,"稿件版本 "+run.version)):
           h("p",{role:"status"},dispatchClosed?"该发送任务已结束。请在名单查看逐人状态。":run?.dispatchId?"正在校验发送资格":"正在准备确认"),
         alert(error),h("div",{className:"wb-actions"},button("返回",()=>setReview(""),{disabled:busy}),button("确认发送",confirm,{className:"wb-primary",disabled:busy||!run?.decision}))));
-      const sourceActive=sourceTaskForPlan&&!sourceTaskForPlan.finished;
       const sourceRows=sourceCopy?.rows||[];
       const draftByID=new Map(sourceRows.map(item=>[item.id,item]));
-      const sourceList=members?.records||[];
-      const rosterChanged=!!(sourceCopy?.rosterDigest&&members?.rosterDigest&&sourceCopy.rosterDigest!==members.rosterDigest);
-      const displayMembers=[...sourceList,...sourceRows.filter(draft=>!sourceList.some(person=>person.id===draft.id)&&
-        !members?.next).map(draft=>({id:draft.id,nickname:draft.nickname,reason:"原运行名单"}))];
+      const displayMembers=sourceRows;
+      const sendKeys=sourceRows.filter(item=>item.status==="待核对"&&!excluded.includes(item.key)).map(item=>item.key);
       const activeMember=displayMembers.find(item=>item.id===selected)||displayMembers[0];
       const itemKey=activeMember&&draftByID.get(activeMember.id)?.key;
       const draft=sourceItem?.run===sourceCopy?.run&&sourceItem?.digest===sourceCopy?.digest&&sourceItem?.rows[0]?.key===itemKey?sourceItem?.rows[0]:null;
@@ -1175,7 +1205,7 @@ window.__ModuleLoader__.load({
         e.preventDefault();
         act(async()=>{
           const {item,revision,digest,text}=copyEdit;
-          const input={package:sourcePlan.package_id,week:sourcePlan.week,run:sourceCopy.run,item,revision,digest,text};
+          const input={package:sourcePlan.package_id,week:sourcePlan.week,run:sourceCopy.run,item,revision,digest,text,daily:sourcePlan.daily};
           const result=await api(path("source-package-edit"),input);
           if(result.state!=="saved"){
             setCopyEdit({...copyEdit,stale:true});
@@ -1198,15 +1228,13 @@ window.__ModuleLoader__.load({
       return h("section",{className:"wb-page op-page"},
         h("header",{className:"op-header"},h("div",{className:"wb-actions"},page!=="home"&&button("返回",page==="profile"&&profileBack==="source-plan"?()=>setPage("source-plan"):page==="source-plan"&&sourcePlan?.historical?()=>setPage("history"):home,{className:"op-link",disabled:!!copyEdit}),h("h1",null,sectionTitle)),
           view&&h("div",{className:"wb-actions"},
-            page==="home"&&button("历史",()=>{setPage("history");if(catalog?.week)loadSourceHistory(catalog.week)},{className:"op-link"}),
+            page==="home"&&button("历史",()=>{setPage("history");if(readSource)loadSourceHistory(shanghaiWeek())},{className:"op-link"}),
             page==="home"&&button("设置",()=>showSettings("project")),
             page==="source-plan"&&sourceCopy&&h(React.Fragment,null,
-              sourceCopy.run&&button("刷新稿件与回执",refreshSourceCopy,{className:"op-link",disabled:busy||sourceActive||!!copyEdit}),
-              !sourcePlan?.historical&&members?.total>0&&!sourceCopy.formal&&
-                (rosterChanged?sourcePlan?.ready_for_generation:!sourceCopy.reviewed&&!sourceCopy.handoff&&
-                  (sourceCopy.run?sourceRows.some(item=>item.status==="待生成"):sourcePlan?.ready_for_generation))&&
-                button(rosterChanged?"生成最新名单话术":sourceCopy.run?"继续生成":"生成话术",generateSourceCopy,
-                  {className:"wb-primary",disabled:busy||sourceActive||!!copyEdit||members.state!=="ready"})),
+              sourceCopy.run&&button("刷新稿件与回执",refreshSourceCopy,{className:"op-link",disabled:busy||!!copyEdit}),
+              sourcePlan.daily&&sourceCopy.sendEnabled&&!sourceCopy.reviewed&&!sourceCopy.handoff&&!sourceCopy.formal&&
+                button("确认并发送",()=>setSourceConfirm({daily:sourcePlan.daily,digest:sourceCopy.digest,keys:sendKeys,account:sourceCopy.sendAccount,transport:sourceCopy.sendTransport}),
+                  {className:"wb-primary",disabled:busy||!!copyEdit||!!sourceSubmission||!sendKeys.length})),
             page==="detail"&&button("设置",()=>showSettings("strategy")),
             page==="detail"&&button(run?.retryReview&&run.pending?"重新核对并发送":"确认并发送",startReview,{className:"wb-primary",
               disabled:busy||!run||(!run.pending&&!run.decision&&!run.resume&&run.dispatchState!=="Running")}))),
@@ -1216,21 +1244,19 @@ window.__ModuleLoader__.load({
           h("div",{className:"op-tabs",role:"tablist","aria-label":"自动化运营"},
             button("待我处理",()=>setTab("work"),{role:"tab","aria-selected":tab==="work"}),
             button("用户档案",()=>setTab("profiles"),{role:"tab","aria-selected":tab==="profiles"})),
-          tab==="work"?h(React.Fragment,null,
-            readSource&&h("div",{className:"op-packages"},h("h2",{className:"op-title"},"原中心工作包"),
-              catalogError?h("p",{role:"status"},"上下文中心计划暂不可读。 ",button("重试",refresh)):!catalog?h("p",{role:"status"},"正在读取本周工作包…"):null,
-              catalog&&h("p",{className:"wb-muted"},catalog.week+(catalog.activityAsOf?" · 活动水位 "+catalog.activityAsOf:"")),
-              ...(catalog?.packages||[]).map(plan=>h("div",{className:"op-strategy",key:plan.package_id},
-                h("strong",null,[plan.label,plan.scene_label].filter(Boolean).join(" · ")),
-                h("span",{className:"op-counts wb-muted"},"原候选 "+displayCount(plan.candidate_count)," · 目录可处理 "+displayCount(plan.actionable_count)),
-                button("核对名单",()=>openPlan(plan),{"aria-label":"核对名单 · "+plan.label+" · "+plan.scene_label}))),
-              catalog&&h("details",null,h("summary",null,"策略人群口径 · "+catalog.slots.length+" 项"),
-                ...catalog.slots.map(slot=>h("div",{className:"op-strategy",key:slot.strategy_key+"/"+slot.scene},h("strong",null,slot.label),
-                  h("span",{className:"wb-muted",title:slot.reason},(slot.population_label||"候选")+" "+displayCount(slot.matched_count)+" · 外发候选 "+displayCount(slot.outbound_count))))),
-              ),
-            h("div",{className:"op-strategy"},h("strong",null,readSource?"工作台试点稿件 · "+run.title:run.title),
+          tab==="work"?(readSource?h("div",{className:"op-packages"},
+            todayError?h("p",{role:"status"},"待核对稿件暂不可读。 ",button("重试",refresh)):
+            !today?h("p",{role:"status"},"正在读取待核对稿件…"):
+            h(React.Fragment,null,
+              today.packages.length===0&&h("p",{className:"wb-muted"},"暂无待核对稿件。"),
+              ...today.packages.map(plan=>h("div",{className:"op-strategy",key:plan.daily},
+                h("strong",null,plan.label),h("span",{className:"wb-muted"},"待核对 "+plan.pending+" 人"),
+                button("核对名单",()=>openPlan(plan),{"aria-label":"核对名单 · "+plan.label}))),
+              today.attention&&h("p",{role:"status"},"有工作包需要核对运行状态。 ",button("查看定时任务",openSchedules,{className:"op-link"})),
+              !today.attention&&today.running&&h("p",{role:"status"},"定时任务正在准备稿件。"))):
+            h("div",{className:"op-strategy"},h("strong",null,run.title),
               h("span",{className:"wb-muted"},run.state==="ready"?"待发 "+run.pending+" 人":stateText[run.state]),
-              button(readSource?"查看试点稿件":"核对名单",()=>openRun("")))):
+              button("核对名单",()=>openRun("")))):
             h(React.Fragment,null,
               h("div",{className:"op-header"},h("h2",{className:"op-title"},"用户档案"),button("档案设置",()=>showSettings("profile"))),
               readSource&&h("form",{className:"op-search",onSubmit:e=>{e.preventDefault();setQuery(searchText.trim());refresh()}},
@@ -1251,25 +1277,21 @@ window.__ModuleLoader__.load({
           !!profile.missingSources?.length&&h("p",{role:"status"},"部分实时补充资料暂不可读，以下保留可读来源。"),
           ...profile.groups.map(group=>h("section",{key:group.title},h("h2",{className:"op-title"},group.title),profileFields(group.fields)))):profileFields(profile.fields)),
         page==="source-plan"&&sourcePlan&&h(React.Fragment,null,
-          h("p",{className:"wb-muted"},[sourcePlan.week,sourcePlan.scene_label].filter(Boolean).join(" · ")),
-          members?.state==="ready"&&h("p",{className:"op-counts"},"实际名单 "+members.total+" 人"+(sourceCopy?.run?" · 待核对 "+sourceRows.filter(item=>item.status==="待核对").length+" 人":"")),
-          sourceActive&&h("p",{role:"status"},"正在按原策略生成话术…"),
+          sourcePlan.daily&&sourceCopy&&!sourceCopy.sendEnabled&&h("p",{className:"wb-muted"},"当前开放核对与改稿，CRM 交接未启用。"),
           sourceCopy?.formal&&h("p",{role:"status"},sourceCopy.formal==="running"?"原中心正在处理本人确认。":"原中心审核失败，请核对原包。"),
           sourceCopy?.plan&&h("p",{className:"wb-muted"},"原 CRM 计划 "+sourceCopy.plan),
-          members?.state==="source_changed"?button("名单已更新，重新核对",()=>openPlan(sourcePlan)):
-            members?h(React.Fragment,null,
-              !sourcePlan.historical&&members.total!==sourcePlan.actionable_count&&h("p",{role:"status"},"目录和实际名单人数有差异，请以当前来源名单核对。"),
+          sourceCopy?h(React.Fragment,null,
               displayMembers.length?h("div",{className:"op-detail"},
                 h("table",{className:"op-table"},h("thead",null,h("tr",null,...["客户昵称","入选依据","状态"].map(label=>h("th",{key:label,scope:"col"},label)))),
                   h("tbody",null,...displayMembers.map(item=>h("tr",{key:item.id,"aria-selected":item.id===activeMember?.id,onClick:()=>selectSourceMember(item.id)},
-                    h("td",null,button(item.nickname||"未记录称呼",()=>selectSourceMember(item.id),{disabled:!!copyEdit})),h("td",null,h("div",{className:"op-reason"},item.reason)),
-                    h("td",null,draftByID.get(item.id)?.status||"待生成"))))),
+                    h("td",null,button(item.nickname||"未记录称呼",()=>selectSourceMember(item.id),{disabled:!!copyEdit})),h("td",null,h("div",{className:"op-reason"},item.reason||"原运行名单")),
+                    h("td",null,item.status,sourcePlan.daily&&sourceCopy.sendEnabled&&item.status==="待核对"&&h("label",{className:"wb-muted"},h("input",{type:"checkbox",checked:!excluded.includes(item.key),"aria-label":"纳入发送 · "+item.nickname,onClick:e=>e.stopPropagation(),onChange:e=>setExcluded(e.target.checked?excluded.filter(key=>key!==item.key):[...excluded,item.key])})," 纳入")))))),
                 activeMember&&h("article",{className:"op-message",key:activeMember.id},
                   h("div",{className:"op-header"},h("h2",null,activeMember.nickname||"未记录称呼"),
                     !sourcePlan.historical&&draft?.editable&&!copyEdit&&button("修改正文",()=>{
                       setCopyMessage("");
                       setCopyEdit({item:draft.key,revision:draft.revision,digest:sourceCopy.digest,text:draft.message});
-                    },{disabled:busy||sourceActive})),
+                    },{disabled:busy})),
                   h("section",null,h("strong",null,draft?.edited?"已保存最终稿":"话术正文"),
                     copyEdit?h("form",{className:"op-editor",onSubmit:saveCopy},
                       h("textarea",{"aria-label":"最终稿正文",value:copyEdit.text,maxLength:5000,required:true,autoFocus:true,disabled:busy,
@@ -1287,8 +1309,13 @@ window.__ModuleLoader__.load({
                     h("summary",null,"预览随附卡片 · "+draft.attachments.length+" 张"),...draft.attachments.map(cardPreview))),
                   draft?.progress&&h("section",null,h("strong",null,sourceCopy.handoff||draft.status==="已发送"?"CRM 回执":"状态明细"),h("p",null,draft.progress)),
                   h("div",{className:"wb-actions"},button("查看用户档案",()=>openProfile(activeMember.id),{disabled:busy||!!copyEdit})))):h("p",null,"本工作包当前无可处理名单"),
-              members.next&&button("加载更多",()=>act(async()=>{const data=await loadMembers(sourcePlan,members.next,members.revision);setMembers(data.state==="ready"?{...data,records:[...members.records,...data.records]}:data)}),{disabled:busy})):
-              busy?h("p",{role:"status"},"正在核对原工作包名单…"):button("重新核对",()=>openPlan(sourcePlan))),
+              null):busy?h("p",{role:"status"},"正在读取原工作包…"):button("重新核对",()=>openPlan(sourcePlan))),
+        sourceConfirm&&h(UI.Modal,{open:true,title:"确认并发送",closeLabel:"关闭",onClose:()=>{if(!busy)setSourceConfirm(null)}},
+          h("section",{className:"wb-page wb-form op-modal-content"},
+            h("p",null,"将 "+sourceConfirm.keys.length+" 人的已核对稿件交给原中心。"),
+            h("p",{className:"wb-muted"},"运营企微账号 "+sourceConfirm.account),
+            alert(error),h("div",{className:"wb-actions"},button("返回",()=>setSourceConfirm(null),{disabled:busy}),
+              button("确认发送",confirmSource,{className:"wb-primary",disabled:busy})))),
         page==="history"&&view&&h(React.Fragment,null,
           readSource&&h("section",null,h("h2",{className:"op-title"},"原工作包"),
             h("form",{className:"op-search",onSubmit:e=>{e.preventDefault();loadSourceHistory(sourceHistoryWeek)}},
@@ -1298,19 +1325,19 @@ window.__ModuleLoader__.load({
             ...(sourceHistory?.runs||[]).map(item=>h("div",{className:"op-strategy",key:item.run_id},
               h("strong",null,item.label),h("span",{className:"wb-muted"},item.createdAt?new Date(item.createdAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}):item.week),
               button("查看原包",()=>openPlan({...item,historical:true}),{disabled:busy})))),
-          h("h2",{className:"op-title"},run.title),
-          history.length===0&&h("p",{className:"wb-muted"},"暂无历史运行"),
-          ...history.map(item=>h("div",{className:"op-strategy",key:item.id},h("span",null,new Date(item.date).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})),null,button("查看明细",()=>openRun(item.id)))),
-          historyMore&&button("加载更多",()=>act(async()=>{
+          !readSource&&h("h2",{className:"op-title"},run.title),
+          !readSource&&history.length===0&&h("p",{className:"wb-muted"},"暂无历史运行"),
+          ...(!readSource?history:[]).map(item=>h("div",{className:"op-strategy",key:item.id},h("span",null,new Date(item.date).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})),null,button("查看明细",()=>openRun(item.id)))),
+          !readSource&&historyMore&&button("加载更多",()=>act(async()=>{
             const data=await api(path("view",{after:history.at(-1).id}));setHistory(items=>[...items,...data.history]);setHistoryMore(data.history.length===20);
           }))),
         page==="detail"&&run&&h(React.Fragment,null,
-          h("h2",{className:"op-title"},run.title),
+          !readSource&&h("h2",{className:"op-title"},run.title),
           run.state!=="ready"||run.rows.length===0?h("p",{role:"status",className:"wb-muted"},stateText[run.state]||"本轮无入选用户"):
             h("div",{className:"op-detail"},
               h("table",{className:"op-table"},h("thead",null,h("tr",null,...["客户昵称","入选依据","状态"].map(label=>h("th",{key:label,scope:"col"},label)))),
                 h("tbody",null,...run.rows.map(item=>h("tr",{key:item.id,"aria-selected":item.id===row?.id,onClick:()=>setSelected(item.id)},
-                  h("td",null,button(item.nickname||"未记录称呼",()=>setSelected(item.id))),h("td",null,h("div",{className:"op-reason"},item.reason)),h("td",null,item.status))))),
+                  h("td",null,button(item.nickname||"未记录称呼",()=>setSelected(item.id))),h("td",null,h("div",{className:"op-reason"},item.reason||"原运行名单")),h("td",null,item.status))))),
               row&&h("article",{className:"op-message",key:row.id},h("h2",null,row.nickname||"未记录称呼"),
                 h("section",null,h("strong",null,"已生成稿件"),h("p",null,row.message)),
                 h("section",null,h("strong",null,"入选依据"),h("p",null,row.reason)),
@@ -1330,7 +1357,7 @@ window.__ModuleLoader__.load({
       function OperationsPanel(){
         const [id,setId]=useState(operationsProject);
         useEffect(()=>onEvent("wb-open-operations",()=>setId(operationsProject)),[]);
-        return id?h(OperationsPage,{key:id,projectId:id}):null;
+        return id?h(OperationsPage,{key:id,projectId:id,openSchedules:()=>ctx.layout.selectPanel("wb-schedules")}):null;
       }
       ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:'wb-operations'},OperationsPanel));
       ctx.slots.inject("sidebar",()=>{
@@ -1454,13 +1481,14 @@ window.__ModuleLoader__.load({
           ["wb-resources","知识库",IconDatabaseOutlineRegular,ResourcePage,{}],
           ["wb-experts","专家",UI.IconAgentPresetOutlineRegular||IconDatabaseOutlineRegular,ExpertsPage,{}],
           ["wb-mcp","MCP 插件",UI.IconPluginPinwheelOutlineRegular||IconDatabaseOutlineRegular,MCPPage,{openNativePlugins:()=>ctx.layout.selectPanel("plugins")}],
+          ["wb-schedules","定时任务",IconClockOutlineRegular,SchedulesPage,{openPanel:id=>ctx.layout.selectPanel(id),openSession:id=>ctx.uiWorkspace.openSession(id)}],
         ]) {
           ctx.slots.inject("sidebar.panellist", () =>
             ctx.slots.register(
               {
                 name: "sidebar.panellist",
                 id,
-                order: -30+["wb-today","wb-projects","wb-resources","wb-experts","wb-mcp"].indexOf(id),
+                order: -30+["wb-today","wb-projects","wb-resources","wb-experts","wb-mcp","wb-schedules"].indexOf(id),
                 label: () => label,
               },
               mark,

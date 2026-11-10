@@ -65,6 +65,8 @@ func (s *Store) OperationsPackageAction(ctx context.Context, run Run, view strin
 	operation := "operations_package"
 	if view == "package_edit" {
 		operation = "operations_package_edit"
+	} else if view == "package_confirm" {
+		operation = "operations_package_confirm"
 	}
 	if run.Operation != operation || !ValidID(run.ID) {
 		return nil, ErrDenied

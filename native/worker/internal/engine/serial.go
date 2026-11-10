@@ -40,6 +40,8 @@ func WriteTask(ctx workflow.Context, in WriteInput) (err error) {
 			future = workflow.ExecuteChildWorkflow(child, Sync, in.RunID)
 		case "operations_package":
 			future = workflow.ExecuteChildWorkflow(child, OperationsPackage, in.RunID)
+		case "operations_package_confirm":
+			future = workflow.ExecuteChildWorkflow(child, OperationsPackageConfirm, in.RunID)
 		default:
 			return failure(core.ErrInvalid)
 		}

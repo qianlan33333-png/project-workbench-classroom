@@ -116,8 +116,8 @@ func (a *Server) editOperationsPackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Package, Week, Run, Item, Digest, Text string
-		Revision                               int
+		Package, Week, Run, Item, Digest, Text, Daily string
+		Revision                                      int
 	}
 	if !decode(w, r, &in) {
 		return
@@ -132,6 +132,25 @@ func (a *Server) editOperationsPackage(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 130*time.Second)
 	defer cancel()
+	if in.Daily != "" {
+		parent, roster, err := a.dailyOperationsRoster(ctx, p, in.Daily)
+		if err != nil || roster.Run != in.Run || parent.Shared["package"] != in.Package || parent.Shared["week"] != in.Week ||
+			a.operationsExecution(ctx, in.Daily) != "Completed" {
+			respond(w, nil, core.ErrConflict)
+			return
+		}
+		allowed := false
+		for _, member := range roster.Scope {
+			if member.Key == in.Item && (member.ExpiresAt == nil || time.Now().Before(*member.ExpiresAt)) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			respond(w, nil, core.ErrConflict)
+			return
+		}
+	}
 	run := core.Run{ID: uuid.NewString(), Principal: p, Operation: "operations_package_edit", Destination: cfg.Input.ResourceID,
 		Title: "保存原工作包最终稿", ExplicitInputs: true, Quiet: true}
 	run.Shared = map[string]any{
@@ -208,7 +227,7 @@ func (a *Server) operationsPackageStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	run, err := a.Store.Run(r.Context(), p, q.Get("id"))
-	if err != nil || run.Operation != "operations_package" {
+	if err != nil || (run.Operation != "operations_package" && run.Operation != "operations_package_confirm") {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
@@ -217,7 +236,16 @@ func (a *Server) operationsPackageStatus(w http.ResponseWriter, r *http.Request)
 		respond(w, nil, err)
 		return
 	}
-	respond(w, map[string]string{"state": status.WorkflowExecutionInfo.Status.String()}, nil)
+	out := map[string]string{"state": status.WorkflowExecutionInfo.Status.String()}
+	if run.Operation == "operations_package_confirm" && out["state"] == "Completed" {
+		result, err := a.Store.Item(r.Context(), run.ID, engine.OriginalOperationsConfirmation)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		out["result"] = result.Text
+	}
+	respond(w, out, nil)
 }
 
 func (a *Server) operationsDirectory(w http.ResponseWriter, r *http.Request, p core.Principal, cfg operationsConfig, view string, params map[string]string) {

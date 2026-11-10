@@ -408,11 +408,11 @@ export async function apply(ctx, config) {
                 res.end(bytes);
                 return;
               }
-              if (req.method === "GET" && ["/operations/view", "/operations/profiles", "/operations/source", "/operations/source-package-status"].includes(path)) {
+              if (req.method === "GET" && ["/operations/view", "/operations/profiles", "/operations/source", "/operations/source-today", "/operations/source-package-status"].includes(path)) {
                 json(res, 200, await call(path + u.search, p, undefined, AbortSignal.timeout(87000)));
                 return;
               }
-              if (req.method === "POST" && ["/operations/schedule", "/operations/settings", "/operations/send", "/operations/source-package", "/operations/source-package-edit"].includes(path)) {
+              if (req.method === "POST" && ["/operations/schedule", "/operations/settings", "/operations/send", "/operations/source-package", "/operations/source-package-edit", "/operations/source-confirm", "/operations/original-schedule"].includes(path)) {
                 if (!req.headers.origin || new URL(req.headers.origin).host !== req.headers.host) throw requestError("origin rejected", 403);
                 const input = await body(req);
                 if (path === "/operations/schedule") {
@@ -423,11 +423,13 @@ export async function apply(ctx, config) {
                   json(res, 200, await call(path, owner, {
                     projectId, kind: input.kind, expert: expert.name, time: input.time, instructions: expert.content,
                   }));
+                } else if (path === "/operations/original-schedule") {
+                  json(res, 200, await call(path, owner, {projectId, strategy: input.strategy, time: input.time}, AbortSignal.timeout(87000)));
                 } else if (path === "/operations/settings") {
                   json(res, 200, await call(path, owner, {
                     projectId, knowledge: input.knowledge, transport: input.transport, staffId: input.staffId,
                   }));
-                } else if (path === "/operations/source-package" || path === "/operations/source-package-edit") {
+                } else if (path === "/operations/source-package" || path === "/operations/source-package-edit" || path === "/operations/source-confirm") {
                   json(res, 200, await call(path, p, input, AbortSignal.timeout(133000)));
                 } else {
                   json(res, 200, await call(path, p, {runId: input.runId}));

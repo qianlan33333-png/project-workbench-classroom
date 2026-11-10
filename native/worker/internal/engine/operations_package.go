@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -14,9 +16,24 @@ import (
 )
 
 type originalPackage struct {
-	State string `json:"state"`
-	Run   string `json:"run"`
-	Total int    `json:"total"`
+	State string                     `json:"state"`
+	Run   string                     `json:"run"`
+	Total int                        `json:"total"`
+	Scope []originalOperationsMember `json:"scope"`
+	Daily bool                       `json:"daily"`
+}
+
+const OriginalOperationsRoster = "original-daily-roster"
+const OriginalOperationsConfirmation = "original-confirm-result"
+
+var originalRunID = regexp.MustCompile(`^copybatch-[a-f0-9]{32}$`)
+
+type originalOperationsMember struct {
+	Offset    int        `json:"offset"`
+	Key       string     `json:"key"`
+	ID        string     `json:"id"`
+	Reason    string     `json:"reason"`
+	ExpiresAt *time.Time `json:"expiresAt"`
 }
 
 type originalCopyItem struct {
@@ -36,13 +53,26 @@ func OperationsPackage(ctx workflow.Context, id string) (err error) {
 	if err = workflow.ExecuteActivity(ctx, "PrepareOriginalOperationsPackage", id).Get(ctx, &batch); err != nil {
 		return err
 	}
+	if batch.Daily && batch.State == "empty" {
+		return nil
+	}
 	if batch.State != "ready" || batch.Total < 1 || batch.Total > 2500 {
 		return failure(core.ErrConflict)
 	}
+	offsets := make([]int, 0, batch.Total)
+	if batch.Daily {
+		for _, member := range batch.Scope {
+			offsets = append(offsets, member.Offset)
+		}
+	} else {
+		for offset := range batch.Total {
+			offsets = append(offsets, offset)
+		}
+	}
 	failed := 0
-	for start := 0; start < batch.Total; start += 3 {
+	for start := 0; start < len(offsets); start += 3 {
 		var page []workflow.Future
-		for offset := start; offset < min(start+3, batch.Total); offset++ {
+		for _, offset := range offsets[start:min(start+3, len(offsets))] {
 			page = append(page, workflow.ExecuteActivity(ctx, "GenerateOriginalOperationsItem", id, batch.Run, offset))
 		}
 		for _, item := range page {
@@ -60,6 +90,9 @@ func OperationsPackage(ctx workflow.Context, id string) (err error) {
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d original copy items need review", failed)
+	}
+	if batch.Daily {
+		return workflow.ExecuteActivity(ctx, "VerifyOriginalOperationsDrafts", id, batch).Get(ctx, nil)
 	}
 	return nil
 }
@@ -84,6 +117,60 @@ func OperationsPackageEdit(ctx workflow.Context, id string) (json.RawMessage, er
 	return result, err
 }
 
+func OperationsPackageConfirm(ctx workflow.Context, id string) (json.RawMessage, error) {
+	var result json.RawMessage
+	future := workflow.ExecuteActivity(operationsPackageActivityContext(ctx), "ConfirmOriginalOperationsPackage", id)
+	err := future.Get(ctx, &result)
+	wait, _ := workflow.NewDisconnectedContext(ctx)
+	_ = future.Get(wait, nil)
+	return result, err
+}
+
+func (a *Activities) ConfirmOriginalOperationsPackage(ctx context.Context, id string) (json.RawMessage, error) {
+	defer keepAlive(ctx)()
+	run, err := a.Store.ExecutionRun(ctx, id)
+	if err != nil || run.Operation != "operations_package_confirm" {
+		return nil, failure(errors.Join(err, core.ErrDenied))
+	}
+	params, err := originalPackageParams(run)
+	if err != nil {
+		return nil, failure(err)
+	}
+	var raw []byte
+	if err = a.Store.DB.QueryRowContext(ctx, "SELECT body FROM wb_settings WHERE id=?", "operations-"+run.Principal.ProjectID).Scan(&raw); err != nil {
+		return nil, err
+	}
+	var settings struct {
+		ReadSource bool
+		Staff      string `json:"staffId"`
+		Transport  string
+		Input      core.Ref
+	}
+	if err = json.Unmarshal(raw, &settings); err != nil || !settings.ReadSource || settings.Staff == "" || settings.Transport == "" ||
+		settings.Staff != params["staff"] || settings.Transport != params["transport"] || settings.Input.ResourceID != run.Destination ||
+		os.Getenv("WORKBENCH_OPERATIONS_ORIGINAL_SEND") != "1" ||
+		os.Getenv("WORKBENCH_OPERATIONS_ORIGINAL_STAFF_ID") != settings.Staff {
+		return nil, failure(core.ErrDenied)
+	}
+	transport, err := a.Store.Transport(ctx, run.Principal, settings.Transport)
+	if err != nil || transport.Kind != "crm-cli" {
+		return nil, failure(errors.Join(err, core.ErrDenied))
+	}
+	data, err := a.Store.OperationsPackageAction(ctx, run, "package_confirm", params)
+	if err != nil {
+		return nil, err
+	}
+	var result struct{ State string }
+	if err := json.Unmarshal(data, &result); err != nil ||
+		(result.State != "source_changed" && result.State != "recorded" && result.State != "needs_check") {
+		return nil, failure(core.ErrInvalid)
+	}
+	err = a.Store.RecordItem(ctx, run.ID, core.ItemResult{
+		ID: OriginalOperationsConfirmation, InputHash: params["digest"], State: "succeeded", Text: result.State,
+	})
+	return data, err
+}
+
 func (a *Activities) EditOriginalOperationsItem(ctx context.Context, id string) (json.RawMessage, error) {
 	defer keepAlive(ctx)()
 	run, err := a.Store.ExecutionRun(ctx, id)
@@ -98,7 +185,7 @@ func (a *Activities) EditOriginalOperationsItem(ctx context.Context, id string) 
 }
 
 func originalPackageParams(run core.Run) (map[string]string, error) {
-	if run.Operation != "operations_package" && run.Operation != "operations_package_edit" {
+	if run.Operation != "operations_package" && run.Operation != "operations_package_edit" && run.Operation != "operations_package_confirm" {
 		return nil, core.ErrDenied
 	}
 	out := make(map[string]string, len(run.Shared))
@@ -123,12 +210,82 @@ func (a *Activities) PrepareOriginalOperationsPackage(ctx context.Context, id st
 	if err != nil {
 		return out, failure(err)
 	}
+	if params["day"] != "" {
+		old, err := a.Store.Item(ctx, id, OriginalOperationsRoster)
+		if err == nil {
+			err = json.Unmarshal([]byte(old.Text), &out)
+			return out, err
+		}
+		if !core.IsMissing(err) {
+			return out, err
+		}
+	}
 	data, err := a.Store.OperationsPackageAction(ctx, run, "package_prepare", params)
 	if err != nil {
 		return out, err
 	}
-	err = json.Unmarshal(data, &out)
-	return out, err
+	if err = json.Unmarshal(data, &out); err != nil || params["day"] == "" {
+		return out, err
+	}
+	out.Daily = true
+	if (out.State != "empty" && (out.State != "ready" || out.Total < 1 || out.Total > 2500 || !originalRunID.MatchString(out.Run) ||
+		len(out.Scope) == 0 || len(out.Scope) > out.Total)) || (out.State == "empty" && len(out.Scope) != 0) {
+		return out, failure(core.ErrConflict)
+	}
+	seen := make(map[int]bool, len(out.Scope))
+	for _, member := range out.Scope {
+		if member.Offset < 0 || member.Offset >= out.Total || seen[member.Offset] || !core.ValidID(member.Key) || !core.ValidID(member.ID) {
+			return out, failure(core.ErrInvalid)
+		}
+		seen[member.Offset] = true
+	}
+	data, err = json.Marshal(out)
+	if err != nil {
+		return out, err
+	}
+	return out, a.Store.RecordItem(ctx, id, core.ItemResult{ID: OriginalOperationsRoster, InputHash: out.Run, State: "succeeded", Text: string(data)})
+}
+
+func (a *Activities) VerifyOriginalOperationsDrafts(ctx context.Context, id string, batch originalPackage) error {
+	defer keepAlive(ctx)()
+	run, err := a.Store.ExecutionRun(ctx, id)
+	if err != nil || run.Operation != "operations_package" {
+		return failure(errors.Join(err, core.ErrDenied))
+	}
+	params, err := originalPackageParams(run)
+	if err != nil {
+		return failure(err)
+	}
+	data, err := a.Store.ReadOperationsDirectory(ctx, run.Principal, run.Destination, "package_daily",
+		map[string]string{"package": params["package"], "week": params["week"], "run": batch.Run,
+			"day": params["day"], "strategy": params["strategy"]})
+	if err != nil {
+		return err
+	}
+	var pack struct {
+		Run  string                             `json:"run"`
+		Rows []struct{ Key, ID, Status string } `json:"rows"`
+	}
+	if err = json.Unmarshal(data, &pack); err != nil || pack.Run != batch.Run {
+		return failure(core.ErrInvalid)
+	}
+	frozen := make(map[string]string, len(batch.Scope))
+	for _, member := range batch.Scope {
+		frozen[member.Key] = member.ID
+	}
+	for _, row := range pack.Rows {
+		id, exists := frozen[row.Key]
+		if !exists {
+			continue
+		}
+		if id != row.ID {
+			return failure(core.ErrConflict)
+		}
+		if row.Status == "待生成" {
+			return fmt.Errorf("original daily package contains unfinished drafts")
+		}
+	}
+	return nil
 }
 
 func (a *Activities) GenerateOriginalOperationsItem(ctx context.Context, id, originalRun string, offset int) error {
@@ -140,6 +297,32 @@ func (a *Activities) GenerateOriginalOperationsItem(ctx context.Context, id, ori
 	params, err := originalPackageParams(run)
 	if err != nil {
 		return failure(core.ErrDenied)
+	}
+	if day := params["day"]; day != "" {
+		if day != originalOperationsDay(time.Now()) {
+			return failure(core.ErrConflict)
+		}
+		stored, err := a.Store.Item(ctx, id, OriginalOperationsRoster)
+		if err != nil {
+			return err
+		}
+		var batch originalPackage
+		if err = json.Unmarshal([]byte(stored.Text), &batch); err != nil || batch.Run != originalRun {
+			return failure(core.ErrConflict)
+		}
+		allowed := false
+		for _, member := range batch.Scope {
+			if member.Offset == offset {
+				if member.ExpiresAt != nil && !time.Now().Before(*member.ExpiresAt) {
+					return nil
+				}
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return failure(core.ErrDenied)
+		}
 	}
 	params["run"] = originalRun
 	params["action"], params["offset"] = "export", strconv.Itoa(offset)
@@ -201,9 +384,10 @@ func (a *Activities) GenerateOriginalOperationsItem(ctx context.Context, id, ori
 	}
 	var result struct {
 		Status    string `json:"status"`
+		State     string `json:"state"`
 		Automatic bool   `json:"automatic_send_allowed"`
 	}
-	if err = json.Unmarshal(data, &result); err != nil || result.Automatic || result.Status == "" {
+	if err = json.Unmarshal(data, &result); err != nil || result.Automatic || (result.Status == "" && result.State != "held") {
 		return fmt.Errorf("original copy import did not return a valid draft result")
 	}
 	return nil
