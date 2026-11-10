@@ -88,7 +88,29 @@ func (a *Activities) OriginalOperationsRuns(ctx context.Context, in OperationsSc
 		if pack.Strategy != in.Strategy {
 			continue
 		}
-		id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(in.Principal.ProjectID+"/"+in.Strategy+"/"+pack.Scene+"/"+day)).String()
+		key := in.Principal.ProjectID + "/" + in.Strategy + "/" + pack.Scene + "/" + day
+		id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)).String()
+		// Recover only an already settled empty projection from the first
+		// rollout that did prepare original rows. Keep healthy and in-flight
+		// identities, as well as actual zero-candidate results.
+		stored, err := a.Store.Item(ctx, id, OriginalOperationsRoster)
+		if err == nil {
+			var batch originalPackage
+			if err = json.Unmarshal([]byte(stored.Text), &batch); err != nil {
+				return nil, failure(err)
+			}
+			if batch.State == "empty" && batch.Total > 0 && originalRunID.MatchString(batch.Run) {
+				status, err := a.Temporal.DescribeWorkflowExecution(ctx, id, "")
+				if err != nil {
+					return nil, err
+				}
+				if status.GetWorkflowExecutionInfo().GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_COMPLETED {
+					id = uuid.NewSHA1(uuid.NameSpaceURL, []byte(key+"/original-draft-rebind")).String()
+				}
+			}
+		} else if !core.IsMissing(err) {
+			return nil, err
+		}
 		runs = append(runs, core.Run{
 			ID: id, Principal: in.Principal, Operation: "operations_package", Destination: in.Resource,
 			Title: pack.Title, Quiet: true, ExplicitInputs: true,

@@ -23,13 +23,56 @@ import (
 var originalOperationsStrategy = regexp.MustCompile(`^hxc:[a-z0-9_-]{1,40}$`)
 
 type dailyOperationsRoster struct {
-	State string
-	Run   string
-	Scope []struct {
-		Key       string
-		ID        string
-		Reason    string
-		ExpiresAt *time.Time
+	State   string
+	Run     string
+	Package string
+	Week    string
+	Scope   []struct {
+		Key             string
+		ID              string
+		Reason          string
+		ExpiresAt       *time.Time
+		Expert          string
+		StrategyVersion int
+	}
+}
+
+func (r dailyOperationsRoster) originalBinding(run core.Run) (packageID, week string) {
+	if r.Package != "" {
+		return r.Package, r.Week
+	}
+	return run.Shared["package"].(string), run.Shared["week"].(string)
+}
+
+func (a *Server) originalScheduleEvidence(ctx context.Context, schedule *scheduleView) {
+	var body []byte
+	var runResource string
+	err := a.Store.DB.QueryRowContext(ctx, `SELECT JSON_UNQUOTE(JSON_EXTRACT(i.body,'$.text')),
+		JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.destination')) FROM wb_items i
+		JOIN wb_runs r ON r.id=i.run_id WHERE r.project_id=? AND r.session_id=? AND i.item_id=?
+		AND JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.shared.strategy'))=?
+		AND JSON_LENGTH(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(i.body,'$.text')),'$.scope'))>0
+		ORDER BY r.created_at DESC LIMIT 1`, schedule.ProjectID, schedule.SessionID, engine.OriginalOperationsRoster, schedule.Strategy).Scan(&body, &runResource)
+	resourceID := schedule.SourceResource
+	if resourceID == "" {
+		resourceID = runResource
+	}
+	if resourceID != "" {
+		if resource, err := a.Store.Resource(ctx, resourceID); err == nil {
+			schedule.Source = resource.ConnectionID
+		}
+	}
+	var latest dailyOperationsRoster
+	if err != nil || json.Unmarshal(body, &latest) != nil {
+		return
+	}
+	for _, member := range latest.Scope {
+		if member.Expert != "" && !slices.Contains(schedule.Experts, member.Expert) {
+			schedule.Experts = append(schedule.Experts, member.Expert)
+		}
+		if member.StrategyVersion > 0 && !slices.Contains(schedule.Versions, member.StrategyVersion) {
+			schedule.Versions = append(schedule.Versions, member.StrategyVersion)
+		}
 	}
 }
 
@@ -44,7 +87,8 @@ func (a *Server) dailyOperationsRoster(ctx context.Context, p core.Principal, id
 		return run, roster, err
 	}
 	err = json.Unmarshal([]byte(item.Text), &roster)
-	if err == nil && roster.State != "empty" && (roster.State != "ready" || !operationsCopyRun.MatchString(roster.Run)) {
+	if err == nil && roster.State != "empty" && (roster.State != "ready" || !operationsCopyRun.MatchString(roster.Run) ||
+		((roster.Package != "" || roster.Week != "") && !validOperationsPackage(roster.Package, roster.Week))) {
 		err = core.ErrInvalid
 	}
 	return run, roster, err
@@ -65,9 +109,11 @@ func (a *Server) dailyOperationsPackage(ctx context.Context, p core.Principal, c
 	if _, ok := allowed[item]; item != "" && !ok {
 		return nil, 0, core.ErrConflict
 	}
+	packID, week := roster.originalBinding(run)
 	data, err := a.Store.ReadOperationsDirectory(ctx, p, cfg.Input.ResourceID, "package_daily", map[string]string{
-		"package": run.Shared["package"].(string), "week": run.Shared["week"].(string), "run": roster.Run, "item": item,
+		"package": packID, "week": week, "run": roster.Run, "item": item,
 		"strategy": run.Shared["strategy"].(string), "day": run.Shared["day"].(string),
+		"currentPackage": run.Shared["package"].(string), "currentWeek": run.Shared["week"].(string),
 	})
 	if err != nil {
 		return nil, 0, err
@@ -181,8 +227,9 @@ func (a *Server) operationsToday(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if pending > 0 {
-			packages = append(packages, map[string]any{"daily": id, "run_id": roster.Run, "package_id": run.Shared["package"],
-				"label": run.Title, "scene_label": run.Shared["scene"], "week": run.Shared["week"], "pending": pending})
+			packID, week := roster.originalBinding(run)
+			packages = append(packages, map[string]any{"daily": id, "run_id": roster.Run, "package_id": packID,
+				"label": run.Title, "scene_label": run.Shared["scene"], "week": week, "pending": pending})
 		}
 	}
 	respond(w, map[string]any{"day": day, "packages": packages, "attention": attention, "running": running}, nil)
@@ -238,7 +285,8 @@ func (a *Server) configureOriginalOperationsSchedule(w http.ResponseWriter, r *h
 	}}}
 	action := &client.ScheduleWorkflowAction{ID: id, Workflow: engine.ScheduledOperations, TaskQueue: engine.BatchQueue,
 		Args: []any{engine.OperationsScheduleInput{Principal: p, Resource: cfg.Input.ResourceID, Strategy: in.Strategy}}}
-	v := scheduleView{ID: id, Title: title, SessionID: p.SessionID, Hours: hours, Minute: t.Minute(), ProjectID: p.ProjectID, Strategy: in.Strategy}
+	v := scheduleView{ID: id, Title: title, SessionID: p.SessionID, Hours: hours, Minute: t.Minute(), ProjectID: p.ProjectID,
+		Strategy: in.Strategy, SourceResource: cfg.Input.ResourceID}
 	handle, err := a.Temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{ID: id, Spec: spec, Action: action,
 		Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP, CatchupWindow: time.Hour})
 	created := err == nil
@@ -306,6 +354,7 @@ func (a *Server) confirmDailyOperations(w http.ResponseWriter, r *http.Request) 
 	a.operationsMu.Lock()
 	defer a.operationsMu.Unlock()
 	var id string
+	var existing core.Run
 	for attempt := 0; attempt < 10; attempt++ {
 		candidate := uuid.NewSHA1(uuid.NameSpaceURL, []byte(base+"/"+strconv.Itoa(attempt))).String()
 		old, err := a.Store.Run(ctx, p, candidate)
@@ -325,25 +374,42 @@ func (a *Server) confirmDailyOperations(w http.ResponseWriter, r *http.Request) 
 			respond(w, nil, err)
 			return
 		}
-		if old.Operation != "operations_package_confirm" || old.Shared["keys"] != string(keys) || old.Shared["digest"] != in.Digest {
+		if old.Operation != "operations_package_confirm" || old.Shared["keys"] != string(keys) || old.Shared["digest"] != in.Digest ||
+			old.Shared["staff"] != cfg.Staff || old.Shared["transport"] != cfg.Transport || old.Destination != parent.Destination {
 			respond(w, nil, core.ErrConflict)
 			return
 		}
 		id = candidate
+		existing = old
 		break
 	}
 	if id == "" {
 		respond(w, nil, core.ErrConflict)
 		return
 	}
-	run := core.Run{ID: id, Principal: p, Operation: "operations_package_confirm", Destination: parent.Destination,
-		Title: "确认原工作包", ExplicitInputs: true, Quiet: true,
-		Shared: map[string]any{"package": parent.Shared["package"], "week": parent.Shared["week"], "day": parent.Shared["day"],
-			"strategy": parent.Shared["strategy"], "run": roster.Run, "digest": in.Digest, "keys": string(keys),
-			"staff": cfg.Staff, "transport": cfg.Transport}}
-	if err = a.Store.SaveRun(ctx, run); err != nil {
-		respond(w, nil, err)
-		return
+	run := existing
+	if run.ID == "" {
+		packID, week := roster.originalBinding(parent)
+		run = core.Run{ID: id, Principal: p, Operation: "operations_package_confirm", Destination: parent.Destination,
+			Title: "确认原工作包", ExplicitInputs: true, Quiet: true,
+			Shared: map[string]any{"package": packID, "week": week, "day": parent.Shared["day"],
+				"strategy": parent.Shared["strategy"], "run": roster.Run, "digest": in.Digest, "keys": string(keys),
+				"staff": cfg.Staff, "transport": cfg.Transport, "currentPackage": parent.Shared["package"], "currentWeek": parent.Shared["week"],
+				"daily": parent.ID}}
+		if err = a.Store.SaveRun(ctx, run); err != nil {
+			respond(w, nil, err)
+			return
+		}
+	} else {
+		state := a.operationsExecution(ctx, id)
+		if state != "NotFound" {
+			respond(w, RunRef{RunID: id}, nil)
+			return
+		}
+		if run.Shared["daily"] != parent.ID {
+			respond(w, nil, core.ErrConflict)
+			return
+		}
 	}
 	_, err = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: engine.BatchQueue,
 		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.WriteTask,

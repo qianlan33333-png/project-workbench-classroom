@@ -657,8 +657,31 @@ def package_prepare(read, params):
         raise ValueError("invalid original generation run")
     if day:
         scope = daily_scope(read, {**params, "run": run}, records)
-        return {"state": "ready" if scope else "empty", "run": run, "total": len(ids), "scope": scope}
+        return bind_daily_drafts(read, params, records, run, len(ids), scope)
     return {"state": "ready", "run": run, "total": len(ids)}
+
+
+def bind_daily_drafts(read, params, records, run, total, scope):
+    previous = {(row["reuseRun"], row["reusePackage"], row["reuseWeek"]) for row in scope if "reuseRun" in row}
+    binding = {}
+    if previous:
+        if len(previous) != 1 or any("reuseRun" not in row for row in scope):
+            raise ValueError("today's eligible drafts span multiple original runs")
+        run, package, week = previous.pop()
+        binding = {"package": package, "week": week}
+        rebound = {**params, **binding, "run": run, "currentWeek": params["week"], "currentPackage": params["package"]}
+        detail = package_run(read, rebound, preflight=True)
+        total = len(detail["items"])
+        deadlines = {(row["id"], row["reuseItem"]): source_time(row["expiresAt"]) for row in scope}
+        scope = [row for row in daily_scope(read, rebound, records, detail=detail) if (row["id"], row["key"]) in deadlines]
+        ready = {row["item_key"] for row in detail["items"] if row.get("usable") and row.get("reviewable") and row.get("text")}
+        if {(row["id"], row["key"]) for row in scope} != deadlines.keys() or not {row["key"] for row in scope} <= ready:
+            raise ValueError("existing original drafts changed")
+        for row in scope:
+            row["existing"] = True
+            end = min(filter(None, (deadlines[(row["id"], row["key"])], source_time(row["expiresAt"]))), default=None)
+            row["expiresAt"] = end.isoformat() if end else None
+    return {"state": "ready" if scope else "empty", "run": run, "total": total, "scope": scope, **binding}
 
 
 def source_time(value):
@@ -726,6 +749,7 @@ def daily_scope(read, params, records, *, now=None, detail=None):
             if request.get("strategy_key") != params["strategy"]:
                 raise ValueError("original strategy changed")
             binding = request.get("sku_pack_binding") or {}
+            reuse = {}
             if params["strategy"] == "hxc:onboarding":
                 end = newcomer_deadline(request, now)
                 if end is None:
@@ -735,7 +759,7 @@ def daily_scope(read, params, records, *, now=None, detail=None):
                     WHERE week=? AND canonical_user_id=? AND action_type='agent_user_action'
                       AND todo_type='hxc_lifecycle' AND status='pending'
                       AND json_extract(result_json,'$.strategy_key')=?""",
-                    (params["week"], ref, params["strategy"])).fetchone()
+                    (params.get("currentWeek") or params["week"], ref, params["strategy"])).fetchone()
                 if not task or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", task[0] or ""):
                     raise ValueError("original schedule is unavailable")
                 if task[0] > params["day"]:
@@ -754,14 +778,40 @@ def daily_scope(read, params, records, *, now=None, detail=None):
                     if old_run != detail["run_id"] and old_run not in receipts:
                         receipts[old_run] = read("copy-package", {"run_id": old_run, "operator_view": 1}, timeout=8)["package"]
                     old = receipts.get(old_run, detail)
-                    if old["run_id"] != old_run or not any(item["item_key"] == old_key and item.get("safe_user_ref") == ref for item in old["items"]):
+                    old_item = next((item for item in old["items"] if item["item_key"] == old_key and item.get("safe_user_ref") == ref), None)
+                    if old["run_id"] != old_run or old_item is None:
                         raise ValueError("original receipt identity mismatch")
-                    if (old_run != detail["run_id"] or old_key in verified_receipts(old) or
+                    if (old_key in verified_receipts(old) or
                             old_key in ((old.get("handoff") or {}).get("selected_item_keys") or []) or
                             state != "draft" or handoff or sent):
                         continue
+                    if old_run != detail["run_id"]:
+                        if not preparing:
+                            continue
+                        if old.get("review") or old.get("handoff") or formal_status(old):
+                            continue
+                        if not (old_item.get("usable") and old_item.get("reviewable") and old_item.get("text")):
+                            raise ValueError("existing original draft is unavailable")
+                        saved = conn.execute("""SELECT i.request_json,r.config_json FROM copy_batch_items i
+                            JOIN copy_batch_runs r ON i.run_id=r.run_id WHERE i.run_id=? AND i.item_key=?""",
+                                             (old_run, old_key)).fetchone()
+                        if not saved:
+                            raise ValueError("existing original draft binding is missing")
+                        old_request = json.loads(saved[0])
+                        old_config = json.loads(saved[1])
+                        old_package = old_config.get("parent_package_id") or old_config.get("package_id") or ""
+                        old_week = old_config.get("week") or ""
+                        package_identity({"package": old_package, "week": old_week})
+                        old_binding = old_request.get("sku_pack_binding") or {}
+                        if (type(request.get("strategy_version")) is not int or request["strategy_version"] < 1
+                                or not request.get("skill_key")
+                                or any(old_request.get(field) != request.get(field) for field in ("strategy_key", "strategy_version", "skill_key"))
+                                or any(old_binding.get(field) != binding.get(field) for field in ("slot_key", "cycle_key", "node"))):
+                            raise ValueError("existing original draft uses a different node or method")
+                        reuse = {"reuseRun": old_run, "reuseItem": old_key, "reusePackage": old_package, "reuseWeek": old_week}
             scope.append({"offset": offset, "key": key, "id": ref, "reason": record["reason"],
-                          "expiresAt": end.isoformat() if end else None})
+                          "expiresAt": end.isoformat() if end else None, "expert": text(request.get("skill_key")),
+                          "strategyVersion": request.get("strategy_version"), **reuse})
     return scope
 
 
@@ -769,7 +819,8 @@ def package_daily(read, params):
     detail = package_run(read, params, preflight=True)
     out = package_detail(read, params, detail=detail)
     if not (out["reviewed"] or out["handoff"] or out["formal"]):
-        package, week = package_identity(params)
+        package, week = package_identity({"package": params.get("currentPackage") or params["package"],
+                                          "week": params.get("currentWeek") or params["week"]})
         records, _ = candidate_records(read, package, week)
         keys = {row["key"] for row in daily_scope(read, params, records, detail=detail)}
         out["rows"] = [row for row in out["rows"] if row["key"] in keys]
@@ -822,12 +873,17 @@ def package_generate(read, params):
 
 
 def package_edit(read, params):
-    try:
-        current = current_package(read, params)
-    except ValueError:
-        return {"state": "source_changed"}
-    if current.get("run_id") != params.get("run"):
-        return {"state": "source_changed"}
+    if params.get("day"):
+        visible = package_daily(read, params)
+        if visible["reviewed"] or visible["handoff"] or visible["formal"] or not visible["rows"]:
+            return {"state": "source_changed"}
+    else:
+        try:
+            current = current_package(read, params)
+        except ValueError:
+            return {"state": "source_changed"}
+        if current.get("run_id") != params.get("run"):
+            return {"state": "source_changed"}
     detail = package_run(read, params)
     item_key, revision = params.get("item", ""), params.get("revision", "")
     body = params.get("text", "").strip()
@@ -836,6 +892,9 @@ def package_edit(read, params):
     item = next((x for x in detail["items"] if x["item_key"] == item_key), None)
     if (detail.get("handoff") or formal_status(detail) == "running" or not item or not item.get("reviewable")
             or not item.get("usable") or detail["digest"] != params.get("digest") or item.get("edit_revision") != int(revision)):
+        return {"state": "source_changed"}
+    expires = source_time(params.get("expiresAt"))
+    if expires and datetime.now(SHANGHAI) >= expires:
         return {"state": "source_changed"}
     if item["text"] == body:
         return {"state": "saved", "digest": detail["digest"], "revision": int(revision)}
@@ -887,11 +946,15 @@ def package_confirm(read, params):
         return {"state": "needs_check"}
     if formal_status(detail):
         return {"state": "needs_check"}
-    package, week = package_identity(params)
+    package, week = package_identity({"package": params.get("currentPackage") or params["package"],
+                                      "week": params.get("currentWeek") or params["week"]})
     records, _ = candidate_records(read, package, week)
     current = {row["key"] for row in daily_scope(read, params, records, detail=detail)}
     usable = {row["item_key"] for row in detail["items"] if row.get("usable") and row.get("text")}
     if not set(keys) <= current & usable:
+        return {"state": "source_changed"}
+    expires = source_time(params.get("expiresAt"))
+    if expires and datetime.now(SHANGHAI) >= expires:
         return {"state": "source_changed"}
     result = read("copy-package-review", payload={
         "run_id": detail["run_id"], "digest": detail["digest"], "decision": "approved",

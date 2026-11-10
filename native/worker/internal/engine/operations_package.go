@@ -16,11 +16,13 @@ import (
 )
 
 type originalPackage struct {
-	State string                     `json:"state"`
-	Run   string                     `json:"run"`
-	Total int                        `json:"total"`
-	Scope []originalOperationsMember `json:"scope"`
-	Daily bool                       `json:"daily"`
+	State   string                     `json:"state"`
+	Run     string                     `json:"run"`
+	Total   int                        `json:"total"`
+	Scope   []originalOperationsMember `json:"scope"`
+	Daily   bool                       `json:"daily"`
+	Package string                     `json:"package,omitempty"`
+	Week    string                     `json:"week,omitempty"`
 }
 
 const OriginalOperationsRoster = "original-daily-roster"
@@ -29,11 +31,14 @@ const OriginalOperationsConfirmation = "original-confirm-result"
 var originalRunID = regexp.MustCompile(`^copybatch-[a-f0-9]{32}$`)
 
 type originalOperationsMember struct {
-	Offset    int        `json:"offset"`
-	Key       string     `json:"key"`
-	ID        string     `json:"id"`
-	Reason    string     `json:"reason"`
-	ExpiresAt *time.Time `json:"expiresAt"`
+	Offset          int        `json:"offset"`
+	Key             string     `json:"key"`
+	ID              string     `json:"id"`
+	Reason          string     `json:"reason"`
+	ExpiresAt       *time.Time `json:"expiresAt"`
+	Existing        bool       `json:"existing,omitempty"`
+	Expert          string     `json:"expert,omitempty"`
+	StrategyVersion int        `json:"strategyVersion,omitempty"`
 }
 
 type originalCopyItem struct {
@@ -156,9 +161,20 @@ func (a *Activities) ConfirmOriginalOperationsPackage(ctx context.Context, id st
 	if err != nil || transport.Kind != "crm-cli" {
 		return nil, failure(errors.Join(err, core.ErrDenied))
 	}
-	data, err := a.Store.OperationsPackageAction(ctx, run, "package_confirm", params)
+	var keys []string
+	if json.Unmarshal([]byte(params["keys"]), &keys) != nil || len(keys) == 0 {
+		return nil, failure(core.ErrInvalid)
+	}
+	valid, err := a.originalOperationsItemsAllowed(ctx, params, keys)
 	if err != nil {
 		return nil, err
+	}
+	data := json.RawMessage(`{"state":"source_changed"}`)
+	if valid {
+		data, err = a.Store.OperationsPackageAction(ctx, run, "package_confirm", params)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var result struct{ State string }
 	if err := json.Unmarshal(data, &result); err != nil ||
@@ -181,7 +197,48 @@ func (a *Activities) EditOriginalOperationsItem(ctx context.Context, id string) 
 	if err != nil {
 		return nil, failure(err)
 	}
+	if params["daily"] != "" {
+		allowed, err := a.originalOperationsItemsAllowed(ctx, params, []string{params["item"]})
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return json.RawMessage(`{"state":"source_changed"}`), nil
+		}
+	}
 	return a.Store.OperationsPackageAction(ctx, run, "package_edit", params)
+}
+
+func (a *Activities) originalOperationsItemsAllowed(ctx context.Context, params map[string]string, keys []string) (bool, error) {
+	now := time.Now()
+	// Legacy confirmations lack the persisted roster reference. A queued
+	// attempt can return a definite conflict without attempting any handoff.
+	if params["daily"] == "" || params["day"] != originalOperationsDay(now) {
+		return false, nil
+	}
+	stored, err := a.Store.Item(ctx, params["daily"], OriginalOperationsRoster)
+	var roster originalPackage
+	if err != nil || json.Unmarshal([]byte(stored.Text), &roster) != nil || roster.Run != params["run"] {
+		return false, failure(errors.Join(err, core.ErrInvalid))
+	}
+	members := make(map[string]*time.Time, len(roster.Scope))
+	for _, member := range roster.Scope {
+		members[member.Key] = member.ExpiresAt
+	}
+	var earliest *time.Time
+	for _, key := range keys {
+		end, ok := members[key]
+		if !ok || (end != nil && !now.Before(*end)) {
+			return false, nil
+		}
+		if end != nil && (earliest == nil || end.Before(*earliest)) {
+			earliest = end
+		}
+	}
+	if earliest != nil {
+		params["expiresAt"] = earliest.Format(time.RFC3339Nano)
+	}
+	return true, nil
 }
 
 func originalPackageParams(run core.Run) (map[string]string, error) {
@@ -232,6 +289,9 @@ func (a *Activities) PrepareOriginalOperationsPackage(ctx context.Context, id st
 		len(out.Scope) == 0 || len(out.Scope) > out.Total)) || (out.State == "empty" && len(out.Scope) != 0) {
 		return out, failure(core.ErrConflict)
 	}
+	if (out.Package != "" || out.Week != "") && (!core.ValidID(out.Package) || out.Week == "") {
+		return out, failure(core.ErrInvalid)
+	}
 	seen := make(map[int]bool, len(out.Scope))
 	for _, member := range out.Scope {
 		if member.Offset < 0 || member.Offset >= out.Total || seen[member.Offset] || !core.ValidID(member.Key) || !core.ValidID(member.ID) {
@@ -256,9 +316,13 @@ func (a *Activities) VerifyOriginalOperationsDrafts(ctx context.Context, id stri
 	if err != nil {
 		return failure(err)
 	}
+	packID, week := params["package"], params["week"]
+	if batch.Package != "" {
+		packID, week = batch.Package, batch.Week
+	}
 	data, err := a.Store.ReadOperationsDirectory(ctx, run.Principal, run.Destination, "package_daily",
-		map[string]string{"package": params["package"], "week": params["week"], "run": batch.Run,
-			"day": params["day"], "strategy": params["strategy"]})
+		map[string]string{"package": packID, "week": week, "run": batch.Run,
+			"day": params["day"], "strategy": params["strategy"], "currentPackage": params["package"], "currentWeek": params["week"]})
 	if err != nil {
 		return err
 	}
@@ -313,7 +377,7 @@ func (a *Activities) GenerateOriginalOperationsItem(ctx context.Context, id, ori
 		allowed := false
 		for _, member := range batch.Scope {
 			if member.Offset == offset {
-				if member.ExpiresAt != nil && !time.Now().Before(*member.ExpiresAt) {
+				if member.Existing || (member.ExpiresAt != nil && !time.Now().Before(*member.ExpiresAt)) {
 					return nil
 				}
 				allowed = true
