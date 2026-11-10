@@ -29,6 +29,7 @@ type Server struct {
 	CustomerClients []CustomerClient
 	CustomerStore   *core.Store
 	personalMu      sync.Mutex
+	operationsMu    sync.Mutex
 	Host            engine.AgentHost
 	BackgroundReady func() bool
 }
@@ -46,6 +47,7 @@ func (a *Server) Handler() http.Handler {
 	a.replyRoutes(mux)
 	a.scheduleRoutes(mux)
 	a.resourceRoutes(mux)
+	a.operationsRoutes(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()

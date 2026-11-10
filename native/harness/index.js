@@ -384,6 +384,42 @@ export async function apply(ctx, config) {
           try {
             const u = new URL(req.url, "http://localhost");
             const path = u.pathname.slice("/workbench-api".length);
+            if (path.startsWith("/operations/")) {
+              const projectId = u.searchParams.get("projectId");
+              const project = (await syncProjects()).find(item => item.id === projectId);
+              const ids = await call("/operations/projects");
+              if (!project || !ids.includes(projectId)) throw requestError("专项项目不存在", 404);
+              const p = {kind: "project", projectId, sessionId: "operations-" + projectId};
+              if (req.method === "GET" && path === "/operations/experts") {
+                json(res, 200, await skillCatalog(project.workspace));
+                return;
+              }
+              if (req.method === "GET" && ["/operations/view", "/operations/profiles"].includes(path)) {
+                json(res, 200, await call(path + u.search, p));
+                return;
+              }
+              if (req.method === "POST" && ["/operations/schedule", "/operations/settings", "/operations/send"].includes(path)) {
+                if (!req.headers.origin || new URL(req.headers.origin).host !== req.headers.host) throw requestError("origin rejected", 403);
+                const input = await body(req);
+                if (path === "/operations/schedule") {
+                  const expert = await skillCatalog(project.workspace, input.expert);
+                  if (!expert?.content) throw requestError("请选择可用专家");
+                  await ensureSession(p.sessionId, project.workspace);
+                  await ctx.workspaceRegistry.list().find(w => w.path === project.workspace)?.attachSession(p.sessionId);
+                  json(res, 200, await call(path, owner, {
+                    projectId, kind: input.kind, expert: expert.name, time: input.time, instructions: expert.content,
+                  }));
+                } else if (path === "/operations/settings") {
+                  json(res, 200, await call(path, owner, {
+                    projectId, knowledge: input.knowledge, transport: input.transport, staffId: input.staffId,
+                  }));
+                } else {
+                  json(res, 200, await call(path, p, {runId: input.runId}));
+                }
+                return;
+              }
+              throw requestError("接口不存在", 404);
+            }
             if(req.method==='GET'&&path==='/resource-documents'){
               const projectId=u.searchParams.get('projectId'),resourceId=u.searchParams.get('resourceId');
               if(!(await syncProjects()).some(p=>p.id===projectId))throw requestError('项目不存在',404);
@@ -413,10 +449,10 @@ export async function apply(ctx, config) {
               return;
             }
             if (req.method === "GET" && path === "/project-list") {
-              const [projects, reply] = await Promise.all([syncProjects(), call("/reply-projects")]);
+              const [projects, reply, operations] = await Promise.all([syncProjects(), call("/reply-projects"), call("/operations/projects")]);
               const special = new Set(reply.map(p => p.projectId));
               json(res, 200, { personalWorkspaceId: personalWorkspace.id, personalSessionId: todayId,
-                projects: projects.map(({workspace, ...p}) => ({ ...p, type: special.has(p.id) ? "auto-reply" : "ordinary" })) });
+                projects: projects.map(({workspace, ...p}) => ({ ...p, type: operations.includes(p.id) ? "auto-operations" : special.has(p.id) ? "auto-reply" : "ordinary" })) });
               return;
             }
             if (req.method === "GET" && path === "/today-rules") {
@@ -437,7 +473,16 @@ export async function apply(ctx, config) {
               if (!origin || new URL(origin).host !== req.headers.host) throw requestError("origin rejected", 403);
               const input = await body(req);
               if (path === "/today-rules") { json(res, 200, await saveRule(input)); return; }
-              if (path === "/experts") { json(res, 200, await skillCatalog.save(personalPath,input)); return; }
+              if (path === "/experts") {
+                const saved = await skillCatalog.save(personalPath, input);
+                const ids = await call("/operations/projects");
+                for (const project of (await syncProjects()).filter(p => ids.includes(p.id))) {
+                  const selected = await skillCatalog(project.workspace, saved.name);
+                  await call("/operations/method", owner, {projectId: project.id, expert: selected.name, instructions: selected.content});
+                }
+                json(res, 200, saved);
+                return;
+              }
               if (path === "/mcp-test") {
                 const builtin = input.name === "workbench";
                 const server = (config.toolServers || []).find(item => item.name === input.name);
@@ -472,7 +517,7 @@ export async function apply(ctx, config) {
               }
               const name = typeof input.name === "string" ? input.name.trim() : "";
               if (!name || name.length > 80 || /[\x00-\x1f\x7f]/.test(name) ||
-                  !["ordinary", "auto-reply"].includes(input.type)) throw requestError("请填写项目名称并选择类型");
+                  !["ordinary", "auto-reply", "auto-operations"].includes(input.type)) throw requestError("请填写项目名称并选择类型");
               const base = join(dirname(personalPath), "projects");
               await mkdir(base, { recursive: true });
               const directory = join(base, "project-" + randomUUID());
@@ -481,6 +526,7 @@ export async function apply(ctx, config) {
               const id = idOf(workspace);
               // Register the specialization before exposing its workspace in the sidebar.
               if (input.type === "auto-reply") await call("/reply-projects", owner, { projectId: id });
+              if (input.type === "auto-operations") await call("/operations/register", owner, { projectId: id });
               const w = await ctx.workspaceRegistry.create(workspace, name);
               await syncProjects();
               json(res, 200, { id, name, type: input.type, workspaceId: w.id, sessionIds: [] });

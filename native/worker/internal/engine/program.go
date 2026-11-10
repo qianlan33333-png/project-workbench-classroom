@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/workflow"
+	"time"
 	"workbench-native/internal/core"
 )
 
@@ -99,7 +100,7 @@ func (a *Activities) ProgramSyncSteps(ctx context.Context, id string) ([]StepRef
 		if !source.Refresh {
 			continue
 		}
-		child := core.Run{ID: stepID(id, "sync/"+source.ResourceID), Principal: r.Principal, ParentRunID: id, Operation: "sync", Title: "更新资料 · " + source.ResourceID, Destination: source.ResourceID, Lineage: r.Lineage}
+		child := core.Run{ID: stepID(id, "sync/"+source.ResourceID), Principal: r.Principal, ParentRunID: id, Operation: "sync", Title: "更新资料 · " + source.ResourceID, Destination: source.ResourceID, Lineage: r.Lineage, ExplicitInputs: r.ExplicitInputs}
 		if e = a.Store.SaveRun(ctx, child); e != nil {
 			return nil, failure(e)
 		}
@@ -137,6 +138,9 @@ func (a *Activities) ProgramGeneration(ctx context.Context, id string) (string, 
 				return "", e
 			}
 			version = resource.CurrentVersion
+			if source.Optional && version == "" && resource.OwnerProject == r.Principal.ProjectID {
+				continue
+			}
 		}
 		for _, section := range source.Sections {
 			ref := core.Ref{ResourceID: source.ResourceID, Version: version, Section: section}
@@ -149,7 +153,51 @@ func (a *Activities) ProgramGeneration(ctx context.Context, id string) (string, 
 	if e = a.Store.RememberRead(ctx, r.Principal, refs); e != nil {
 		return "", failure(e)
 	}
-	child := core.Run{ID: childID, Principal: r.Principal, ParentRunID: id, Operation: "generate", Title: r.Title, Destination: r.Destination, Sources: refs, Lineage: r.Lineage, Method: r.Method, Selection: r.Selection}
+	child := core.Run{ID: childID, Principal: r.Principal, ParentRunID: id, Operation: "generate", Title: r.Title, Destination: r.Destination, Sources: refs, Lineage: r.Lineage, Method: r.Method, Selection: r.Selection, ExplicitInputs: r.ExplicitInputs}
+	if r.Program.LatestMethod != nil {
+		method, source, err := a.Store.LoadMethod(ctx, r.Principal, *r.Program.LatestMethod)
+		if err != nil {
+			return "", failure(err)
+		}
+		child.Method = method
+		child.Lineage = core.UnionRefs(child.Lineage, []core.Ref{source})
+		var started time.Time
+		if err = a.Store.DB.QueryRowContext(ctx, "SELECT created_at FROM wb_runs WHERE id=?", id).Scan(&started); err != nil {
+			return "", failure(err)
+		}
+		child.Shared = map[string]any{"business_date": started.In(time.FixedZone("Asia/Shanghai", 8*3600)).Format("2006-01-02")}
+	}
+	if r.Program.Knowledge != nil {
+		ref := *r.Program.Knowledge
+		resource, err := a.Store.Resource(ctx, ref.ResourceID)
+		if err != nil {
+			return "", failure(err)
+		}
+		if ref.Version == "" {
+			ref.Version = resource.CurrentVersion
+		}
+		page, err := a.Store.Read(ctx, r.Principal, ref, "", 3)
+		if err != nil {
+			return "", failure(err)
+		}
+		var excerpts []map[string]string
+		for _, record := range page.Records {
+			content, _ := record.Fields["text"].(string)
+			if content == "" {
+				continue
+			}
+			runes := []rune(content)
+			excerpts = append(excerpts, map[string]string{"id": record.ID, "text": string(runes[:min(1400, len(runes))])})
+		}
+		if len(excerpts) == 0 {
+			return "", failure(core.ErrInvalid)
+		}
+		if child.Shared == nil {
+			child.Shared = map[string]any{}
+		}
+		child.Shared["knowledge_excerpts"] = excerpts
+		child.Lineage = core.UnionRefs(child.Lineage, []core.Ref{ref})
+	}
 	if e = a.Store.SaveRun(ctx, child); e != nil {
 		return "", failure(e)
 	}

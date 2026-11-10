@@ -35,6 +35,10 @@ type scheduleView struct {
 }
 
 func (a *Server) configureProgram(ctx context.Context, p core.Principal, in ProgramSchedule) (string, error) {
+	return a.configureProgramInputs(ctx, p, in, false)
+}
+
+func (a *Server) configureProgramInputs(ctx context.Context, p core.Principal, in ProgramSchedule, explicit bool) (string, error) {
 	if !core.ValidID(in.ID) || len(in.Hours) == 0 || len(in.Hours) > 24 || in.Minute < 0 || in.Minute > 59 {
 		return "", core.ErrInvalid
 	}
@@ -52,12 +56,15 @@ func (a *Server) configureProgram(ctx context.Context, p core.Principal, in Prog
 	if e != nil {
 		return "", e
 	}
-	r.Lineage, e = a.Store.SessionSources(ctx, p)
-	if e != nil {
-		return "", e
-	}
-	if e = core.AuthorizeAll(ctx, a.Store, p, r.Lineage); e != nil {
-		return "", e
+	r.ExplicitInputs = explicit
+	if !explicit {
+		r.Lineage, e = a.Store.SessionSources(ctx, p)
+		if e != nil {
+			return "", e
+		}
+		if e = core.AuthorizeAll(ctx, a.Store, p, r.Lineage); e != nil {
+			return "", e
+		}
 	}
 	id := "program-" + uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.ID)).String()
 	spec := client.ScheduleSpec{TimeZoneName: "Asia/Shanghai", Calendars: []client.ScheduleCalendarSpec{{Hour: hours, Minute: []client.ScheduleRange{{Start: in.Minute}}}}}

@@ -186,7 +186,7 @@ func (a *Activities) ReconcileDelivery(ctx context.Context, id string) (Receipt,
 	if e != nil {
 		return Receipt{}, e
 	}
-	if d.State == "sent" || d.State == "delivered" || d.State == "failed" {
+	if d.State == "sent" || d.State == "delivered" || d.State == "failed" || d.State == "superseded" {
 		return Receipt{d.State, d.Receipt, d.Error}, nil
 	}
 	r, e := a.Store.ExecutionRun(ctx, d.RunID)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/workflow"
+	"slices"
 	"time"
 	"workbench-native/internal/core"
 )
@@ -135,6 +136,9 @@ func (a *Activities) PrepareDispatchPage(ctx context.Context, id, after string) 
 		byID[v.ID] = v
 	}
 	for _, v := range page.Records {
+		if len(plan.RecordIDs) > 0 && !slices.Contains(plan.RecordIDs, v.ID) {
+			continue
+		}
 		eligible, ok := byID[v.ID]
 		valid := ok && validator.Validate(eligible.Fields) == nil
 		if !valid {

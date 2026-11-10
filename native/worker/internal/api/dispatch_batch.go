@@ -22,6 +22,7 @@ type DispatchSelection struct {
 	ConnectionID     string   `json:"connectionId"`
 	TextPointer      string   `json:"textPointer"`
 	DecodeJSONField  string   `json:"decodeJsonField,omitempty"`
+	RecordIDs        []string `json:"recordIds,omitempty"`
 }
 
 func (a *Server) dispatchBatchTools(s *mcp.Server, p core.Principal) {
@@ -58,15 +59,20 @@ func (a *Server) dispatchBatchTools(s *mcp.Server, p core.Principal) {
 }
 
 func (a *Server) prepareDispatch(ctx context.Context, p core.Principal, in DispatchRequest) (*mcp.CallToolResult, RunRef, error) {
+	out, err := a.prepareDispatchForRun(ctx, p, in, "")
+	return nil, out, err
+}
+
+func (a *Server) prepareDispatchForRun(ctx context.Context, p core.Principal, in DispatchRequest, parent string) (RunRef, error) {
 	if p.Kind != "project" || !core.ValidID(in.OperationKey) {
-		return nil, RunRef{}, core.ErrDenied
+		return RunRef{}, core.ErrDenied
 	}
 	eligibility, e := a.Store.Resource(ctx, in.Plan.Eligibility.ResourceID)
 	if e != nil {
-		return nil, RunRef{}, e
+		return RunRef{}, e
 	}
 	if eligibility.ConnectionID == "" {
-		return nil, RunRef{}, core.ErrInvalid
+		return RunRef{}, core.ErrInvalid
 	}
 	var selected core.RecordCheck
 	for _, check := range eligibility.Checks {
@@ -75,17 +81,21 @@ func (a *Server) prepareDispatch(ctx context.Context, p core.Principal, in Dispa
 		}
 	}
 	if selected.ID == "" || len(selected.Bindings) == 0 {
-		return nil, RunRef{}, core.ErrDenied
+		return RunRef{}, core.ErrDenied
 	}
-	plan := core.DispatchPlan{Source: in.Plan.Source, Eligibility: in.Plan.Eligibility, Check: selected, EligibilitySchema: selected.Schema, ConnectionID: in.Plan.ConnectionID, TextPointer: in.Plan.TextPointer, TargetPointers: selected.Bindings, DecodeJSONField: in.Plan.DecodeJSONField}
+	plan := core.DispatchPlan{Source: in.Plan.Source, Eligibility: in.Plan.Eligibility, Check: selected, EligibilitySchema: selected.Schema, ConnectionID: in.Plan.ConnectionID, TextPointer: in.Plan.TextPointer, TargetPointers: selected.Bindings, DecodeJSONField: in.Plan.DecodeJSONField, RecordIDs: in.Plan.RecordIDs}
 	if e = plan.Validate(); e != nil {
-		return nil, RunRef{}, e
+		return RunRef{}, e
 	}
 	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.OperationKey)).String()
-	r := core.Run{ID: id, Principal: p, Operation: "dispatch_batch", Title: in.Title, Dispatch: &plan, Sources: []core.Ref{plan.Source, plan.Eligibility}}
+	r := core.Run{ID: id, Principal: p, Operation: "dispatch_batch", Title: in.Title, Dispatch: &plan, Sources: []core.Ref{plan.Source, plan.Eligibility}, ParentRunID: parent, ExplicitInputs: parent != ""}
 	if e = a.Store.SaveRun(ctx, r); e != nil {
-		return nil, RunRef{}, e
+		return RunRef{}, e
 	}
-	_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.DispatchBatch, engine.DispatchBatchInput{RunID: id})
-	return nil, RunRef{RunID: id}, accepted(e)
+	return a.startDispatch(ctx, id)
+}
+
+func (a *Server) startDispatch(ctx context.Context, id string) (RunRef, error) {
+	_, e := a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.DispatchBatch, engine.DispatchBatchInput{RunID: id})
+	return RunRef{RunID: id}, accepted(e)
 }

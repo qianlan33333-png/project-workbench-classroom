@@ -538,7 +538,7 @@ window.__ModuleLoader__.load({
     }});
     const alert = message => message && h("p",{role:"alert",className:"wb-note"},message);
     const query = (path, parameters) => path + "?" + new URLSearchParams(parameters);
-    const typeLabel = type => type === "auto-reply" ? "专项" : "普通";
+    const typeLabel = type => type === "ordinary" ? "普通" : "专项";
     function ResourceRecords({rows,fields,corpus,open}) {
       if(!rows.length)return h("p",{className:"wb-muted"},"暂无记录");
       if(corpus)return h("div",{className:"wb-list"},...rows.map(row=>{
@@ -614,7 +614,7 @@ window.__ModuleLoader__.load({
         }},
         h("fieldset",{disabled:busy||!!created,className:"wb-form"},
           h("legend",null,"项目类型"),
-          ...[["ordinary","普通项目","在项目内创建多个对话。"],["auto-reply","专项项目 · 自动化应答","使用现有的客户会话与应答设置。"]].map(([id,label,hint])=>
+          ...[["ordinary","普通项目","在项目内创建多个对话。"],["auto-reply","专项项目 · 自动化应答","使用现有的客户会话与应答设置。"],["auto-operations","专项项目 · 自动化运营","核对名单、用户档案和运营设置。"]].map(([id,label,hint])=>
             h("label",{key:id,className:"wb-check"},h("input",{type:"radio",name:"project-type",checked:type===id,onChange:()=>setType(id)}),h("span",null,label,h("small",{className:"wb-muted",style:{display:"block"}},hint)))),
           field("项目名称",h("input",{required:true,maxLength:80,value:name,onChange:e=>setName(e.target.value),placeholder:type==="ordinary"?"例如：产品研究":"例如：自动化应答"}))),
         h("p",{className:"wb-muted"},"项目类型在创建时确定。"),
@@ -932,6 +932,170 @@ window.__ModuleLoader__.load({
       const load=async()=>{setError('');try{setRows(await api('/reply-channel-history?sessionId='+encodeURIComponent(sessionId)))}catch(e){setError(e.message)}};
       return h('div',{style:{position:'relative'}},button(responsiveLabel('渠道记录','记录'),()=>{setOpen(v=>!v);if(!open)load()},{className:'wb-inline','aria-label':'渠道记录','aria-expanded':open}),open&&h('section',{className:'wb-page',style:{position:'fixed',zIndex:20,top:90,right:14,width:'min(600px, calc(100vw - 28px))',maxHeight:'65vh',overflow:'auto',padding:16,boxSizing:'border-box',border:'1px solid var(--dsw-alias-border-l3)',borderRadius:10,boxShadow:'0 6px 24px #0002'}},h('div',{className:'wb-actions'},h('strong',null,'本客户的渠道记录'),button('刷新',load),button('关闭',()=>setOpen(false))),h('p',{className:'wb-muted'},'最近50条入站与50条回复；包括暂停期间的原消息。专家执行仍在原生对话中查看。'),error&&h('p',{role:'alert'},error),rows.length===0?h('p',null,'暂无渠道记录'):rows.map(row=>h('div',{className:'wb-note',key:row.kind+row.id},h('div',{className:'wb-muted'},new Date(row.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})+' · '+row.kind+' · '+(labels[row.state]||labels[row.state.replace(/^reply_/,'')]||row.state)),h('div',{style:{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}},row.text)))));
     }
+    let operationsProject = "";
+    const operationsCSS = `
+      .op-page{padding:0 clamp(18px,3vw,32px) 28px;box-sizing:border-box}
+      .op-header{min-height:66px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--dsw-alias-border-l3)}
+      .op-header h1{margin:0;font-size:20px;font-weight:600}
+      .op-header button.op-link{border-color:transparent}
+      .op-tabs{display:flex;gap:16px;border-bottom:1px solid var(--dsw-alias-border-l3);margin-bottom:12px}
+      .op-tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;padding:14px 10px}
+      .op-tabs button[aria-selected=true]{border-color:var(--dsw-alias-brand-primary,#2860e9);color:var(--dsw-alias-brand-primary,#2860e9)}
+      .op-strategy{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:clamp(8px,3vw,40px);align-items:center;padding:16px 8px;border-bottom:1px solid var(--dsw-alias-border-l3)}
+      .op-title{font-size:22px;font-weight:600;margin:18px 0}
+      .op-detail{display:grid;grid-template-columns:1.1fr 1fr;border-top:1px solid var(--dsw-alias-border-l3)}
+      .op-table{width:100%;border-collapse:collapse;table-layout:fixed;text-align:left}
+      .op-table th,.op-table td{padding:12px 8px;overflow-wrap:anywhere;border-bottom:1px solid var(--dsw-alias-border-l3);vertical-align:top}
+      .op-table th:first-child{width:23%}.op-table th:last-child{width:21%}
+      .op-reason{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+      .op-table button{border:0;background:transparent;padding:0;text-align:left}
+      .op-table tr[aria-selected=true]{background:var(--dsw-alias-bg-hover,rgba(63,106,233,.10))}
+      .op-message{padding:16px 18px;border-left:1px solid var(--dsw-alias-border-l3);min-width:0}
+      .op-message h2{margin:0 0 14px;font-size:18px}
+      .op-message p{white-space:pre-wrap;overflow-wrap:anywhere}
+      .op-message section{border-top:1px solid var(--dsw-alias-border-l3);padding:12px 0}
+      .op-message section p{margin:5px 0}
+      .op-profiles{display:grid}.op-profiles button{text-align:left;border:0;border-radius:0;border-bottom:1px solid var(--dsw-alias-border-l3);padding:13px 8px}
+      .op-fields{max-width:760px}.op-fields div{display:grid;grid-template-columns:minmax(120px,28%) minmax(0,1fr);gap:10px;padding:14px 0;border-bottom:1px solid var(--dsw-alias-border-l3)}
+      .op-fields dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+      .op-footer{padding-top:16px}.op-modal-content{padding:8px 0 0}.op-modal-content .wb-actions{justify-content:flex-end}
+      @media(max-width:650px){.op-detail{grid-template-columns:1fr}.op-message{border-left:0;padding:16px 0}.op-table th,.op-table td{padding:10px 5px}.op-fields div{grid-template-columns:minmax(90px,35%) minmax(0,1fr)}.op-header{align-items:flex-start;padding:12px 0}.op-strategy{padding-left:0;padding-right:0}.op-page .wb-actions{gap:5px}}
+    `;
+
+    function OperationsPage({projectId}) {
+      const [view,setView]=useState(null),[tab,setTab]=useState("work"),[page,setPage]=useState("home");
+      const [runId,setRunId]=useState(""),[selected,setSelected]=useState(""),[profile,setProfile]=useState(null);
+      const [profiles,setProfiles]=useState([]),[profileNext,setProfileNext]=useState(""),[profileState,setProfileState]=useState("");
+      const [history,setHistory]=useState([]),[historyMore,setHistoryMore]=useState(false);
+      const [settings,setSettings]=useState(null),[experts,setExperts]=useState([]),[accounts,setAccounts]=useState([]);
+      const [error,setError]=useState(""),[busy,setBusy]=useState(false),[review,setReview]=useState("");
+      const [reload,setReload]=useState(0);
+      const path=(name,params={})=>"/operations/"+name+"?"+new URLSearchParams({projectId,...params});
+      const refresh=()=>setReload(n=>n+1);
+      useEffect(()=>{
+        let active=true,timer;
+        const read=()=>api(path("view",runId||review?{runId:runId||review}:{})).then(data=>{
+          if(!active)return;
+          setView(data);
+          if(page==="history"){setHistory(data.history);setHistoryMore(data.history.length===20)}
+        }).catch(e=>{if(active)setError(e.message)}).finally(()=>{
+          if(active&&page!=="history")timer=setTimeout(read,4000);
+        });
+        read();
+        return()=>{active=false;clearTimeout(timer)};
+      },[projectId,runId,review,reload,page]);
+      useEffect(()=>{
+        if(tab!=="profiles"||page!=="home")return;
+        let active=true;
+        api(path("profiles")).then(data=>{
+          if(active){setProfiles(data.records);setProfileNext(data.next);setProfileState(data.state)}
+        }).catch(e=>{if(active)setError(e.message)});
+        return()=>{active=false};
+      },[projectId,tab,reload,page]);
+      const act=async fn=>{
+        setBusy(true);setError("");
+        try{await fn()}catch(e){setError(e.message)}finally{setBusy(false)}
+      };
+      const home=()=>{setView(null);setPage("home");setRunId("");setSelected("");setProfile(null);setError("")};
+      const openRun=id=>{if(id)setView(null);setRunId(id||"");setSelected("");setPage("detail")};
+      const openProfile=id=>act(async()=>{setProfile(await api(path("profiles",{id})));setPage("profile")});
+      const showSettings=kind=>act(async()=>{
+        if(kind==="project"){
+          const list=await api("/reply-accounts?projectId="+encodeURIComponent(projectId));
+          setAccounts(list.filter(account=>account.kind==="crm-cli"));
+          setSettings({kind,knowledge:view.config.knowledge,transport:view.config.transport,staffId:view.config.staffId});
+        }else{
+          setExperts(await api(path("experts")));
+          setSettings({kind,...view.config[kind]});
+        }
+      });
+      const saveSettings=e=>{
+        e.preventDefault();
+        act(async()=>{
+          const {kind,knowledge,transport,staffId,expert,time}=settings;
+          await api(path(kind==="project"?"settings":"schedule"),kind==="project"?{knowledge,transport,staffId}:{kind,expert,time});
+          setSettings(null);refresh();
+        });
+      };
+      const requestedRun=runId||review;
+      const run=requestedRun&&view?.run.id!==requestedRun?null:view?.run;
+      const row=run?.rows.find(item=>item.id===selected)||run?.rows[0];
+      const stateText={unconfigured:"等待接入已授权的真实资料",awaiting:"等待当天的定时运行",running:"正在生成",unavailable:"本轮资料或生成结果暂不可用"};
+      const startReview=()=>act(async()=>{
+        await api(path("send"),{runId:run.id});
+        setReview(run.id);refresh();
+      });
+      const confirm=()=>act(async()=>{
+        const {id,revision,digest}=run.decision;
+        await api("/decisions/answer",{id,revision,digest,answer:"发 "+run.dispatchId.slice(0,8)});
+        setReview("");refresh();
+      });
+      const sectionTitle=page==="profile"?profile?.nickname:page==="history"?"历史":"自动化运营";
+      const modal=settings&&h(UI.Modal,{open:true,title:{project:"专项设置",profile:"档案设置",strategy:"策略设置"}[settings.kind],closeLabel:"关闭",onClose:()=>{if(!busy)setSettings(null)}},h("form",{className:"wb-page wb-form op-modal-content",onSubmit:saveSettings},
+        settings.kind==="project"
+          ? h(React.Fragment,null,
+            field("关联知识库",h("select",{value:settings.knowledge.resourceId+"/"+settings.knowledge.section,onChange:e=>{
+              const item=view.knowledge?.find(item=>item.resourceId+"/"+item.section===e.target.value);
+              setSettings({...settings,knowledge:{resourceId:item?.resourceId||"",section:item?.section||"",version:""}});
+            }},h("option",{value:"/"},"请选择"),...(view.knowledge||[]).map(item=>h("option",{key:item.resourceId+"/"+item.section,value:item.resourceId+"/"+item.section},item.label)))),
+            field("运营企微账号",h("select",{value:settings.transport,onChange:e=>setSettings({...settings,transport:e.target.value})},
+              h("option",{value:""},"请选择"),...accounts.map(account=>h("option",{key:account.id,value:account.id},account.name)))),
+            settings.transport&&!settings.staffId&&h("p",{className:"wb-muted"},"此账号等待后台登记员工发送身份。"))
+          : h(React.Fragment,null,
+            field(settings.kind==="profile"?"清洗时间":"自动运行时间",h("input",{type:"time",required:true,value:settings.time,onChange:e=>setSettings({...settings,time:e.target.value})})),
+            field("专家",h("select",{required:true,value:settings.expert,onChange:e=>setSettings({...settings,expert:e.target.value})},h("option",{value:""},"请选择"),...experts.map(expert=>h("option",{key:expert.name,value:expert.name},({"operations-onboarding":"新人承接专家","operations-profile":"用户档案专家"}[expert.name]||expert.name))))),
+            view.next?.[settings.kind]&&h("p",{className:"wb-muted"},"下次运行 "+new Date(view.next[settings.kind]).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}))),
+        alert(error),h("div",{className:"wb-actions"},button("取消",()=>setSettings(null),{disabled:busy}),h("button",{type:"submit",className:"wb-primary",disabled:busy},"保存"))));
+      const dispatchClosed=["Completed","Failed","Canceled","Terminated","TimedOut"].includes(run?.dispatchState);
+      const confirmModal=review&&h(UI.Modal,{open:true,title:"确认并发送",closeLabel:"关闭",onClose:()=>{if(!busy)setReview("")}},h("section",{className:"wb-page wb-form op-modal-content"},
+        run?.decision?h(React.Fragment,null,h("p",null,"发送人数 "+run.reviewCount+" 人"),h("p",null,"运营企微账号 "+run.account),h("p",null,"稿件版本 "+run.version)):
+          h("p",{role:"status"},dispatchClosed?"该发送任务已结束。请在名单查看逐人状态。":run?.dispatchId?"正在校验发送资格":"正在准备确认"),
+        alert(error),h("div",{className:"wb-actions"},button("返回",()=>setReview(""),{disabled:busy}),button("确认发送",confirm,{className:"wb-primary",disabled:busy||!run?.decision}))));
+      return h("section",{className:"wb-page op-page"},
+        h("header",{className:"op-header"},h("div",{className:"wb-actions"},page!=="home"&&button("返回",home,{className:"op-link"}),h("h1",null,sectionTitle)),
+          view&&h("div",{className:"wb-actions"},
+            page==="home"&&button("历史",()=>setPage("history"),{className:"op-link"}),
+            page==="home"&&button("设置",()=>showSettings("project")),
+            page==="detail"&&button("设置",()=>showSettings("strategy")),
+            page==="detail"&&button(run?.retryReview&&run.pending?"重新核对并发送":"确认并发送",startReview,{className:"wb-primary",
+              disabled:busy||!run||(!run.pending&&!run.decision&&!run.resume&&run.dispatchState!=="Running")}))),
+        !settings&&!review&&alert(error),
+        !view?h("p",{role:"status"},"正在读取自动化运营…"):null,
+        view&&page==="home"&&h(React.Fragment,null,
+          h("div",{className:"op-tabs",role:"tablist","aria-label":"自动化运营"},
+            button("待我处理",()=>setTab("work"),{role:"tab","aria-selected":tab==="work"}),
+            button("用户档案",()=>setTab("profiles"),{role:"tab","aria-selected":tab==="profiles"})),
+          tab==="work"?h("div",{className:"op-strategy"},h("strong",null,run.title),
+            h("span",{className:"wb-muted"},run.state==="ready"?"待发 "+run.pending+" 人":stateText[run.state]),
+            button("核对名单",()=>openRun(""))):
+            h(React.Fragment,null,
+              h("div",{className:"op-header"},h("h2",{className:"op-title"},"用户档案"),button("档案设置",()=>showSettings("profile"))),
+              profileState==="unconfigured"&&h("p",{className:"wb-muted"},"等待接入已授权的真实资料"),
+              h("div",{className:"op-profiles"},...profiles.map(item=>button(item.nickname||"未记录称呼",()=>openProfile(item.id),{key:item.id}))),
+              profileNext&&h("div",{className:"op-footer"},button("加载更多",()=>act(async()=>{
+                const data=await api(path("profiles",{after:profileNext}));setProfiles(items=>[...items,...data.records]);setProfileNext(data.next);
+              }))))),
+        page==="profile"&&profile&&h("dl",{className:"op-fields"},...profile.fields.map(f=>h("div",{key:f.label},h("dt",{className:"wb-muted"},f.label),h("dd",null,f.value)))),
+        page==="history"&&view&&h(React.Fragment,null,h("h2",{className:"op-title"},run.title),
+          history.length===0&&h("p",{className:"wb-muted"},"暂无历史运行"),
+          ...history.map(item=>h("div",{className:"op-strategy",key:item.id},h("span",null,new Date(item.date).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})),null,button("查看明细",()=>openRun(item.id)))),
+          historyMore&&button("加载更多",()=>act(async()=>{
+            const data=await api(path("view",{after:history.at(-1).id}));setHistory(items=>[...items,...data.history]);setHistoryMore(data.history.length===20);
+          }))),
+        page==="detail"&&run&&h(React.Fragment,null,
+          h("h2",{className:"op-title"},run.title),
+          run.state!=="ready"||run.rows.length===0?h("p",{role:"status",className:"wb-muted"},stateText[run.state]||"本轮无入选用户"):
+            h("div",{className:"op-detail"},
+              h("table",{className:"op-table"},h("thead",null,h("tr",null,...["客户昵称","入选依据","状态"].map(label=>h("th",{key:label,scope:"col"},label)))),
+                h("tbody",null,...run.rows.map(item=>h("tr",{key:item.id,"aria-selected":item.id===row?.id,onClick:()=>setSelected(item.id)},
+                  h("td",null,button(item.nickname||"未记录称呼",()=>setSelected(item.id))),h("td",null,h("div",{className:"op-reason"},item.reason)),h("td",null,item.status))))),
+              row&&h("article",{className:"op-message",key:row.id},h("h2",null,row.nickname||"未记录称呼"),
+                h("section",null,h("strong",null,"已生成稿件"),h("p",null,row.message)),
+                h("section",null,h("strong",null,"入选依据"),h("p",null,row.reason)),
+                row.detail&&h("section",null,h("strong",null,row.receipt?"CRM 回执":"状态明细"),h("p",null,row.detail),row.receipt&&h("p",null,row.receipt))))),
+        modal,confirmModal);
+    }
+
     function installWorkbenchViews(ctx,openProject,ReadableButton){
       const openSession=id=>ctx.uiWorkspace.openSession(id);
       const openCustomer=async id=>{await ctx.sessions.refresh();await ctx.sessions.refreshProjections(id);openSession(id)};
@@ -941,6 +1105,12 @@ window.__ModuleLoader__.load({
         return h(ReplyPage,{key:id,selectedProject:id,openSession:openCustomer});
       }
       ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:'wb-replies'},ReplyProjectPanel));
+      function OperationsPanel(){
+        const [id,setId]=useState(operationsProject);
+        useEffect(()=>onEvent("wb-open-operations",()=>setId(operationsProject)),[]);
+        return id?h(OperationsPage,{key:id,projectId:id}):null;
+      }
+      ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:'wb-operations'},OperationsPanel));
       ctx.slots.inject("sidebar",()=>{
         const base=ctx.slots.entries("sidebar").find(entry=>entry.component);
         if(!base)return()=>{};
@@ -968,7 +1138,7 @@ window.__ModuleLoader__.load({
           const [create,setCreate]=useState(false);
           const activePanel=props.usePanelInfo(info=>info.activePanelId);
           if(!data)return error?h("div",{className:"wb-project-shortcuts"},alert(error),button("重试",notifyProjects)):null;
-          const special=data.projects.filter(p=>p.type==="auto-reply");
+          const special=data.projects.filter(p=>p.type!=="ordinary");
           const hidden=new Set([data.personalWorkspaceId,...special.map(p=>p.workspaceId)]);
           if(hidden.size!==replyWorkspaceIds.size||[...hidden].some(id=>!replyWorkspaceIds.has(id)))replyWorkspaceIds=hidden;
           return h("section",{className:"wb-project-tree","aria-label":"项目与会话"},
@@ -979,7 +1149,7 @@ window.__ModuleLoader__.load({
             h("div",{className:"wb-project-shortcuts"},...special.map(p=>
               button(h(React.Fragment,null,h(UI.IconFolderCloseRegular||IconDatabaseOutlineRegular,{size:16}),
                 h("span",null,props.wide===false?"":p.name),props.wide!==false&&h("span",{className:"wb-tag"},"专项")),
-              ()=>openProject(p),{key:p.id,className:"wb-project-shortcut","aria-label":p.name,title:p.name,"aria-current":activePanel==="wb-replies"&&p.id===replyProject?"page":undefined,"data-project-type":"auto-reply"}))),
+              ()=>openProject(p),{key:p.id,className:"wb-project-shortcut","aria-label":p.name,title:p.name,"aria-current":(activePanel==="wb-replies"&&p.id===replyProject||activePanel==="wb-operations"&&p.id===operationsProject)?"page":undefined,"data-project-type":p.type}))),
             create&&h(NewProject,{onClose:()=>setCreate(false),onCreated:openProject}));
         }
         // Preserve the shipped entry's child-slot authority and composed props.
@@ -1007,7 +1177,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ["slots", "layout", "uiWorkspace", "sessions", "workspaces"],
       apply(ctx) {
-        ctx.effect(()=>{const style=document.createElement('style');style.textContent=css+workbenchCSS;document.head.appendChild(style);return()=>style.remove()},'workbench shared native extension styles');
+        ctx.effect(()=>{const style=document.createElement('style');style.textContent=css+workbenchCSS+operationsCSS;document.head.appendChild(style);return()=>style.remove()},'workbench shared native extension styles');
         ctx.effect(()=>{
           const key=()=>JSON.stringify(ctx.workspaces.list.getSnapshot().items.map(w=>[w.workspaceId,w.title]));
           let previous=key();
@@ -1018,7 +1188,11 @@ window.__ModuleLoader__.load({
         },"workbench workspace catalogue changes");
         const creatingSession=new Map();
         const openProject=async p=>{
-          if(p.type==="auto-reply"){
+          if(p.type==="auto-operations"){
+            operationsProject=p.id;
+            ctx.layout.selectPanel("wb-operations");
+            window.dispatchEvent(new Event("wb-open-operations"));
+          }else if(p.type==="auto-reply"){
             replyProject=p.id;
             ctx.layout.selectPanel("wb-replies");
             window.dispatchEvent(new Event("wb-open-reply"));
