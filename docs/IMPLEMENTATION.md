@@ -622,3 +622,5 @@ qa_check新增可选draft适配，保留原证据gate。草稿必须包含原核
 真实模型+同版正式语料完成6轮连续咨询，以及事实问答、3轮通用文档整理、隐私、当前政策不足、人工接管停答。真实发送为隔离收件器；不宣称新企微实收。[新旧逐轮对照](plans/2026-11-10-expert-consultation-comparison.md)保留旧版中途转人工、尝试失败及耗时限制。Node45、Go test/vet、发布控制器18项通过。
 
 发布复审发现项目方法位于版本外，已在现有控制器start中增加通用摘要绑定恢复；回滚/恢复均在消费者启动前恢复方法，测试覆盖中断及非法路径。生产并行更新至12-operations-package-review，本分支合入ed90cb5保持其已上线内容。本次候选13只覆盖必要方法与Host文件；独立最终复审及生产读回见后续记录。
+
+最终独立review-agent复审No findings；修复发布验收依赖全局Node的问题，改用候选发行包Node24后发布。正式版`native-20261110-13-consultation`，唯一回滚版`native-20261110-12-operations-package-review`。安装源`0352971704dd4319b9fe8dab3dab08813a4d1a9a`。独立读回全部候选文件及项目专家摘要一致，四项服务active，浅蓝account online/sendEnabled，原会话autoReply=true、revision18未变。原客户Session恢复后原生model/selection为deepseek-official/deepseek-flash/high；真实模型调用通过。本次未向客户新发消息，不补发历史；原中心和CRM未改动。只保留两个发布目录，旧方法配置备份轮转为匹配12的一份；隔离验收3条日程已暂停、运行工作流0，临时Host/Worker/语料代理和本轮隧道已停止。
