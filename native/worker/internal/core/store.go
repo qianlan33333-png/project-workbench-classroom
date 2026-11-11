@@ -651,6 +651,16 @@ func (s *Store) Read(ctx context.Context, p Principal, ref Ref, after string, li
 }
 
 func (s *Store) ReadIDs(ctx context.Context, p Principal, ref Ref, ids []string) ([]Record, error) {
+	return s.readIDs(ctx, p, ref, ids, false)
+}
+
+// ReadProfileUpdateInputs includes the expert's internal cache. Regular
+// knowledge reads still return just the registered section fields.
+func (s *Store) ReadProfileUpdateInputs(ctx context.Context, p Principal, ref Ref, ids []string) ([]Record, error) {
+	return s.readIDs(ctx, p, ref, ids, true)
+}
+
+func (s *Store) readIDs(ctx context.Context, p Principal, ref Ref, ids []string, profileUpdate bool) ([]Record, error) {
 	if len(ids) == 0 {
 		return []Record{}, nil
 	}
@@ -704,6 +714,9 @@ func (s *Store) ReadIDs(ctx context.Context, p Principal, ref Ref, ids []string)
 		if e != nil {
 			rows.Close()
 			return nil, e
+		}
+		if profileUpdate && all["profileSemantic"] != nil {
+			v.Fields["profileSemantic"] = all["profileSemantic"]
 		}
 		out = append(out, v)
 	}

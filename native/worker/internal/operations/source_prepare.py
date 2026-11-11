@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 from source_common import load, write_json, original_aliases, original_reviews, alias_execution_requires_review, original_pack_redlines, generation_profile, generation_method
@@ -26,6 +27,7 @@ history = json.loads((raw / 'original-history.json').read_text())
 generation = json.loads((raw / 'original-generation.json').read_text())
 methods = json.loads((raw / 'original-methods.json').read_text())
 writing = json.loads((raw / 'original-writing.json').read_text())
+independent = os.environ.get('WORKBENCH_OPERATIONS_INDEPENDENT') == '1'
 if writing.get('read_only') is not True:raise ValueError('writing_source_unverified')
 takeovers=json.loads((raw/'original-handoffs.json').read_text())
 if takeovers.get('complete')is not True or takeovers.get('read_only')is not True or not isinstance(takeovers.get('handoffs'),list):
@@ -195,8 +197,15 @@ def keyed(index, keys):
     return {k: index[k] for k in keys if k in index}
 
 contexts={}
+if independent:
+    from source_profile import profile_rows
+    directory_positions = profile_rows(root, users, contexts_by_ref, links, snapshot, history['assets'])
+else:
+    directory_positions = users
+
 def profiles():
-    for ref, user in users.items():
+    for ref in directory_positions:
+        user = users[ref]
         user = {k:v for k,v in user.items() if k not in ('_qianlanUserMessages','_hxcRecentUserMessages','_warehouseSourceRecords')}
         # Audience preview fields are the original build's published facts.
         # Do not make a second segmentation model from private free text.
@@ -250,7 +259,7 @@ def histories():
         yield {'id':ref,'fields':{'complete':True,'actions':original_actions,'hxc_ledger_complete':True,
             'hxc_context':contexts[ref],
             'identity_lineage_requires_review':alias_execution_requires_review(history,ref,aliases),
-            'contact_history_scope':{'crm':'complete_original_archive_contract','original_executor':'complete_read_only_ledger','original_aliases':aliases,'unarchived_channels':'unknown','absence_means_never_contacted':False},
+            'contact_history_scope':{'crm':'complete_original_archive_contract','original_executor':'local_history_only' if independent else 'complete_read_only_ledger','original_aliases':aliases,'unarchived_channels':'unknown','absence_means_never_contacted':False},
             'handoffs':[dict(h,workbench_user_ref=ref) for alias in aliases for h in holds[alias]],
             'copy_index':{ref:[v for alias in aliases for v in history['copy_index'].get(alias,[])]},
             'renewal_slots':{ref:[v for alias in aliases for v in history['renewal_slots'].get(alias,[])]},
@@ -281,7 +290,9 @@ emit('strategies',[{'id':key,'fields':value} for key,value in history['strategie
     for i,chunk in enumerate(catalog_chunks)]+[
     {'id':'original-writing-'+str(i).zfill(4),'fields':{'path':path,'asset':asset}}
     for i,(path,asset) in enumerate(sorted(writing['assets'].items()))])
-emit('methods',({'id':key,'fields':{'method':generation_method(key,resources)}}for key,resources in methods.items()))
+emit('methods', ({'id': key, 'fields': {'method': resources if independent and isinstance(resources, dict)
+                                      else generation_method(key, resources)}}
+                 for key, resources in methods.items()))
 report={'raw_sources_read':True,'new_environment_cleaning':True,'finished_archive_imported':False,
     'original_copy_review_handoffs':len(takeovers['handoffs']),
     'snapshot_id':snapshot,'archive_count':len(users),'original_strategies':len(history['strategies']),

@@ -282,7 +282,7 @@ func (a *Server) moreTools(s *mcp.Server, bound core.Principal) {
 			_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.Principal.ProjectID, Operation: "operations_local_review"})
 			return nil, RunRef{RunID: r.ID}, accepted(e)
 		}
-		if r.Operation != "generate" && r.Operation != "pipeline" && r.Operation != "sync" && r.Operation != "data_refresh" && r.Operation != "strategy_select" {
+		if r.Operation != "generate" && r.Operation != "pipeline" && r.Operation != "sync" && r.Operation != "data_refresh" && r.Operation != "strategy_select" && r.Operation != engine.OperationsProfileRefresh {
 			return nil, RunRef{}, core.ErrInvalid
 		}
 		_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.WriteScope(), Operation: r.Operation})

@@ -196,7 +196,7 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 		if collectionID == "" {
 			collectionID = r.ID
 		}
-		result, err := operations.Collect(ctx, os.Getenv(conn.SecretEnv), collectionID)
+		result, err := operations.Collect(ctx, os.Getenv(conn.SecretEnv), collectionID, r.Shared["independentOperations"] == true)
 		if err != nil {
 			return Snapshot{}, err
 		}

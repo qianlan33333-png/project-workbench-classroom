@@ -211,6 +211,7 @@ func run() error {
 	bw.RegisterWorkflow(engine.ScheduledOperations)
 	bw.RegisterWorkflow(engine.LocalOperationsReview)
 	bw.RegisterWorkflow(engine.OperationsTask)
+	bw.RegisterWorkflow(engine.OperationsProfiles)
 	bw.RegisterWorkflow(engine.OperationsPackage)
 	bw.RegisterWorkflow(engine.OperationsPackageEdit)
 	bw.RegisterWorkflow(engine.OperationsPackageConfirm)

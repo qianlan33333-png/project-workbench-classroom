@@ -65,6 +65,9 @@ func (a *Activities) OperationsSyncSteps(ctx context.Context, id string) ([]Step
 	out := []StepRef{}
 	for _, source := range r.Operations.Refresh {
 		child := core.Run{ID: stepID(id, "sync/"+source.ResourceID), ParentRunID: id, Principal: r.Principal, ExplicitInputs: true, Operation: "sync", Destination: source.ResourceID, Title: "读取原始来源 · " + source.ResourceID, Lineage: r.Lineage}
+		if r.Operations.Independent {
+			child.Shared = map[string]any{"independentOperations": true}
+		}
 		if e = a.Store.SaveRun(ctx, child); e != nil {
 			return nil, failure(e)
 		}

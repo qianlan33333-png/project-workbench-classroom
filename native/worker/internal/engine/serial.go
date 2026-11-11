@@ -38,6 +38,8 @@ func WriteTask(ctx workflow.Context, in WriteInput) (err error) {
 			future = workflow.ExecuteChildWorkflow(child, Program, in.RunID)
 		case "data_refresh", "strategy_select":
 			future = workflow.ExecuteChildWorkflow(child, OperationsTask, in.RunID)
+		case OperationsProfileRefresh:
+			future = workflow.ExecuteChildWorkflow(child, OperationsProfiles, in.RunID)
 		case "sync":
 			future = workflow.ExecuteChildWorkflow(child, Sync, in.RunID)
 		case "operations_local_review":

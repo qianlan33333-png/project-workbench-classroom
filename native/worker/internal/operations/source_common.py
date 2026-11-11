@@ -2,6 +2,10 @@
 import json
 import os
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.client import IncompleteRead
 from pathlib import Path
 
 def load():
@@ -107,3 +111,58 @@ def read_proxy(process, params, budget, too_large):
         transient=value.get('http_error')in (408,429,500,502,503,504) or value.get('error')in ('TimeoutError','URLError','RemoteDisconnected')
         if not transient or attempt==3:raise RuntimeError('original_read_proxy_rejected_'+str(value.get('http_error')or value.get('error')))
         budget.wait(2**attempt)
+
+
+def direct_hxc_reader(token, budget, too_large, oauth=None):
+    """Read the fixed upstream directly, without environment proxies or redirects."""
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    expires = 0
+
+    def authorization():
+        nonlocal token, expires
+        if not oauth:
+            return 'Bearer ' + token
+        import base64
+        import time
+
+        if time.monotonic() >= expires:
+            credentials = base64.b64encode((oauth['clientId'] + ':' + oauth['clientSecret']).encode()).decode('ascii')
+            form = urllib.parse.urlencode({'grant_type': 'client_credentials', 'scope': 'operations.sync.read',
+                                          'audience': 'external_integration'}).encode('ascii')
+            request = urllib.request.Request('https://ip.lhbl.com.cn/oauth/token', data=form,
+                                             headers={'Authorization': 'Basic ' + credentials,
+                                                      'Content-Type': 'application/x-www-form-urlencoded'})
+            with opener.open(request, timeout=30) as response:
+                value = json.loads(response.read(64 * 1024))
+            if value.get('scope') != 'operations.sync.read' or value.get('token_type') != 'Bearer':
+                raise RuntimeError('hxc_oauth_scope_mismatch')
+            token = value['access_token']
+            expires = time.monotonic() + max(1, int(value['expires_in']) - 60)
+        return 'Bearer ' + token
+
+    def read(params):
+        query = urllib.parse.urlencode(params)
+        url = 'https://ip.lhbl.com.cn/api/ops/private-domain/v1/sync?' + query
+        for attempt in range(4):
+            budget.request_slot()
+            try:
+                request = urllib.request.Request(url, headers={'Authorization': authorization()})
+                with opener.open(request, timeout=60) as response:
+                    raw = response.read(8 * 1024 * 1024 + 1)
+                if len(raw) > 8 * 1024 * 1024:
+                    raise too_large('response_size_exceeded')
+                return json.loads(raw)
+            except urllib.error.HTTPError as error:
+                code = error.code
+                error.close()
+                if code not in (408, 429, 500, 502, 503, 504) or attempt == 3:
+                    raise RuntimeError('hxc_unified_http_' + str(code)) from None
+            except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead):
+                if attempt == 3:
+                    raise RuntimeError('hxc_unified_connection_failed') from None
+            budget.wait(2 ** attempt)
+    return read
