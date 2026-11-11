@@ -151,7 +151,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return e
 		}
 	}
-	return nil
+	return s.ensureReplyActivitySource(ctx)
 }
 func jsonText(v any) string { b, _ := json.Marshal(v); return string(b) }
 func scanJSON[T any](row interface{ Scan(...any) error }) (T, error) {
@@ -233,7 +233,7 @@ func (s *Store) Resources(ctx context.Context, p Principal) ([]Resource, error) 
 			return nil, e
 		}
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT body,current_version,revision FROM wb_resources ORDER BY id`)
+	rows, e := s.DB.QueryContext(ctx, `SELECT body,current_version,revision FROM wb_resources WHERE id<>? ORDER BY id`, replyActivitySource.ResourceID)
 	if e != nil {
 		return nil, e
 	}
@@ -288,7 +288,7 @@ func (s *Store) Resources(ctx context.Context, p Principal) ([]Resource, error) 
 	return out, rows.Err()
 }
 func (s *Store) PutResource(ctx context.Context, p Principal, r Resource) error {
-	if !p.IsOwner() {
+	if !p.IsOwner() || r.ID == replyActivitySource.ResourceID {
 		return ErrDenied
 	}
 	if e := r.Validate(); e != nil {
@@ -317,7 +317,7 @@ func (s *Store) Granted(ctx context.Context, id, project, section string) (bool,
 	return n > 0, e
 }
 func (s *Store) SetGrant(ctx context.Context, p Principal, g Grant) error {
-	if !p.IsOwner() {
+	if !p.IsOwner() || g.ResourceID == replyActivitySource.ResourceID {
 		return ErrDenied
 	}
 	r, e := s.Resource(ctx, g.ResourceID)
@@ -363,6 +363,9 @@ func (s *Store) Snapshot(ctx context.Context, id, version string) (Snapshot, err
 	return v, e
 }
 func (s *Store) canWrite(ctx context.Context, p Principal, id string) (Resource, error) {
+	if id == replyActivitySource.ResourceID {
+		return Resource{}, ErrDenied
+	}
 	if e := p.Validate(); e != nil {
 		return Resource{}, e
 	}

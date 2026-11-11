@@ -230,11 +230,8 @@ func AuthorizeAll(ctx context.Context, g Gate, p Principal, refs []Ref) error {
 		if len(seen) > MaxSourceRefs {
 			return fmt.Errorf("%w: source history exceeds %d references; start a new Session for an independent task", ErrInvalid, MaxSourceRefs)
 		}
-		if ref == replyActivitySource {
-			if p.Kind != "personal" && !p.IsOwner() {
-				return ErrDenied
-			}
-			continue
+		if ref.ResourceID == replyActivitySource.ResourceID && p.Kind == "project" {
+			return ErrDenied
 		}
 		r, ok := resources[ref.ResourceID]
 		if !ok {

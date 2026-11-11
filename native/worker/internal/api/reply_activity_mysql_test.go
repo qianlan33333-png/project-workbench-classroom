@@ -120,6 +120,31 @@ func TestMySQLReplyActivityUsesOnlyBoundInbound(t *testing.T) {
 	if len(refs) != 1 || !errors.Is(core.AuthorizeAll(ctx, store, other, refs), core.ErrDenied) {
 		t.Fatal("personal-only evidence escaped project isolation", refs)
 	}
+	// The previous release only understands ordinary resources and snapshots.
+	ref := refs[0]
+	resource, err := store.Resource(ctx, ref.ResourceID)
+	must(err)
+	snapshot, err := store.Snapshot(ctx, ref.ResourceID, ref.Version)
+	must(err)
+	granted, err := store.Granted(ctx, ref.ResourceID, other.ProjectID, ref.Section)
+	must(err)
+	if resource.OwnerProject != "" || resource.MaintainerProject != "" || granted ||
+		resource.CurrentVersion != ref.Version || snapshot.State != "published" || snapshot.Count != 0 ||
+		len(snapshot.Sections) != 1 || snapshot.Sections[0].ID != ref.Section {
+		t.Fatalf("invalid private compatibility source: %+v %+v", resource, snapshot)
+	}
+	if !errors.Is(store.SetGrant(ctx, owner, core.Grant{ResourceID: ref.ResourceID, ProjectID: other.ProjectID, Sections: []string{"*"}}), core.ErrDenied) {
+		t.Fatal("reserved source can be granted to a project")
+	}
+	visible, err := store.Resources(ctx, personal)
+	must(err)
+	for _, candidate := range visible {
+		if candidate.ID == ref.ResourceID {
+			t.Fatal("internal lineage source appeared in the catalogue")
+		}
+	}
+	must(store.Migrate(ctx))
+	must(store.CheckSession(ctx, personal))
 	for _, p := range []core.Principal{owner, project, other} {
 		tools, e := openMCP(p).ListTools(ctx, nil)
 		must(e)

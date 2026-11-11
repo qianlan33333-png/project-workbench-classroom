@@ -10,9 +10,49 @@ import (
 
 const replyActivityBudget = 60
 
-// This reference is used only for lineage. The live ledger has no knowledge
-// snapshot and cannot be shared with projects or opened through resource_read.
+// The reference remains stable across versions and contains no message data.
 var replyActivitySource = Ref{"reply-inbound-ledger", "live-activity", "personal-only"}
+
+func (s *Store) ensureReplyActivitySource(ctx context.Context) error {
+	ref := replyActivitySource
+	sections := []Section{{ID: ref.Section, Name: "本人来源", Fields: []string{"source"}}}
+	resource := Resource{ID: ref.ResourceID, Name: "自动化应答 · 本人来源", Sections: sections}
+	snapshot := Snapshot{ResourceID: ref.ResourceID, Version: ref.Version, Sections: sections, State: "published"}
+
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO wb_resources(id,current_version,body) VALUES(?,?,?)
+		ON DUPLICATE KEY UPDATE id=id`, ref.ResourceID, ref.Version, jsonText(resource)); err != nil {
+		return err
+	}
+	stored, err := scanJSON[Resource](tx.QueryRowContext(ctx,
+		`SELECT body FROM wb_resources WHERE id=? AND owner_project='' AND current_version=?
+		AND NOT EXISTS (SELECT 1 FROM wb_grants WHERE resource_id=wb_resources.id)`, ref.ResourceID, ref.Version))
+	if err != nil || Digest(stored) != Digest(resource) {
+		if err == nil || IsMissing(err) {
+			return fmt.Errorf("%w: reserved reply activity resource differs", ErrConflict)
+		}
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO wb_snapshots(resource_id,version,previous_version,state,body,published_at)
+		VALUES(?,?,'','published',?,UTC_TIMESTAMP(6)) ON DUPLICATE KEY UPDATE version=version`,
+		ref.ResourceID, ref.Version, jsonText(snapshot)); err != nil {
+		return err
+	}
+	storedSnapshot, err := scanJSON[Snapshot](tx.QueryRowContext(ctx,
+		`SELECT body FROM wb_snapshots WHERE resource_id=? AND version=? AND state='published' AND record_count=0`,
+		ref.ResourceID, ref.Version))
+	if err != nil || Digest(storedSnapshot) != Digest(snapshot) {
+		if err == nil || IsMissing(err) {
+			return fmt.Errorf("%w: reserved reply activity snapshot differs", ErrConflict)
+		}
+		return err
+	}
+	return tx.Commit()
+}
 
 type ReplyActivity struct {
 	Source            string              `json:"source"`

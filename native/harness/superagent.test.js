@@ -58,3 +58,52 @@ test('SuperAgent retries an earlier missed result after a later result and dedup
   await delivery.send(active, 'result:14', 'retry after restart', source(14));
   assert.equal(active.inbox.nextTurn.length, 0);
 });
+
+test('a removed queued result remains delivered on retry and restart', async () => {
+  let listener;
+  let agent;
+  const events = [];
+  const ctx = {
+    on(_name, callback) { listener = callback; },
+    agents: { get() { return agent; } },
+    sessionPersistence: {
+      async flush() {},
+      async open() {
+        return {
+          async read(offset, length) { return { events: events.slice(offset, offset + length) }; },
+          async [Symbol.asyncDispose]() {},
+        };
+      },
+    },
+    sessions: { async flush() { return true; } },
+  };
+  const makeAgent = () => ({
+    id: 'today_test',
+    session: {},
+    inbox: { nextTurn: [], nextStep: [] },
+    followup(message) {
+      this.inbox.nextTurn.push(message);
+      const event = { type: 'agent/inbox/spliced', data: { inserted: [message] } };
+      events.push(event);
+      listener(this.session, event);
+    },
+  });
+
+  agent = makeAgent();
+  let delivery = new AgentDelivery(ctx);
+  const source = { kind: 'workbench-result', sequence: 17 };
+  await delivery.send(agent, 'result:17', 'queued result', source);
+  assert.equal(agent.inbox.nextTurn.length, 1);
+  agent.inbox.nextTurn.pop();
+  const removal = { type: 'agent/inbox/spliced', data: { inserted: [] } };
+  events.push(removal);
+  listener(agent.session, removal);
+  await delivery.send(agent, 'result:17', 'retry after acknowledgement failed', source);
+  assert.equal(agent.inbox.nextTurn.length, 0);
+
+  agent = makeAgent();
+  delivery = new AgentDelivery(ctx);
+  await delivery.send(agent, 'result:17', 'retry after restart', source);
+  assert.equal(agent.inbox.nextTurn.length, 0);
+  assert.equal(events.filter(event => event.data.inserted.length > 0).length, 1);
+});
