@@ -154,6 +154,17 @@ func (a *Server) Handler() http.Handler {
 			return
 		}
 		p := core.Principal{Kind: r.Header.Get("X-Workbench-Kind"), ProjectID: r.Header.Get("X-Workbench-Project"), SessionID: r.Header.Get("X-Workbench-Session")}
+		if p.Kind == "personal" {
+			config, err := a.personalConfig(r.Context())
+			if err != nil && !core.IsMissing(err) {
+				http.Error(w, "personal session unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if err == nil && p.SessionID != config.SessionID {
+				http.Error(w, "SuperAgent session required", http.StatusForbidden)
+				return
+			}
+		}
 		if e := a.Store.BindSession(r.Context(), p); e != nil {
 			http.Error(w, "invalid session binding", 403)
 			return

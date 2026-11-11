@@ -139,9 +139,15 @@ export async function apply(ctx, config) {
   const delivery = await ctx.sessionProjections.register(deliveryProjection);
   const replyEvidence = await ctx.sessionProjections.register(replyEvidenceProjection);
   const skillCatalog = ownerSkillCatalog(ctx);
+  function requireSuperAgentSession(path, sessionId) {
+    if (path === personalPath && sessionId !== superAgent.id) {
+      throw requestError("本人工作请使用 SuperAgent 主会话", 403);
+    }
+  }
   function identity(agent) {
     const path = agent.session.header.cwd;
     if (!path) throw new Error("Session has no fixed workspace");
+    requireSuperAgentSession(path, agent.id);
     return {
       kind: path === personalPath ? "personal" : "project",
       projectId: path === personalPath ? "" : idOf(path),
@@ -268,6 +274,7 @@ export async function apply(ctx, config) {
   for (const agent of ctx.agents.list()) await attach(agent);
   const agentHandles=new Map(),sessionLoads=new Map(),idleSince=new Map(),objectAdmissions=new Set();
   async function loadSession(sessionId,path) {
+    requireSuperAgentSession(path, sessionId);
     let agent=ctx.agents.get(sessionId);
     if(!agent){
       const persisted=await ctx.sessionPersistence.stat(sessionId);
@@ -300,12 +307,9 @@ export async function apply(ctx, config) {
   },5000);
   ctx.effect(()=>()=>clearInterval(releaseTimer),'workbench: release idle object agents');
   ctx.effect(()=>async()=>{for(const handle of agentHandles.values())await handle.dispose()},'workbench: owned sessions');
-  // Today's daily schedule exists even before the first browser conversation.
-  // Workspace session order is mutable (the UI may create another blank chat).
-  // Today's identity must survive that ordering and Host restarts.
-  const todayId = superAgent.id;
-  await ensureSession(todayId,personalPath);
-  await personalWorkspace.attachSession(todayId);
+  // Restore the session used by personal schedules and channels before the browser connects.
+  await ensureSession(superAgent.id, personalPath);
+  await personalWorkspace.attachSession(superAgent.id);
   let deliveryCursor=0, reportCursor="";
   let polling = false,
     stopped = false;
@@ -470,14 +474,14 @@ export async function apply(ctx, config) {
                 resources: await call("/resources"),
                 documentResourceIds: [...new Set((config.toolServers || []).flatMap(server => (server.sources || []).map(ref => ref.resourceId)))],
                 personalWorkspaceId: personalWorkspace.id,
-                personalSessionId: todayId,
+                personalSessionId: superAgent.id,
               });
               return;
             }
             if (req.method === "GET" && path === "/project-list") {
               const [projects, reply, operations] = await Promise.all([syncProjects(), call("/reply-projects"), call("/operations/projects")]);
               const special = new Set(reply.map(p => p.projectId));
-              json(res, 200, { personalWorkspaceId: personalWorkspace.id, personalSessionId: todayId,
+              json(res, 200, { personalWorkspaceId: personalWorkspace.id, personalSessionId: superAgent.id,
                 projects: projects.map(({workspace, ...p}) => ({ ...p, type: operations.includes(p.id) ? "auto-operations" : special.has(p.id) ? "auto-reply" : "ordinary" })) });
               return;
             }

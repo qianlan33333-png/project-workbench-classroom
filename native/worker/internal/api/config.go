@@ -222,7 +222,7 @@ func (a *Server) moreTools(s *mcp.Server, bound core.Principal) {
 		_, e := a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.Followup, engine.FollowupInput{RunID: r.ID, NextAt: in.NextAt})
 		return nil, RunRef{RunID: r.ID}, accepted(e)
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "memory_list", Description: "Read personal memories and their sources. Available only in 今日."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, struct {
+	mcp.AddTool(s, &mcp.Tool{Name: "memory_list", Description: "Read personal memories and their sources. Available only in the SuperAgent session."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, struct {
 		Memories []core.Memory `json:"memories"`
 	}, error) {
 		v, e := a.Store.Memories(ctx, bound)

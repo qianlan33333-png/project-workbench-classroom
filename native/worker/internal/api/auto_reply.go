@@ -337,7 +337,7 @@ func (a *Server) startIncoming(ctx context.Context, message core.StoredMessage) 
 		goal = "本轮使用当前配置的专家方法，历史中的旧方法不覆盖本轮配置。先调用skill加载专家方法：" + message.ExpertSkill + "。\n" + goal
 	}
 	if message.Principal.Kind == "personal" {
-		goal = message.Text + "\n\n这是已绑定本人渠道的新消息，请作为今日Personal Agent处理；需要回复本人时使用当前消息的connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。"
+		goal = message.Text + "\n\n这是已绑定本人渠道的新消息，请由 SuperAgent 处理；需要回复本人时使用当前消息的connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。"
 	}
 	run := core.Run{ID: message.ID, Principal: message.Principal, Operation: "incoming", Title: "客户新消息", Goal: goal, OriginMessage: message.ID, Sources: append([]core.Ref{}, message.Knowledge...)}
 	for _, ref := range message.Context {

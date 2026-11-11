@@ -788,7 +788,7 @@ window.__ModuleLoader__.load({
             h("div",{className:"wb-actions"},button(pane==="rules"?"关注":"配置",pane==="rules"?()=>setPane("follow"):showRules,{className:"wb-inline"}),
               button("收起",()=>setPane(""),{className:"wb-inline","aria-label":"收起SuperAgent 辅助栏"}))),
           h("div",{className:"wb-companion-scroll",hidden:pane!=="follow"},
-            h(TodayPage,{openSession,embedded:true})),
+            h(SuperAgentWork,{openSession})),
           rulesOpened&&h("div",{className:"wb-companion-scroll",hidden:pane!=="rules"},h(TodayRules))));
     }
     function ExpertsPage() {
@@ -889,13 +889,12 @@ window.__ModuleLoader__.load({
         !rows?h("p",{role:"status"},"正在读取定时任务…"):
           rows.length?h(ScheduleRows,{rows,openSession,act,busy,openPanel}):h("p",{className:"wb-muted"},"暂无定时任务。")));
     }
-    function TodayPage({ openSession, embedded }) {
+    function SuperAgentWork({ openSession }) {
       const [data,setData]=useState(),[error,setError]=useState(""),[notice,setNotice]=useState(""),[busy,setBusy]=useState(false),[edit,setEdit]=useState(),[answers,setAnswers]=useState({}),[settings,setSettings]=useState(),[notifications,setNotifications]=useState();
       const load=async()=>{const [runs,decisions,memory,config,notify,targets,schedules]=await Promise.all([api("/runs"),api("/decisions"),api("/memory"),api("/personal/settings"),api("/notifications"),api("/notification-targets"),api("/schedules")]);setError("");setData({runs,decisions,memory,config,targets,schedules});setSettings(v=>v||config);setNotifications(v=>v||{...notify,sessionId:config.sessionId,targets:notify.targets||[]})};
       useEffect(()=>{let live=true;const refresh=()=>load().catch(e=>{if(live)setError(e.message)});refresh();const id=setInterval(refresh,15000);return()=>{live=false;clearInterval(id)}},[]);
       const act=async fn=>{setBusy(true);setError("");setNotice("");try{await fn();await load();setNotice("已保存")}catch(e){setError(e.message)}finally{setBusy(false)}};
       return h("section",{className:"wb-page"},h("style",null,css),h("div",{className:"wb-content"},
-        !embedded&&h("div",{className:"wb-heading"},h("h1",null,"SuperAgent")),
         error&&h("p",{role:"alert"},error),notice&&h("p",{role:"status"},notice),!data&&h("p",{role:"status"},"正在核对任务与待决定事项…"),
         data&&h("div",{className:"wb-section"},h("h2",null,`等待你决定 · ${data.decisions.length}`),
           data.decisions.length===0?h("p",{className:"wb-muted"},"暂无待决定事项。"):
@@ -1585,7 +1584,7 @@ window.__ModuleLoader__.load({
           }
         };
         installWorkbenchViews(ctx,openProject,ReadableButton);
-        function TodayEntry(){
+        function SuperAgentEntry(){
           const [error,setError]=useState("");
           const [retry,setRetry]=useState(0);
           useEffect(()=>{let alive=true;setError("");api("/project-list").then(c=>{
@@ -1595,7 +1594,7 @@ window.__ModuleLoader__.load({
             error?button("重试",()=>setRetry(n=>n+1)):h("p",{role:"status"},"正在打开 SuperAgent 对话…")));
         }
         for (const [id, label, mark, Component, extra] of [
-          ["wb-today","SuperAgent",IconClockOutlineRegular,TodayEntry,{}],
+          ["wb-today","SuperAgent",IconClockOutlineRegular,SuperAgentEntry,{}],
           ["wb-projects","项目",UI.IconFolderCloseRegular||IconDatabaseOutlineRegular,ProjectsPage,{openProject}],
           ["wb-resources","知识库",IconDatabaseOutlineRegular,ResourcePage,{}],
           ["wb-experts","专家",UI.IconAgentPresetOutlineRegular||IconDatabaseOutlineRegular,ExpertsPage,{}],
