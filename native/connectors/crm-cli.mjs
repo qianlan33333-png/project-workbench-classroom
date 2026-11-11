@@ -360,12 +360,23 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
     }
     if(failedRecipients.size){
      try {
-      const receipts=await pages('admin.listAIAssistantExecutionReceipts',{plan_id:plan.id},{live:false,limit:50});
-      for(const row of receipts){
-       const customer=String(row.customer_id);
-       if(failedRecipients.get(customer)!==String(row.recipient_id)||String(row.staff_id)!==String(manifest.staff))continue;
-       const reason=businessReason(row.receipt||{});
-       if(reason)entries[itemKey.get(customer)]=fail(reason);
+      const budget=AbortSignal.timeout(5000);
+      const lookupSignal=signal?AbortSignal.any([budget,signal]):budget;
+      let cursor='';
+      for(let page=0;page<4&&failedRecipients.size;page++){
+       lookupSignal.throwIfAborted();
+       const receipts=await invoke('admin.listAIAssistantExecutionReceipts',{
+        params:{plan_id:plan.id},query:{live:false,limit:50,...(cursor?{cursor}:{})},signal:lookupSignal,
+       });
+       for(const row of receipts.items){
+        const customer=String(row.customer_id);
+        if(failedRecipients.get(customer)!==String(row.recipient_id)||String(row.staff_id)!==String(manifest.staff))continue;
+        const reason=businessReason(row.receipt||{});
+        if(reason)entries[itemKey.get(customer)]=fail(reason);
+        failedRecipients.delete(customer);
+       }
+       if(!receipts.next_cursor||receipts.next_cursor===cursor)break;
+       cursor=receipts.next_cursor;
       }
      }catch{/* Keep the known CRM failure when its reason is unavailable. */}
     }
