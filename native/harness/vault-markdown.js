@@ -8,8 +8,9 @@ import rehypeSanitize, {defaultSchema} from 'rehype-sanitize';
 import rehypeStringify from 'rehype-stringify';
 
 const parser = unified().use(remarkParse).use(remarkGfm).use(remarkObsidian, {preset: 'strict'});
-const renderer = unified().use(remarkParse).use(remarkGfm).use(remarkRehype)
+const renderer = unified().use(remarkParse).use(remarkGfm).use(annotateBlocks).use(remarkRehype)
   .use(rehypeSanitize, {...defaultSchema,tagNames:defaultSchema.tagNames.filter(tag => tag !== 'img')})
+  .use(restoreFootnoteLinks)
   .use(rehypeStringify);
 const noteExtension = /\.(md|txt)$/i;
 const labelText = value => value.replace(/[\\[\]`*_<>]/g, '\\$&');
@@ -21,7 +22,7 @@ function descendants(node, result) {
 }
 
 function key(value) {
-  return value.normalize('NFC').toLowerCase().replace(noteExtension, '');
+  return value.normalize('NFC').toLowerCase();
 }
 
 function notePath(value) {
@@ -31,28 +32,62 @@ function notePath(value) {
 }
 
 function addLookup(map, name, value) {
-  map.set(name, map.has(name) ? null : value);
+  for (const spelling of [key(name), '\0' + key(name).replace(noteExtension, '')]) {
+    map.set(spelling, map.has(spelling) ? null : value);
+  }
 }
 
-function resolveLink(node, from, byPath, byName) {
+function lookup(map, name) {
+  return map.get((noteExtension.test(name) ? '' : '\0') + key(name));
+}
+
+function annotateBlocks() {
+  return tree => {
+    for (const node of descendants(tree, [])) {
+      if (node.type !== 'paragraph') continue;
+      const last = node.children.at(-1);
+      const marker = last?.type === 'text' && /(?:^|\s)\^([a-z0-9-]+)$/i.exec(last.value);
+      if (!marker) continue;
+      last.value = last.value.slice(0, marker.index).trimEnd();
+      node.data = {hProperties:{id:'vault-block-' + marker[1]}};
+    }
+  };
+}
+
+function restoreFootnoteLinks() {
+  return tree => {
+    const nodes = descendants(tree, []);
+    const ids = new Set(nodes.flatMap(node => node.properties?.id ? [node.properties.id] : []));
+    for (const node of nodes) {
+      const props = node.properties;
+      if (node.tagName !== 'a' || !props || (!Object.hasOwn(props, 'dataFootnoteRef') && !Object.hasOwn(props, 'dataFootnoteBackref'))) continue;
+      const target = props.href?.slice(1);
+      const prefixed = defaultSchema.clobberPrefix + target;
+      if (props.href?.startsWith('#') && !ids.has(target) && ids.has(prefixed)) props.href = '#' + prefixed;
+    }
+  };
+}
+
+function resolveLink(node, from, byPath, byName, definitions) {
   if (node.type === 'wikilink') {
     const target = node.path || '';
-    const note = !target ? from : target.includes('/') ? byPath.get(key(target)) : byName.get(key(target));
+    const note = !target ? from : lookup(target.includes('/') ? byPath : byName, target);
     return {note, heading: node.heading || '', label: node.alias || node.value || target};
   }
-  const [address, ...fragment] = node.url.split('#');
+  const url = node.type === 'linkReference' ? definitions.get(node.identifier) : node.url;
+  if (url === undefined || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(url)) return undefined;
+  const [address, ...fragment] = url.split('#');
   let target, heading;
   try {
     target = decodeURIComponent(address);
     heading = decodeURIComponent(fragment.join('#'));
   } catch {
-    return undefined;
+    return {note:undefined};
   }
   if (!target) return heading ? {note: from, heading} : undefined;
-  if (target.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(target)) return undefined;
+  if (target.startsWith('/')) return {note:undefined};
   const relative = path.normalize(path.join(path.dirname(from), target));
-  const note = byPath.get(key(relative));
-  return note || noteExtension.test(target) ? {note, heading} : undefined;
+  return {note:lookup(byPath, relative), heading};
 }
 
 function rewrite(text, edits) {
@@ -66,22 +101,34 @@ function rewrite(text, edits) {
   return output + text.slice(cursor);
 }
 
-export function vaultView(documents, selected, search = '') {
+function orderedNotes(documents) {
+  return documents.filter(doc => notePath(doc.path)).sort((a, b) => a.path.localeCompare(b.path, 'zh'));
+}
+
+export function searchVault(documents, search) {
+  const query = key(search.trim());
+  return orderedNotes(documents).filter(doc => !query || [doc.path, doc.text].some(text =>
+    key(text).includes(query))).map(doc => ({path: doc.path}));
+}
+
+export function vaultView(documents, selected) {
   const byPath = new Map();
   const byName = new Map();
-  const docs = documents.filter(doc => notePath(doc.path)).sort((a, b) => a.path.localeCompare(b.path, 'zh'));
+  const docs = orderedNotes(documents);
   for (const doc of docs) {
-    addLookup(byPath, key(doc.path), doc.path);
-    addLookup(byName, key(path.basename(doc.path)), doc.path);
+    addLookup(byPath, doc.path, doc.path);
+    addLookup(byName, path.basename(doc.path), doc.path);
   }
   const current = selected === undefined ? docs[0]?.path : selected;
-  const query = search.trim().normalize('NFC').toLowerCase();
-  const notes = docs.filter(doc => !query || [doc.path, doc.text].some(text =>
-    text.normalize('NFC').toLowerCase().includes(query))).map(doc => ({path: doc.path}));
+  const notes = docs.map(doc => ({path: doc.path}));
   const backlinks = [];
   let document;
   for (const {path: name, text} of docs) {
     const nodes = descendants(parser.runSync(parser.parse(text), text), []);
+    const definitions = new Map();
+    for (const node of nodes) {
+      if (node.type === 'definition' && !definitions.has(node.identifier)) definitions.set(node.identifier, node.url);
+    }
     const edits = [];
     let properties;
     let linked = false;
@@ -95,8 +142,8 @@ export function vaultView(documents, selected, search = '') {
       if (node.type === 'image' && name === current) {
         edits.push({start: start.offset, end: end.offset, replacement: labelText(node.alt || '')});
       }
-      if (!['wikilink', 'link'].includes(node.type)) continue;
-      const link = resolveLink(node, name, byPath, byName);
+      if (!['wikilink', 'link', 'linkReference'].includes(node.type)) continue;
+      const link = resolveLink(node, name, byPath, byName, definitions);
       if (!link) continue;
       if (name !== current && link.note && link.note === current) linked = true;
       if (name !== current) continue;
@@ -118,6 +165,7 @@ export function vaultView(documents, selected, search = '') {
 export async function directoryVault(call, resource, section) {
   const documents = [];
   const seen = new Set();
+  const cursors = new Set();
   let after;
   let bytes = 0;
   do {
@@ -134,7 +182,10 @@ export async function directoryVault(call, resource, section) {
       seen.add(fields.name);
       documents.push({path: fields.name, text});
     }
-    if (page.next && page.next === after) throw Error('语料目录游标异常');
+    if (page.next) {
+      if (cursors.has(page.next) || cursors.size >= 1000) throw Error('语料目录游标异常');
+      cursors.add(page.next);
+    }
     after = page.next;
   } while (after);
   return documents;

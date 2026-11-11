@@ -194,9 +194,12 @@ func (s *Store) BindSession(ctx context.Context, p Principal) error {
 	return nil
 }
 func (s *Store) Resource(ctx context.Context, id string) (Resource, error) {
+	return scanResource(s.DB.QueryRowContext(ctx, `SELECT body,current_version,revision FROM wb_resources WHERE id=?`, id))
+}
+func scanResource(row *sql.Row) (Resource, error) {
 	var r Resource
 	var raw []byte
-	e := s.DB.QueryRowContext(ctx, `SELECT body,current_version,revision FROM wb_resources WHERE id=?`, id).Scan(&raw, &r.CurrentVersion, &r.Revision)
+	e := row.Scan(&raw, &r.CurrentVersion, &r.Revision)
 	if e != nil {
 		return r, e
 	}
@@ -288,7 +291,7 @@ func (s *Store) Resources(ctx context.Context, p Principal) ([]Resource, error) 
 	return out, rows.Err()
 }
 func (s *Store) PutResource(ctx context.Context, p Principal, r Resource) error {
-	if !p.IsOwner() || r.ID == replyActivitySource.ResourceID {
+	if !p.IsOwner() || r.ID == replyActivitySource.ResourceID || r.Relation == VaultRelation || validVaultID(r.ID) {
 		return ErrDenied
 	}
 	if e := r.Validate(); e != nil {
@@ -349,9 +352,12 @@ func (s *Store) SetGrant(ctx context.Context, p Principal, g Grant) error {
 	return tx.Commit()
 }
 func (s *Store) Snapshot(ctx context.Context, id, version string) (Snapshot, error) {
+	return scanSnapshot(s.DB.QueryRowContext(ctx, `SELECT body,state,record_count,published_at FROM wb_snapshots WHERE resource_id=? AND version=?`, id, version))
+}
+func scanSnapshot(row *sql.Row) (Snapshot, error) {
 	var v Snapshot
 	var b []byte
-	e := s.DB.QueryRowContext(ctx, `SELECT body,state,record_count,published_at FROM wb_snapshots WHERE resource_id=? AND version=?`, id, version).Scan(&b, &v.State, &v.Count, &v.PublishedAt)
+	e := row.Scan(&b, &v.State, &v.Count, &v.PublishedAt)
 	if e != nil {
 		return v, e
 	}
@@ -373,7 +379,7 @@ func (s *Store) canWrite(ctx context.Context, p Principal, id string) (Resource,
 	if e != nil {
 		return r, e
 	}
-	if !p.IsOwner() && (p.Kind != "project" || (r.OwnerProject != p.ProjectID && r.MaintainerProject != p.ProjectID)) {
+	if r.Relation == VaultRelation || (!p.IsOwner() && (p.Kind != "project" || (r.OwnerProject != p.ProjectID && r.MaintainerProject != p.ProjectID))) {
 		return r, ErrDenied
 	}
 	return r, nil
@@ -492,26 +498,34 @@ func (s *Store) Stage(ctx context.Context, p Principal, id, version string, reco
 	if e != nil {
 		return e
 	}
-	values := []string{}
-	args = nil
+	newRecords := make([]Record, 0, len(records))
 	for _, r := range records {
-		digest := Digest(r.Fields)
 		if previous, ok := existing[r.ID]; ok {
-			if previous != digest {
+			if previous != Digest(r.Fields) {
 				return fmt.Errorf("%w: duplicate item differs", ErrConflict)
 			}
 			continue
 		}
-		values = append(values, "(?,?,?,?,?)")
-		args = append(args, id, version, r.ID, digest, jsonText(r.Fields))
+		newRecords = append(newRecords, r)
 	}
-	if len(values) > 0 {
-		if _, e = tx.ExecContext(ctx, `INSERT INTO wb_records VALUES `+strings.Join(values, ","), args...); e != nil {
-			return e
-		}
+	if e = insertSnapshotRecords(ctx, tx, id, version, newRecords); e != nil {
+		return e
 	}
 
 	return tx.Commit()
+}
+func insertSnapshotRecords(ctx context.Context, tx *sql.Tx, id, version string, records []Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(records))
+	args := make([]any, 0, len(records)*5)
+	for _, r := range records {
+		values = append(values, "(?,?,?,?,?)")
+		args = append(args, id, version, r.ID, Digest(r.Fields), jsonText(r.Fields))
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO wb_records VALUES `+strings.Join(values, ","), args...)
+	return err
 }
 func (s *Store) Publish(ctx context.Context, p Principal, id, version string, expectedCount int) (Snapshot, error) {
 	if _, e := s.canWrite(ctx, p, id); e != nil {

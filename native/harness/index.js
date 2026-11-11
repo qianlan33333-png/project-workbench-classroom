@@ -15,7 +15,7 @@ import { toolNamespace, namespaceOfTool } from './tool-namespace.js';
 import { installPersonalMemory } from './personal-memory.js';
 import { replyEvidenceProjection } from './reply-evidence.js';
 import { resourceDocuments } from './resource-documents.js';
-import {directoryVault, vaultView} from './vault-markdown.js';
+import {directoryVault, searchVault, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
 import { createSuperAgent } from './superagent.js';
@@ -123,13 +123,13 @@ export async function apply(ctx, config) {
     return response.json();
   };
   const projectCache=new Map();
-  async function syncProjects() {
+  async function syncProjects(signal) {
     const projects = [];
     for (const w of ctx.workspaceRegistry.list()) {
       if (w.path === personalPath) continue;
       const p = { id: idOf(w.path), name: w.title, workspace: w.path };
       if(projectCache.get(p.id)!==JSON.stringify(p)) {
-        await call("/projects", owner, p);
+        await call("/projects", owner, p, signal);
         projectCache.set(p.id,JSON.stringify(p));
       }
       projects.push({ ...p, workspaceId: w.id, sessionIds:(w.sessionIds??[]).filter(id=>!id.startsWith("object-")) });
@@ -459,33 +459,61 @@ export async function apply(ctx, config) {
               json(res,200,await resourceDocuments(config,call,projectId,resourceId,u.searchParams.get('uri')||undefined));return;
             }
             if (req.method === "GET" && path === "/vault-view") {
+              const disconnect = new AbortController();
+              res.once("close", () => disconnect.abort());
+              const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(30000)]);
+              const read = path => call(path, owner, undefined, signal);
               const resourceId = u.searchParams.get("resourceId");
-              const resource = (await call("/resources")).find(r => r.id === resourceId);
+              const resource = (await read("/resources")).find(r => r.id === resourceId);
               if (!resource?.currentVersion) throw requestError("语料库不存在或尚未发布", 404);
               const version = u.searchParams.get("version") || resource.currentVersion;
-              const projectId = u.searchParams.get("projectId") || resource.ownerProject;
-              const section = resource.sections.find(s => s.fields.includes("name") &&
+              let projectId;
+              const section = resource.sections.length === 1 && resource.sections.find(s => s.fields.includes("name") &&
                 (s.fields.includes("text") || s.fields.includes("markdown")));
               const connection = resource.connectionId
-                ? (await call("/connections")).find(c => c.id === resource.connectionId)
+                ? (await read("/connections")).find(c => c.id === resource.connectionId)
                 : undefined;
               const editable = resource.relation === "obsidian-vault" && !resource.connectionId;
               let notes;
               if (editable || connection?.kind === "directory") {
-                if (!section) throw requestError("语料库缺少文档板块", 409);
-                notes = await directoryVault(call, {...resource,currentVersion:version}, section.id);
-              } else if (projectId && (await syncProjects()).some(p => p.id === projectId)) {
-                const external = await resourceDocuments(config, call, projectId, resourceId, undefined, {all:true,version});
-                if (external.external) notes = external.notes;
+                if (section) notes = await directoryVault(read, {...resource,currentVersion:version}, section.id);
+              } else {
+                const configured = (config.toolServers || []).filter(server =>
+                  server.sources?.some(ref => ref.resourceId === resourceId)).flatMap(server => server.projects || []);
+                if (configured.length) {
+                  const projects = new Set((await syncProjects(signal)).map(project => project.id));
+                  const explicit = u.searchParams.get("projectId");
+                  const candidates = [...new Set(explicit ? [explicit] : [resource.ownerProject, ...configured])]
+                    .filter(id => configured.includes(id) && projects.has(id));
+                  let denied;
+                  for (const candidate of candidates) {
+                    try {
+                      const external = await resourceDocuments(config, call, candidate, resourceId, undefined, {all:true,version,signal});
+                      if (!external.external) continue;
+                      projectId = candidate;
+                      notes = external.notes;
+                      break;
+                    } catch (error) {
+                      if (explicit || error.status !== 403) throw error;
+                      denied = error;
+                    }
+                  }
+                  if (!notes && denied) throw denied;
+                }
               }
-              if (!notes) {
+              if (!notes || (!editable && notes.length === 0)) {
                 json(res, 200, {supported:false});
                 return;
               }
+              signal.throwIfAborted();
+              if (u.searchParams.has("search")) {
+                json(res, 200, {supported:true, version, notes:searchVault(notes, u.searchParams.get("search").slice(0, 200))});
+                return;
+              }
               const requested = u.searchParams.get("note") ?? undefined;
-              const view = vaultView(notes, requested, (u.searchParams.get("search") || "").slice(0, 200));
+              const view = vaultView(notes, requested);
               if (requested && !view.document) throw requestError("笔记不存在", 404);
-              json(res, 200, {supported:true, editable, version, ...view});
+              json(res, 200, {supported:true, editable, projectId, version, ...view});
               return;
             }
             if(req.method==='GET'&&path==='/reply-experts'){
@@ -678,7 +706,7 @@ export async function apply(ctx, config) {
             }
             json(res, 404, { error: "unknown operation" });
           } catch (e) {
-            json(res, e.status||(e instanceof SyntaxError?400:503), { error: e.message });
+            if (!res.destroyed) json(res, e.status||(e instanceof SyntaxError?400:503), { error: e.message });
           }
         },
       }),

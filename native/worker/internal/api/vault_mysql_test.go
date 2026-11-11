@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -79,6 +81,10 @@ func TestMySQLVaultCreateSaveAndExistingAccess(t *testing.T) {
 	if published.State != "published" || published.Count != 1 || published.Version != retried.Version {
 		t.Fatalf("publish or retry mismatch: %+v", published)
 	}
+	call(owner, "POST", "/resources", empty, 403, nil)
+	call(owner, "POST", "/snapshots", core.Snapshot{ResourceID: id, Version: "bypass", Previous: published.Version, Sections: empty.Sections}, 403, nil)
+	call(owner, "POST", "/stage", map[string]any{"resourceId": id, "version": published.Version}, 403, nil)
+	call(owner, "POST", "/publish", map[string]any{"resourceId": id, "version": published.Version, "count": 1}, 403, nil)
 	got, err := os.ReadFile(filepath.Join(root, id, published.Version, filepath.FromSlash(doc)))
 	if err != nil || string(got) != text {
 		t.Fatalf("source file mismatch: %q %v", got, err)
@@ -104,4 +110,51 @@ func TestMySQLVaultCreateSaveAndExistingAccess(t *testing.T) {
 	other := "这是并发旧稿"
 	input["changes"] = []core.VaultChange{{Path: doc, Text: &other}}
 	call(owner, "POST", "/vault-save", input, 409, nil)
+	for _, paths := range [][]string{
+		{"guide.md", "Guide.md"},
+		{"é.md", "e\u0301.md"},
+		{"folder.md", "folder.md/child.md"},
+	} {
+		call(owner, "POST", "/vault-save", map[string]any{"resourceId": id, "version": published.Version,
+			"changes": []core.VaultChange{{Path: paths[0], Text: &other}, {Path: paths[1], Text: &other}}}, 400, nil)
+	}
+
+	type outcome struct {
+		snapshot core.Snapshot
+		err      error
+	}
+	race := func(version, first, second string) [2]outcome {
+		var results [2]outcome
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i, body := range []string{first, second} {
+			wg.Go(func() {
+				<-start
+				results[i].snapshot, results[i].err = store.SaveVault(ctx, owner, root, id, version, []core.VaultChange{{Path: doc, Text: &body}})
+			})
+		}
+		close(start)
+		wg.Wait()
+		return results
+	}
+	distinct := race(published.Version, "并发甲", "并发乙")
+	winner, loser := distinct[0], distinct[1]
+	if winner.err != nil {
+		winner, loser = loser, winner
+	}
+	if winner.err != nil || !errors.Is(loser.err, core.ErrConflict) {
+		t.Fatalf("expected exactly one publish and one conflict: %+v", distinct)
+	}
+	replays := race(winner.snapshot.Version, "相同重试", "相同重试")
+	if replays[0].err != nil || replays[1].err != nil || replays[0].snapshot.Version != replays[1].snapshot.Version {
+		t.Fatalf("identical retries diverged: %+v", replays)
+	}
+	var snapshots, staged int
+	if err = store.DB.QueryRowContext(ctx, "SELECT COUNT(*), SUM(state='staging') FROM wb_snapshots WHERE resource_id=?", id).Scan(&snapshots, &staged); err != nil || snapshots != 4 || staged != 0 {
+		t.Fatalf("unexpected database versions: %d, staged %d, %v", snapshots, staged, err)
+	}
+	directories, err := os.ReadDir(filepath.Join(root, id))
+	if err != nil || len(directories) != snapshots {
+		t.Fatalf("Markdown versions do not match SQL versions: %d, %v", len(directories), err)
+	}
 }

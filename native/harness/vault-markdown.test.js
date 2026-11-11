@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {directoryVault, vaultView} from './vault-markdown.js';
+import {directoryVault, searchVault, vaultView} from './vault-markdown.js';
 
 test('Vault uses Markdown paths, Chinese headings and real incoming links', () => {
   const home = '主题/运营方法.md';
@@ -63,4 +63,38 @@ test('directory listing uses one published version across all source pages', asy
   }, {id:'vault-1',currentVersion:'fixed'}, 'text');
   assert.deepEqual(documents.map(d => d.path), ['目录/一.md','二.md']);
   assert.deepEqual(calls.map(entries => new Map(entries).get('version')), ['fixed','fixed']);
+});
+
+test('explicit extensions, reference links, footnotes and block markers resolve independently', () => {
+  const documents = [
+    {path:'索引.md',text:[
+      '[[目标]] [[目标.md]] [[目标.md.md]] [块][target] [缺失](/workbench-api/catalog)',
+      '', '[target]: ./目标.md#%5Eparagraph-1', '',
+      '脚注[^details]', '', '[^details]: 脚注正文',
+    ].join('\n')},
+    {path:'目标.md',text:'正文 ^paragraph-1'},
+    {path:'目标.txt',text:''},
+    {path:'目标.md.md',text:''},
+  ];
+  const {html} = vaultView(documents,'索引.md').document;
+  const md = encodeURIComponent('目标.md');
+  assert.match(html,/^<p>目标 <a/);
+  assert.ok(html.includes(`href="#wb-vault/${md}/">目标.md</a>`));
+  assert.ok(html.includes(`href="#wb-vault/${md}.md/">目标.md.md</a>`));
+  assert.ok(html.includes(`href="#wb-vault/${md}/%5Eparagraph-1">块</a>`));
+  assert.ok(!html.includes('/workbench-api'));
+  for (const [,target] of html.matchAll(/href="#(user-content-[^"]+)"/g)) {
+    assert.ok(html.includes(`id="${target}"`), `missing footnote target ${target}`);
+  }
+  const target = vaultView(documents,'目标.md');
+  assert.match(target.document.html,/<p id="user-content-vault-block-paragraph-1">正文<\/p>/);
+  assert.deepEqual(target.backlinks,['索引.md']);
+  assert.deepEqual(searchVault(documents,' 正文 ^PARAGRAPH-1 '),[{path:'目标.md'}]);
+});
+
+test('directory listing rejects a previously seen cursor and duplicate paths', async () => {
+  const resource = {id:'vault-1',currentVersion:'fixed'};
+  const cursors = ['a','b','a'];
+  await assert.rejects(directoryVault(async () => ({records:[],next:cursors.shift()}), resource,'text'), /游标异常/);
+  await assert.rejects(directoryVault(async () => ({records:[{fields:{name:'一.md',text:'一'}}],next:'a'}), resource,'text'), /重复路径/);
 });

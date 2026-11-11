@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"golang.org/x/text/unicode/norm"
 )
 
 const VaultRelation = "obsidian-vault"
@@ -68,7 +69,14 @@ func (s *Store) CreateVault(ctx context.Context, p Principal, root, id, name str
 		{ID: vaultSection, Name: "笔记", Fields: []string{"name", "text", "sha256"}},
 	}}
 	version := Digest(id)
-	if err := os.MkdirAll(filepath.Join(root, id, version), 0700); err != nil {
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return Resource{}, err
+	}
+	parent := filepath.Join(root, id)
+	if err := makeVaultDirectory(parent); err != nil {
+		return Resource{}, err
+	}
+	if err := makeVaultDirectory(filepath.Join(parent, version)); err != nil {
 		return Resource{}, err
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -110,7 +118,15 @@ func (s *Store) SaveVault(ctx context.Context, p Principal, root, id, previous s
 		len(changes) == 0 || len(changes) > 200 {
 		return Snapshot{}, ErrInvalid
 	}
-	r, err := s.Resource(ctx, id)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer tx.Rollback()
+	if err = guardWrite(ctx, tx); err != nil {
+		return Snapshot{}, err
+	}
+	r, err := scanResource(tx.QueryRowContext(ctx, `SELECT body,current_version,revision FROM wb_resources WHERE id=? FOR UPDATE`, id))
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -121,59 +137,95 @@ func (s *Store) SaveVault(ctx context.Context, p Principal, root, id, previous s
 		Previous string
 		Changes  []VaultChange
 	}{previous, changes})
-	if saved, readErr := s.Snapshot(ctx, id, version); readErr == nil && saved.State == "published" {
-		return saved, nil
-	} else if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
-		return Snapshot{}, readErr
+	readSnapshot := func(version string) (Snapshot, error) {
+		return scanSnapshot(tx.QueryRowContext(ctx, `SELECT body,state,record_count,published_at FROM wb_snapshots WHERE resource_id=? AND version=?`, id, version))
+	}
+	priorAttempt, err := readSnapshot(version)
+	switch {
+	case err == nil && priorAttempt.State == "published":
+		return priorAttempt, nil
+	case err == nil && (priorAttempt.State != "staging" || priorAttempt.Previous != previous):
+		return Snapshot{}, ErrConflict
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return Snapshot{}, err
 	}
 	if r.CurrentVersion != previous {
 		return Snapshot{}, ErrConflict
 	}
 
 	parent := filepath.Join(root, id)
-	records, fingerprint, err := directoryRecords(ctx, filepath.Join(parent, previous), ".")
+	if err = checkVaultDirectory(parent); err != nil {
+		return Snapshot{}, err
+	}
+	records, fingerprint, err := readVaultDirectory(ctx, filepath.Join(parent, previous))
 	if err != nil {
 		return Snapshot{}, err
 	}
-	published, err := s.Snapshot(ctx, id, previous)
+	published, err := readSnapshot(previous)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if published.Count != len(records) || (published.SourceWatermark != "" && published.SourceWatermark != fingerprint) {
+	if published.State != "published" || published.Count != len(records) || (published.SourceWatermark != "" && published.SourceWatermark != fingerprint) {
 		return Snapshot{}, fmt.Errorf("%w: Markdown directory differs from the published snapshot", ErrConflict)
 	}
 	notes, err := applyVaultChanges(records, changes)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	target := filepath.Join(parent, version)
+	_, statErr := os.Lstat(target)
+	keepFiles := false
+	if errors.Is(statErr, os.ErrNotExist) {
+		defer func() {
+			if !keepFiles {
+				_ = os.RemoveAll(target)
+			}
+		}()
+	} else if statErr != nil {
+		return Snapshot{}, statErr
+	}
 	records, fingerprint, err = writeVaultVersion(ctx, parent, version, notes)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snapshot := Snapshot{ResourceID: id, Version: version, SourceWatermark: fingerprint}
-	beginErr := s.BeginSnapshot(ctx, p, snapshot)
-	staged, err := s.Snapshot(ctx, id, version)
-	if beginErr != nil && (err != nil || staged.SourceWatermark != fingerprint) {
-		return Snapshot{}, beginErr
-	}
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if staged.Previous != previous {
-		return Snapshot{}, ErrConflict
-	}
-	if staged.State == "published" {
-		return staged, nil
-	}
-	for offset := 0; offset < len(records); offset += 200 {
-		if err = s.Stage(ctx, p, id, version, records[offset:min(offset+200, len(records))]); err != nil {
-			if saved, readErr := s.Snapshot(ctx, id, version); readErr == nil && saved.State == "published" {
-				return saved, nil
-			}
+	if priorAttempt.State == "staging" {
+		if priorAttempt.SourceWatermark != fingerprint {
+			return Snapshot{}, ErrConflict
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM wb_records WHERE resource_id=? AND version=?`, id, version); err != nil {
+			return Snapshot{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM wb_snapshots WHERE resource_id=? AND version=?`, id, version); err != nil {
 			return Snapshot{}, err
 		}
 	}
-	return s.Publish(ctx, p, id, version, len(records))
+	snapshot := Snapshot{ResourceID: id, Version: version, Previous: previous,
+		Sections: r.Sections, SourceWatermark: fingerprint}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO wb_snapshots
+		(resource_id,version,previous_version,state,body,record_count,published_at)
+		VALUES(?,?,?,'published',?,?,UTC_TIMESTAMP(6))`, id, version, previous, jsonText(snapshot), len(records)); err != nil {
+		return Snapshot{}, err
+	}
+	// Bound each insert even when Markdown expands substantially as JSON.
+	const batchSize = 16
+	for offset := 0; offset < len(records); offset += batchSize {
+		if err = insertSnapshotRecords(ctx, tx, id, version, records[offset:min(offset+batchSize, len(records))]); err != nil {
+			return Snapshot{}, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE wb_resources SET current_version=?,revision=revision+1 WHERE id=?`, version, id); err != nil {
+		return Snapshot{}, err
+	}
+	snapshot, err = readSnapshot(version)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	// A lost commit acknowledgement must leave the exact files available for retry.
+	keepFiles = true
+	if err = tx.Commit(); err != nil {
+		return Snapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func applyVaultChanges(records []Record, changes []VaultChange) (map[string]string, error) {
@@ -204,7 +256,10 @@ func applyVaultChanges(records []Record, changes []VaultChange) (map[string]stri
 	for name, body := range notes {
 		bytes += len(body)
 		for key := name; key != "."; key = path.Dir(key) {
-			folded := strings.ToLower(key)
+			if _, isFile := notes[key]; key != name && isFile {
+				return nil, fmt.Errorf("%w: a Markdown file is also used as a folder", ErrInvalid)
+			}
+			folded := norm.NFC.String(strings.ToLower(key))
 			if other, exists := seen[folded]; exists && other != key {
 				return nil, fmt.Errorf("%w: ambiguous Markdown path", ErrInvalid)
 			}
@@ -215,6 +270,32 @@ func applyVaultChanges(records []Record, changes []VaultChange) (map[string]stri
 		return nil, ErrInvalid
 	}
 	return notes, nil
+}
+
+func makeVaultDirectory(name string) error {
+	err := os.Mkdir(name, 0700)
+	if errors.Is(err, os.ErrExist) {
+		return checkVaultDirectory(name)
+	}
+	return err
+}
+
+func checkVaultDirectory(name string) error {
+	info, err := os.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return ErrDenied
+	}
+	return nil
+}
+
+func readVaultDirectory(ctx context.Context, name string) ([]Record, string, error) {
+	if err := checkVaultDirectory(name); err != nil {
+		return nil, "", err
+	}
+	return directoryRecords(ctx, name, ".")
 }
 
 func writeVaultVersion(ctx context.Context, parent, version string, notes map[string]string) ([]Record, string, error) {
@@ -246,7 +327,7 @@ func writeVaultVersion(ctx context.Context, parent, version string, notes map[st
 	}
 	target := filepath.Join(parent, version)
 	if err = os.Rename(staging, target); err != nil {
-		if _, existing, readErr := directoryRecords(ctx, target, "."); readErr != nil || existing != fingerprint {
+		if _, existing, readErr := readVaultDirectory(ctx, target); readErr != nil || existing != fingerprint {
 			return nil, "", err
 		}
 	}

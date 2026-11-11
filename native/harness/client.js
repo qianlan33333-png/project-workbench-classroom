@@ -163,53 +163,88 @@ window.__ModuleLoader__.load({
       return render(folders);
     }
 
-    function VaultEditor({text,onChange,onError}) {
+    function VaultEditor({text,onChange,onStatus,attempt,readOnly}) {
       const element=useRef(null);
+      const editor=useRef();
       useEffect(()=>{
-        let disposed=false, close;
-        import("/workbench-api/vault-editor.js").then(({openEditor})=>{
-          if(!disposed)close=openEditor(element.current,text,onChange);
-        }).catch(()=>{if(!disposed)onError("编辑器加载失败，请重试");});
-        return()=>{disposed=true;close?.();};
-      },[]);
+        let disposed=false;
+        const source="/workbench-api/vault-editor.js"+(attempt?"?retry="+attempt:"");
+        import(source).then(({openEditor})=>{
+          if(disposed)return;
+          editor.current=openEditor(element.current,text,onChange,readOnly);
+          onStatus("ready");
+        }).catch(()=>{if(!disposed)onStatus("failed");});
+        return()=>{disposed=true;editor.current?.destroy();editor.current=undefined;};
+      },[attempt]);
+      useEffect(()=>{editor.current?.setReadOnly(readOnly);},[readOnly]);
       return h("div",{ref:element,className:"wb-vault-editor"});
     }
 
-    function VaultPanel({data,load,save,close,error}) {
+    function VaultPanel({data,load,save,close}) {
       const [search,setSearch]=useState(""),[matches,setMatches]=useState();
       const [treeOpen,setTreeOpen]=useState(false),[draft,setDraft]=useState(),[saving,setSaving]=useState(false);
-      const [problem,setProblem]=useState(""),[anchor,setAnchor]=useState();
+      const [problem,setProblem]=useState(""),[searchFailed,setSearchFailed]=useState(false),[anchor,setAnchor]=useState();
+      const [editorStatus,setEditorStatus]=useState("loading"),[editorAttempt,setEditorAttempt]=useState(0);
+      const [receipt,setReceipt]=useState(),[conflict,setConflict]=useState(false);
+      const [opening,setOpening]=useState(false);
+      const inFlight=useRef(false), navigation=useRef(0);
       const bodyRef=useRef(null);
       const note=data.document;
       useEffect(()=>{
         setMatches(undefined);
+        setSearchFailed(false);
         if(!search.trim())return;
         const abort=new AbortController();
         const timer=setTimeout(()=>{
           const params={resourceId:data.resource.id,version:data.version,search};
           if(data.projectId)params.projectId=data.projectId;
-          if(note)params.note=note.path;
           fetch("/workbench-api"+query("/vault-view",params),{signal:abort.signal})
             .then(response=>{if(!response.ok)throw Error();return response.json();})
-            .then(view=>setMatches(view.notes))
-            .catch(()=>{if(!abort.signal.aborted)setProblem("搜索失败，请重试");});
+            .then(view=>{if(!abort.signal.aborted)setMatches(view.notes);})
+            .catch(()=>{if(!abort.signal.aborted)setSearchFailed(true);});
         },180);
         return()=>{clearTimeout(timer);abort.abort();};
-      },[search,data.resource.id,data.version,note?.path]);
+      },[search,data.resource.id,data.projectId,data.version]);
       useEffect(()=>{
         if(!anchor||anchor.path!==note?.path)return;
-        const slug=value=>value.trim().toLowerCase().replace(/\s+/g,"-");
-        const element=[...(bodyRef.current?.querySelectorAll("h1,h2,h3,h4,h5,h6")||[])]
-          .find(el=>slug(el.textContent)===slug(anchor.heading));
-        element?.scrollIntoView({block:"start"});
+        const body=bodyRef.current;
+        const slug=value=>value.normalize("NFC").trim().toLowerCase().replace(/\s+/g,"-");
+        let element;
+        if(anchor.heading.startsWith("^")){
+          const id="user-content-vault-block-"+anchor.heading.slice(1);
+          element=[...body.querySelectorAll("[id]")].find(el=>el.id===id);
+        }else{
+          const wanted=anchor.heading.split("#").map(slug);
+          const levels=[];
+          element=[...body.querySelectorAll("h1,h2,h3,h4,h5,h6")].find(el=>{
+            const level=Number(el.tagName[1]);
+            levels.length=level-1;
+            levels.push(slug(el.textContent));
+            const titles=levels.filter(Boolean);
+            return titles.length>=wanted.length && wanted.every((name,i)=>{
+              const title=titles[titles.length-wanted.length+i];
+              return name===title||name===title.replace(/[^\p{L}\p{M}\p{N}_-]/gu,"");
+            });
+          });
+        }
+        if(element)element.scrollIntoView({block:"start"});
+        else setProblem("未找到链接指定的标题或段落");
         setAnchor(undefined);
-      },[anchor,note?.path]);
-      const open=(path,heading)=>{
+      },[anchor,note?.path,note?.html]);
+      const open=async(path,heading)=>{
         if(draft||saving)return;
+        const request=++navigation.current;
         setTreeOpen(false);
         setProblem("");
-        if(heading)setAnchor({path,heading});
-        if(path!==note?.path)load(path);
+        setAnchor(undefined);
+        try{
+          if(path!==note?.path||opening){
+            setOpening(true);
+            await load(path);
+          }
+          if(request===navigation.current&&heading)setAnchor({path,heading});
+        }catch(e){if(request===navigation.current)setProblem(e.message);}
+        finally{if(request===navigation.current)setOpening(false);}
       };
       const follow=e=>{
         const href=e.target.closest?.("a")?.getAttribute("href");
@@ -221,10 +256,26 @@ window.__ModuleLoader__.load({
       };
       const start=existing=>{
         setProblem("");
-        setDraft(existing?{path:existing.path,text:existing.text,existing:true}:{path:"",text:"",existing:false});
+        setConflict(false);
+        setEditorStatus("loading");
+        setDraft(existing?{path:existing.path,text:existing.text,original:existing.text,existing:true}:{path:"",text:"",existing:false});
+      };
+      const readSaved=async saved=>{
+        try{
+          await load(saved.path,saved.version);
+          setDraft(undefined);
+          setReceipt(undefined);
+        }catch{setProblem("笔记已保存，读回失败。");}
+      };
+      const retryRead=async()=>{
+        if(inFlight.current)return;
+        inFlight.current=true;setSaving(true);setProblem("");
+        try{await readSaved(receipt);}
+        finally{inFlight.current=false;setSaving(false);}
       };
       const submit=async e=>{
         e.preventDefault();
+        if(inFlight.current||receipt||conflict||editorStatus!=="ready"||draft.text===draft.original)return;
         let path=draft.path.trim();
         if(!path)return;
         if(!/\.md$/i.test(path))path+=".md";
@@ -232,33 +283,49 @@ window.__ModuleLoader__.load({
           setProblem("这篇笔记已存在");
           return;
         }
-        setSaving(true);setProblem("");
-        try{await save(path,draft.text);setDraft(undefined);}
-        catch(e){setProblem(e.status===409?"语料库已更新，保存草稿后请重新打开":e.message);}
-        finally{setSaving(false);}
+        inFlight.current=true;setSaving(true);setProblem("");
+        try{
+          const saved=await save(path,draft.text);
+          if(typeof saved.version!=="string"||!saved.version)throw Error("未收到保存回执，请重试。");
+          const confirmed={path,version:saved.version};
+          setReceipt(confirmed);
+          await readSaved(confirmed);
+        }catch(e){
+          setConflict(e.status===409);
+          setProblem(e.status===409?"语料库已更新。请复制草稿，再返回语料重新打开。":e.message);
+        }finally{inFlight.current=false;setSaving(false);}
       };
       return h("section",{className:"wb-page wb-vault"},
         h("style",null,css+vaultCss),
         h("header",{className:"wb-vault-toolbar"},
-          button("返回语料",close,{disabled:Boolean(draft)}),
+          button("返回语料",close,{disabled:saving||Boolean(draft&&!receipt)}),
           h("strong",null,data.resource.name),
           button("目录",()=>setTreeOpen(!treeOpen),{className:"wb-vault-mobile","aria-expanded":treeOpen}),
           data.editable&&!draft&&h("div",{className:"wb-actions"},
-            button("新增笔记",()=>start()),note&&button("编辑笔记",()=>start(note)))),
+            button("新增笔记",()=>start(),{disabled:opening}),note&&button("编辑笔记",()=>start(note),{disabled:opening}))),
         h("div",{className:"wb-vault-layout"},
           h("nav",{className:"wb-vault-tree","aria-label":"笔记目录","data-open":treeOpen},
             h("input",{value:search,placeholder:"搜索笔记","aria-label":"搜索笔记",type:"search",
-              onChange:e=>{setProblem("");setSearch(e.target.value);}}),
-            search&&matches?.length===0?h("p",{className:"wb-muted"},"没有匹配的笔记"):
-              h(VaultTree,{notes:matches??data.notes,active:note?.path,disabled:Boolean(draft),open})),
+              onChange:e=>setSearch(e.target.value)}),
+            search.trim()&&!matches?h("p",{role:"status",className:"wb-muted"},searchFailed?"搜索失败，请重新输入":"正在搜索"):
+              matches?.length===0?h("p",{className:"wb-muted"},"没有匹配的笔记"):
+                h(VaultTree,{notes:matches??data.notes,active:note?.path,disabled:Boolean(draft),open})),
           h("article",{className:"wb-vault-body",ref:bodyRef,onClickCapture:follow},
-            alert(problem||error),
+            alert(problem),
             draft?h("form",{onSubmit:submit},
-              draft.existing?h("strong",null,draft.path):field("笔记名称",h("input",{required:true,value:draft.path,
+              draft.existing?h("strong",null,draft.path):field("笔记名称",h("input",{required:true,value:draft.path,disabled:saving||Boolean(receipt),
                 onChange:e=>{const path=e.target.value;setDraft(current=>({...current,path}));}})),
-              h(VaultEditor,{text:draft.text,onError:setProblem,onChange:text=>setDraft(current=>({...current,text}))}),
-              h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:saving},"保存"),
-                button("取消",()=>{setDraft(undefined);setProblem("");},{disabled:saving}))):
+              h(VaultEditor,{text:draft.text,attempt:editorAttempt,onStatus:setEditorStatus,readOnly:saving||Boolean(receipt),
+                onChange:text=>setDraft(current=>({...current,text}))}),
+              editorStatus==="failed"&&alert("编辑器加载失败"),
+              h("div",{className:"wb-actions"},receipt?button("重试读回",retryRead,{disabled:saving}):h(React.Fragment,null,
+                h("button",{type:"submit",disabled:saving||conflict||editorStatus!=="ready"||draft.text===draft.original},"保存"),
+                editorStatus==="failed"&&button("重试加载编辑器",()=>{setEditorStatus("loading");setEditorAttempt(editorAttempt+1);}),
+                conflict&&button("复制草稿",async()=>{
+                  try{await navigator.clipboard.writeText(draft.text);setProblem("草稿已复制。");}
+                  catch{setProblem("复制失败，请选中正文手动复制。");}
+                }),
+                button("取消",()=>{setDraft(undefined);setProblem("");},{disabled:saving})))):
               note?h(React.Fragment,null,
                 !note.hasTitle&&h("h1",null,note.path.split("/").at(-1).replace(/\.(md|txt)$/i,"")),
                 note.properties&&h("details",null,h("summary",null,"属性"),h("pre",null,note.properties)),
@@ -353,21 +420,26 @@ window.__ModuleLoader__.load({
         try{const page=await api(query("/resource-page",{resourceId:r.id,version:r.currentVersion,section,after}));if(n===previewRequest.current)setPreview({resource:r,section,page})}
         catch(e){if(n===previewRequest.current)setError(e.message)}
       };
-      const openCorpus=async(r,note,version)=>{
-        const projectId=r.ownerProject;
+      const openCorpus=async(r,note,version,projectId,required=false)=>{
         const n=++documentRequest.current;setError("");setPreview(undefined);previewRequest.current++;
         try{
           const v=await api(query("/vault-view",{resourceId:r.id,...(projectId?{projectId}:{}),...(note?{note}:{}),...(version?{version}:{})}));
           if(n!==documentRequest.current)return;
-          if(v.supported){setVault({resource:r,projectId,...v});return}
+          if(v.supported&&(!required||(v.version===version&&v.document?.path===note))){
+            setVault({resource:r,...v});return;
+          }
+          if(required)throw Error("无法读回这篇笔记");
           await openPreview(r);
-        }catch(e){if(n===documentRequest.current)setError(e.message)}
+        }catch(e){if(required)throw e;if(n===documentRequest.current)setError(e.message)}
       };
       const resetView=()=>{documentRequest.current++;previewRequest.current++;setVault(undefined);setPreview(undefined);setRecord(undefined);setBusiness(undefined)};
       const createVault=async e=>{
-        e.preventDefault();setBusy(true);setError("");
+        e.preventDefault();
+        if(busy)return;
+        setBusy(true);setError("");
         try{
           const r=await api("/vault-create",newVault);
+          if(r.id!==newVault.id||!r.currentVersion)throw Error("未收到创建回执，请重试。");
           setNewVault(undefined);
           await load();
           await openCorpus(r);
@@ -398,11 +470,9 @@ window.__ModuleLoader__.load({
             (g) => g.resourceId === r.id && g.projectId === projectFilter,
           )),
       );
-      if(vault)return h(VaultPanel,{key:vault.resource.id,data:vault,error,close:resetView,
-        load:note=>openCorpus(vault.resource,note,vault.version),save:async(path,text)=>{
-          const saved=await api("/vault-save",{resourceId:vault.resource.id,version:vault.version,changes:[{path,text}]});
-          await openCorpus(vault.resource,path,saved.version);
-        }});
+      if(vault)return h(VaultPanel,{key:vault.resource.id,data:vault,close:resetView,
+        load:(note,version=vault.version)=>openCorpus(vault.resource,note,version,vault.projectId,true),
+        save:(path,text)=>api("/vault-save",{resourceId:vault.resource.id,version:vault.version,changes:[{path,text}]})});
       return h(
         "section",
         { className: "wb-page" },
@@ -442,7 +512,7 @@ window.__ModuleLoader__.load({
           notice && h("p", { role: "status", className: "wb-note" }, notice),
           !catalog && h("p", { role: "status" }, "正在读取资源…"),
           kind==="corpus"&&newVault&&h("form",{className:"wb-form",onSubmit:createVault},
-            field("名称",h("input",{autoFocus:true,required:true,maxLength:100,value:newVault.name,
+            field("名称",h("input",{autoFocus:true,required:true,maxLength:100,value:newVault.name,disabled:busy,
               onChange:e=>setNewVault({...newVault,name:e.target.value})})),
             h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:busy},"创建"),
               button("取消",()=>setNewVault(undefined),{disabled:busy}))),
