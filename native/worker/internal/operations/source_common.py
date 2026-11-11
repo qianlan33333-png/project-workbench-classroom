@@ -1,0 +1,141 @@
+"""Server-owned source configuration; never supplied by a model or tool argument."""
+import json
+import os
+import sys
+import hashlib
+from pathlib import Path
+
+# These are the original collector's entitlement inputs, without usage counters
+# or update timestamps. Compare facts; do not calculate another rights policy.
+RIGHTS_COLUMNS = {
+    'subscriptions': ('user_id','tier','status','expires_at','created_at'),
+    'memberships': ('user_id','member_type','status','end_date','created_by','note','created_at'),
+    'subscription_activations': ('id','user_id','sku_code','order_id','previous_tier','new_tier','previous_expires_at','new_expires_at','source','created_at','paid_at'),
+}
+
+def rights_fingerprint(groups):
+    projected={}
+    for name,columns in RIGHTS_COLUMNS.items():
+        values=[]
+        for row in groups.get(name,[]):
+            item={key:(row.get(key).isoformat() if hasattr(row.get(key),'isoformat') else str(row[key]) if key in ('id','user_id','order_id') and row.get(key)is not None else row.get(key))for key in columns}
+            values.append(json.dumps(item,ensure_ascii=False,sort_keys=True,separators=(',',':')))
+        projected[name]=sorted(values)
+    return hashlib.sha256(json.dumps(projected,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+
+def load():
+    root, path = Path(sys.argv[1]), Path(sys.argv[2])
+    if not root.is_absolute() or not path.is_absolute() or path.stat().st_mode & 0o077:
+        raise ValueError('private_source_configuration_required')
+    return root, json.loads(path.read_text())
+
+
+def write_json(path, value):
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    temporary=path.with_name('.'+path.name+'.partial')
+    with temporary.open('w')as stream:
+        os.chmod(temporary,0o600);json.dump(value,stream,ensure_ascii=False,default=str)
+        stream.flush();os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
+def original_aliases(users, original_refs):
+    by_customer={}
+    for ref,row in original_refs.items():
+        for cid in [row.get('customer_id'),*(row.get('_mergedCustomerIDs')or[])]:
+            if str(cid or '').isdigit()and int(cid)>0:by_customer.setdefault(str(cid),set()).add(ref)
+    result={}
+    for ref,row in users.items():
+        aliases={ref}
+        for cid in [row.get('customer_id'),*(row.get('_mergedCustomerIDs')or[])]:
+            if str(cid or '').isdigit()and int(cid)>0:aliases.update(by_customer.get(str(cid),set()))
+        result[ref]=sorted(aliases)
+    return result
+
+
+def original_reviews(records, aliases):
+    result={}
+    for alias in aliases:
+        for kind,value in records.get(alias,{}).items():
+            if kind in result and result[kind]!=value:
+                # Conflicting original human decisions remain a hold. A new
+                # reference never silently discards an old defer/correction.
+                result[kind]={'decision':'defer','reason':'merged_original_reviews_require_verification'}
+            else:result[kind]=value
+    return result
+
+
+def fact_reviews_fingerprint(records, aliases):
+    return hashlib.sha256(json.dumps(original_reviews(records,aliases),ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+
+def contact_prohibited(user):
+    safety=(user.get('safety')or{},user.get('allocation_safety')or{},(user.get('archive')or{}).get('safety')or{})
+    return (user.get('operational_excluded')is True or user.get('do_not_contact')is True
+        or user.get('contact_preference')=='do_not_contact' or user.get('high_risk')is True
+        or any(s.get('do_not_contact')is True or s.get('is_do_not_contact')is True or s.get('contact_preference')=='do_not_contact'
+            or s.get('contact_policy')in ('blocked','do_not_contact','opt_out') or s.get('high_risk')is True for s in safety))
+
+
+def alias_execution_requires_review(history, ref, aliases):
+    for alias in aliases:
+        if alias==ref:continue
+        if (history.get('renewal_slots',{}).get(alias)
+            or any(v.get('state')!='cancelled' for v in history.get('copy_index',{}).get(alias,[]))
+            or any(v[0]==alias for v in history.get('legacy_successful_cycles',[]))):
+            return True
+    return False
+
+
+def original_pack_redlines(assets, account_ids):
+    result={}
+    for kind,filename in [('review','weekly-review-pack-latest.json'),('content','content-service-pack-latest.json')]:
+        pack=assets.get('var/service-packs/'+filename)or{}
+        result[kind]={'rows':[{'hxc_user_id':r.get('hxc_user_id'),'redline_flags':r.get('redline_flags')}
+            for r in pack.get('rows')or[] if str(r.get('hxc_user_id'))in account_ids]}
+    return result
+
+
+def generation_profile(user, conversation):
+    # Long-lived classification strings are not attributed current user facts.
+    # Keep them in the archive; generation receives the selected action plus
+    # the original dated, attributed conversation projection.
+    result={key:user[key] for key in ('safe_user_ref','customer_id','CRM展示名',
+        '原CRM显示称呼','source_snapshot_id') if key in user}
+    result['conversation']=conversation
+    return result
+
+
+def generation_method(key, resources):
+    instructions='\n\n'.join('\n'.join(str(line)for line in x['instructions'])
+        if isinstance(x.get('instructions'),list)else str(x.get('instructions')or'')for x in resources)
+    instructions+='''\n\n本工具的事实输入合同：名单和动作已经由原策略确定，不能重新选人、换产品、换动作或新增服务承诺。
+只执行 actions[0].generation 的本轮动作，选定 material.kind 为 followup 时只做跟进，不暗示存在已选文章、报告或已交付内容。
+引用资料必须保留 source_at 的时间含义；旧事实只可明确作为历史线索询问现在是否仍适用，不能直接断言是当前状态。
+conversation 中 status=inferred、internal_reference_only=true 或缺来源的内容只供内部参考，不转述为确定事实、用户原话或诊断；无状态标签的长期档案分类不作为本轮事实。
+报告中的分析和建议必须明确归因于该报告；涉及旧对话状态时询问现在是否仍适用，不直接断言客户当前状态。你是在给发送员工起草消息，模型读到报告不等于员工读过。正文不得写“我看了整份内容”“我看过报告”“我研究了你的情况”或其他员工的个人经历；直接写“报告里提到……”并保留推测语气。此要求优先于原方法中第一人称推荐的写法。
+没有本轮核准的内容、报告和链接时不得承诺可查看、已生成、已发送或必定持续交付。每条只有一个主要下一步。
+返回JSON：status为draft或blocked，text为待审正文，blocked_reason为阻断理由，evidence_refs为本轮引用的原来源编号。draft时正文非空；blocked时正文必须为空。'''
+    return {'name':'原方法 · '+key,'instructions':instructions,'requiredFields':['profile','actions'],'fixedOutputPointer':'/fixedOutput',
+        'maxInputBytes':100000,'maxOutputTokens':1200,'outputSchema':{
+            'type':'object','required':['status','text','blocked_reason','evidence_refs'],
+            'properties':{'status':{'enum':['draft','blocked']},'text':{'type':'string'},
+                'blocked_reason':{'type':'string'},'evidence_refs':{'type':'array','items':{'type':'string'}}},
+            'additionalProperties':False,'allOf':[
+                {'if':{'properties':{'status':{'const':'draft'}}},'then':{'properties':{'text':{'minLength':1},'evidence_refs':{'minItems':1}}}},
+                {'if':{'properties':{'status':{'const':'blocked'}}},'then':{'properties':{'text':{'const':''},'blocked_reason':{'minLength':1}}}}]}}
+
+
+def read_proxy(process, params, budget, too_large):
+    """Repeat only transient failures of the exact same read-only source page."""
+    for attempt in range(4):
+        budget.request_slot();process.stdin.write(json.dumps(params)+'\n');process.stdin.flush()
+        line=process.stdout.readline(24*1024*1024)
+        if not line or not line.endswith('\n'):raise RuntimeError('original_read_proxy_incomplete')
+        value=json.loads(line)
+        if 'data'in value:return value['data']
+        if value.get('error')=='response_too_large':raise too_large('response_size_exceeded')
+        transient=value.get('http_error')in (408,429,500,502,503,504) or value.get('error')in ('TimeoutError','URLError','RemoteDisconnected')
+        if not transient or attempt==3:raise RuntimeError('original_read_proxy_rejected_'+str(value.get('http_error')or value.get('error')))
+        budget.wait(2**attempt)

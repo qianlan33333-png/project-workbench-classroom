@@ -178,10 +178,24 @@ func (a *Server) scheduleRoutes(mux *http.ServeMux) {
 		if !decode(w, r, &v) {
 			return
 		}
+		a.operationsMu.Lock()
+		defer a.operationsMu.Unlock()
 		var b []byte
 		if e := a.Store.DB.QueryRowContext(r.Context(), `SELECT body FROM wb_settings WHERE id=? AND id LIKE 'program-%'`, v.ID).Scan(&b); e != nil {
 			respond(w, nil, e)
 			return
+		}
+		var saved scheduleView
+		if e := json.Unmarshal(b, &saved); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		if !v.Paused && originalOperationsStrategy.MatchString(saved.Strategy) && saved.SessionID == operationsPrincipal(saved.ProjectID).SessionID {
+			cfg, e := a.readOperations(r.Context(), saved.ProjectID)
+			if e != nil || (cfg.Cycle != nil && cfg.Strategy.ID != v.ID) {
+				respond(w, nil, errors.Join(e, core.ErrConflict))
+				return
+			}
 		}
 		h := a.Temporal.ScheduleClient().GetHandle(r.Context(), v.ID)
 		var e error

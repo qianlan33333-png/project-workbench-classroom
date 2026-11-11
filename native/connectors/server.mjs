@@ -7,7 +7,7 @@ const token=process.env.WORKBENCH_CONNECTOR_TOKEN,hostToken=process.env.WORKBENC
 if(!token||token.length<32||!hostToken||hostToken.length<32)throw Error('Connector credentials missing');
 const config=JSON.parse(await fs.readFile(process.env.WORKBENCH_CHANNEL_CONFIG,'utf8'));
 const worker=new URL(process.env.WORKBENCH_WORKER_URL||'http://127.0.0.1:7381');if(worker.hostname!=='127.0.0.1'||worker.protocol!=='http:')throw Error('Worker must use loopback');
-async function call(path,data){const r=await fetch(new URL(path,worker),{method:data===undefined?'GET':'POST',headers:{authorization:'Bearer '+hostToken,'content-type':'application/json','X-Workbench-Kind':'owner','X-Workbench-Session':'channel-connector'},body:data===undefined?undefined:JSON.stringify(data),signal:AbortSignal.timeout(30000)});if(!r.ok){let body;try{body=await r.json()}catch{};throw Object.assign(Error('Worker rejected control request'),{status:r.status,code:body?.error||'unavailable'})};return r.json()}
+async function call(path,data){const r=await fetch(new URL(path,worker),{method:data===undefined?'GET':'POST',headers:{authorization:'Bearer '+hostToken,'content-type':'application/json','X-Workbench-Kind':'owner','X-Workbench-Session':'channel-connector'},body:data===undefined?undefined:JSON.stringify(data),signal:AbortSignal.timeout(path.startsWith('/operations/batch-manifest?')&&new URL(path,worker).searchParams.get('check')==='write'?300000:30000)});if(!r.ok){let body;try{body=await r.json()}catch{};throw Object.assign(Error('Worker rejected control request'),{status:r.status,code:body?.error||'unavailable'})};return r.json()}
 const channels=createChannels(config,call),app=createMcpExpressApp({host:'127.0.0.1'}),abort=new AbortController();
 app.use((req,res,next)=>{const actual=Buffer.from((req.headers.authorization||'').replace(/^Bearer /,'')),expected=Buffer.from(token);if(actual.length!==expected.length||!crypto.timingSafeEqual(actual,expected))return res.status(401).end();next()});
 const outputSchema={state:z.enum(['accepted','pending_confirmation','sent','delivered','failed','unknown']),receipt:z.string().optional(),error:z.string().optional()};
@@ -19,7 +19,7 @@ app.post('/mcp',async(req,res)=>{
  for(const [name,handler,inputSchema] of [['message_send',channels.send,{connectionId:z.string(),idempotencyKey:z.string(),target:z.record(z.string(),z.string()),text:z.string().max(16000)}],['message_receipt',channels.receipt,{connectionId:z.string(),idempotencyKey:z.string(),receipt:z.string(),state:z.string(),target:z.record(z.string(),z.string()),text:z.string().max(16000).optional()}]]){
   server.registerTool(name,{inputSchema,outputSchema},async (input,extra)=>{const result=await handler(input,{signal:extra.signal});return{content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result}})
  }
- server.registerTool('operations_material_versions',{inputSchema:{connectionId:z.string(),ids:z.array(z.string().regex(/^[1-9][0-9]{0,18}$/)).max(5000)}},async(input,extra)=>{
+ server.registerTool('operations_material_versions',{inputSchema:{connectionId:z.string(),ids:z.array(z.string().regex(/^[1-9][0-9]{0,18}$/)).max(5000),drafts:z.array(z.object({title:z.string(),appId:z.string(),page:z.string()})).max(5000).optional()}},async(input,extra)=>{
   const result=await channels.operationsMaterialVersions(input,{signal:extra.signal});
   return{content:[{type:'text',text:'CRM material versions'}],structuredContent:result};
  });

@@ -26,11 +26,8 @@ func TestCRMBasicsUseOfficialMCPToolsAndSchemas(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	wanted := map[string]int{"data_refresh": 0, "batch_generate": 0, "crm_push": 0, "crm_receipts": 0}
+	wanted := map[string]int{"strategy_select": 0, "data_refresh": 0, "batch_generate": 0, "crm_push": 0, "crm_receipts": 0}
 	for _, tool := range result.Tools {
-		if tool.Name == "strategy_select" {
-			t.Fatal("strategy selection exposed by the CRM basics candidate")
-		}
 		if _, ok := wanted[tool.Name]; ok {
 			wanted[tool.Name]++
 			if tool.InputSchema == nil || tool.OutputSchema == nil {

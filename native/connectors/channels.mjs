@@ -128,10 +128,10 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   const dispatcher=new lark.EventDispatcher({}).register({'im.message.receive_v1':event=>ingestFeishu(c,event,workerCall)});
   await ws.start({eventDispatcher:dispatcher});if(!signal.aborted)await new Promise(r=>signal.addEventListener('abort',r,{once:true}));ws.close({force:true});
  }
- return{send,receipt,operationsMaterialVersions:({connectionId,ids},options)=>{
+ return{send,receipt,operationsMaterialVersions:({connectionId,ids,drafts},options)=>{
   const crm=crms.get(connectionId);
   if(!crm)throw Error('CRM material connector unavailable');
-  return crm.materialVersions({ids},options);
+  return crm.materialVersions({ids,drafts},options);
  },operationsBatch:({connectionId,runId},send,options)=>{
   const crm=crms.get(connectionId);
   if(!crm)throw Error('CRM batch connector unavailable');

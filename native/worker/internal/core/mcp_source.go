@@ -62,6 +62,14 @@ func (s *Store) ReadOperationsDirectory(ctx context.Context, p Principal, resour
 }
 
 func (s *Store) OperationsPackageAction(ctx context.Context, run Run, view string, params map[string]string) (json.RawMessage, error) {
+	var migrated int
+	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM wb_settings WHERE id=? AND JSON_TYPE(JSON_EXTRACT(body,'$.cycle'))='OBJECT'`, "operations-"+run.Principal.ProjectID).Scan(&migrated); e != nil {
+		return nil, e
+	}
+	if migrated != 0 {
+		return nil, ErrDenied
+	}
+
 	operation := "operations_package"
 	if view == "package_edit" {
 		operation = "operations_package_edit"

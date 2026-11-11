@@ -148,7 +148,7 @@ func TestRealOperationsRecoveryKeepsOriginalReceipts(t *testing.T) {
 		t.Fatal("the outdated decision was reused")
 	}
 	call("POST", "/operations/send", request, &started)
-	if started != retry {
+	if started.RunID != retry.RunID {
 		t.Fatal("duplicate click created another manifest", started, retry)
 	}
 	newRun, err := s.Run(ctx, p, retry.RunID)
@@ -215,5 +215,143 @@ func TestRealOperationsRecoveryKeepsOriginalReceipts(t *testing.T) {
 	must(s.SetGrant(ctx, owner, core.Grant{ResourceID: newLibrary.ResourceID, ProjectID: id}))
 	if _, err = s.Run(ctx, p, generationID); !errors.Is(err, core.ErrDenied) {
 		t.Fatal("new run failed to retain authorization for the library it used", err)
+	}
+
+	// Production's old original schedule is not stored in cfg.Strategy.ID.
+	// Installing the fixed cycle must still retire it, and only its Session.
+	oldSchedule, otherSchedule, resourceSchedule := "program-"+uuid.NewString(), "program-"+uuid.NewString(), "program-"+uuid.NewString()
+	for _, old := range []string{oldSchedule, otherSchedule, resourceSchedule} {
+		_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{ID: old,
+			Spec:   client.ScheduleSpec{Calendars: []client.ScheduleCalendarSpec{{Year: []client.ScheduleRange{{Start: 2099}}}}},
+			Action: &client.ScheduleWorkflowAction{ID: old, Workflow: "ScheduledOperations", TaskQueue: engine.BatchQueue}})
+		must(err)
+		defer temporal.ScheduleClient().GetHandle(ctx, old).Delete(context.Background())
+		session := p.SessionID
+		if old == otherSchedule {
+			session = "another-session"
+		}
+		strategy := "hxc:onboarding"
+		if old == resourceSchedule {
+			strategy = ""
+		}
+		body, _ := json.Marshal(scheduleView{ID: old, SessionID: session, ProjectID: id, Strategy: strategy})
+		_, err = s.DB.ExecContext(ctx, `INSERT INTO wb_settings VALUES(?,?)`, old, string(body))
+		must(err)
+	}
+	connection := id + "-original"
+	must(s.PutConnection(ctx, owner, core.Connection{ID: connection, Name: "isolated original", Kind: "operations-original", SecretEnv: "WORKBENCH_SOURCE_ISOLATED_ORIGINAL"}))
+	selections := []core.ResourceSelection{}
+	for _, name := range []string{"raw", "history", "strategies", "methods"} {
+		ref := core.Ref{ResourceID: id + "-" + name, Section: "main"}
+		v := resource(ref, "value")
+		v.ConnectionID = connection
+		must(s.PutResource(ctx, owner, v))
+		selections = append(selections, core.ResourceSelection{ResourceID: ref.ResourceID, Sections: []string{"main"}, Refresh: true})
+	}
+	cycle := engine.OperationsCycleInput{Principal: p, Sources: selections[:1], HistorySource: &selections[1], StrategySource: &selections[2], MethodSource: &selections[3], Section: "main", StrategyKeys: []string{"hxc:ongoing"}, MethodRefs: map[string]core.RecordRef{}}
+	for _, destination := range []*string{&cycle.CleanDestination, &cycle.SelectedDestination, &cycle.DraftDestination} {
+		*destination = id + "-" + uuid.NewString()[:8]
+		must(s.PutResource(ctx, owner, resource(core.Ref{ResourceID: *destination, Section: "main"}, "value")))
+	}
+	for _, key := range []string{"personal_followup", "new_user_onboarding", "weekly_review", "content_service", "activation_recall", "sales_assist"} {
+		cycle.MethodRefs[key] = core.RecordRef{Ref: core.Ref{ResourceID: selections[3].ResourceID, Section: "main"}, ID: key}
+	}
+	cfg.Strategy.ID = ""
+	cfg.Profile.ID = "program-" + uuid.NewString() // Already deleted legacy job.
+	cfg.ReadSource = true
+	at, err := time.Parse("15:04", "23:59")
+	must(err)
+	installed, err := a.configureLocalOperationsSchedule(ctx, cfg, "hxc:ongoing", at, cycle)
+	must(err)
+	defer temporal.ScheduleClient().GetHandle(ctx, installed.ID).Delete(context.Background())
+	for schedule, paused := range map[string]bool{oldSchedule: true, otherSchedule: false, resourceSchedule: false, installed.ID: false} {
+		state, err := temporal.ScheduleClient().GetHandle(ctx, schedule).Describe(ctx)
+		must(err)
+		if state.Schedule.State.Paused != paused {
+			t.Fatalf("wrong migration state for %s: paused=%v", schedule, state.Schedule.State.Paused)
+		}
+	}
+	// Two owner changes use the same lock as the old separate schedule editor.
+	// Their final saved configuration must describe the sole active cycle.
+	ownerCall := func(path string, input any) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(input)
+		req := httptest.NewRequest("POST", path, bytes.NewReader(body)).WithContext(ctx)
+		req.Header.Set("Authorization", "Bearer "+a.Token)
+		req.Header.Set("X-Workbench-Kind", "owner")
+		req.Header.Set("X-Workbench-Session", owner.SessionID)
+		out := httptest.NewRecorder()
+		a.Handler().ServeHTTP(out, req)
+		return out
+	}
+	configure := func(strategy string) *httptest.ResponseRecorder {
+		input := cycle
+		input.StrategyKeys = []string{strategy}
+		return ownerCall("/operations/original-schedule", map[string]any{"projectId": id, "strategy": strategy, "time": "23:59", "cycle": input})
+	}
+	start, results := make(chan struct{}), make(chan *httptest.ResponseRecorder, 2)
+	for _, strategy := range []string{"hxc:onboarding", "hxc:expiry"} {
+		go func(strategy string) {
+			<-start
+			results <- configure(strategy)
+		}(strategy)
+	}
+	close(start)
+	var changed []string
+	for i := 0; i < 2; i++ {
+		response := <-results
+		if response.Code != 200 {
+			t.Fatalf("concurrent configuration: %d %s", response.Code, response.Body.String())
+		}
+		var view scheduleView
+		must(json.Unmarshal(response.Body.Bytes(), &view))
+		changed = append(changed, view.ID)
+		defer temporal.ScheduleClient().GetHandle(ctx, view.ID).Delete(context.Background())
+	}
+	final, err := a.readOperations(ctx, id)
+	must(err)
+	for _, schedule := range append(changed, installed.ID) {
+		state, err := temporal.ScheduleClient().GetHandle(ctx, schedule).Describe(ctx)
+		must(err)
+		if state.Schedule.State.Paused == (schedule == final.Strategy.ID) {
+			t.Fatal("concurrent configuration left a second active cycle")
+		}
+	}
+	if response := ownerCall("/schedules/pause", map[string]any{"id": installed.ID, "paused": false}); response.Code != 409 {
+		t.Fatalf("replaced cycle was directly resumed: %d %s", response.Code, response.Body.String())
+	}
+	if response := ownerCall("/schedules/pause", map[string]any{"id": final.Strategy.ID, "paused": false}); response.Code != 200 {
+		t.Fatalf("current cycle cannot resume: %d %s", response.Code, response.Body.String())
+	}
+	if response := ownerCall("/schedules/pause", map[string]any{"id": resourceSchedule, "paused": false}); response.Code != 200 {
+		t.Fatalf("ordinary resource program cannot resume: %d %s", response.Code, response.Body.String())
+	}
+	if response := configure("hxc:ongoing"); response.Code != 200 {
+		t.Fatalf("switch back: %d %s", response.Code, response.Body.String())
+	}
+	restored, err := temporal.ScheduleClient().GetHandle(ctx, installed.ID).Describe(ctx)
+	must(err)
+	if restored.Schedule.State.Paused {
+		t.Fatal("switching back retained a migration pause")
+	}
+	if response := ownerCall("/schedules/pause", map[string]any{"id": installed.ID, "paused": true}); response.Code != 200 {
+		t.Fatalf("owner pause: %d %s", response.Code, response.Body.String())
+	}
+	if response := configure("hxc:onboarding"); response.Code != 200 {
+		t.Fatalf("switch after owner pause: %d %s", response.Code, response.Body.String())
+	}
+	restored, err = temporal.ScheduleClient().GetHandle(ctx, installed.ID).Describe(ctx)
+	must(err)
+	if !restored.Schedule.State.Paused || restored.Schedule.State.Note != "本人暂停" {
+		t.Fatal("migration overwrote the owner's pause")
+	}
+	response := configure("hxc:ongoing")
+	var pausedView scheduleView
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &pausedView) != nil || !pausedView.Paused {
+		t.Fatalf("owner pause must be retained and reported: %d %s", response.Code, response.Body.String())
+	}
+	restored, err = temporal.ScheduleClient().GetHandle(ctx, installed.ID).Describe(ctx)
+	must(err)
+	if !restored.Schedule.State.Paused {
+		t.Fatal("reconfiguration resumed an owner-paused schedule")
 	}
 }

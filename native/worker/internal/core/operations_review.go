@@ -11,11 +11,13 @@ import (
 
 const OperationsReviewItem = "original-review"
 const OperationsBatchResultItem = "original-batch-result"
+const OperationsBatchCancelItem = "operations-batch-cancelled"
 const operationsRowPrefix = "original-review-row-"
 
 var operationsActionKey = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 type OperationsReview struct {
+	Exclusive                  bool `json:"exclusive,omitempty"`
 	Package, Week, Run, Digest string
 	IdentityVersion            string
 	Version, Confirm, Edit     string
@@ -102,6 +104,12 @@ func (s *Store) OperationsReview(ctx context.Context, run string) (OperationsRev
 }
 
 func (s *Store) PublishOperationsReview(ctx context.Context, run string, next OperationsReview, rows []OperationsReviewRow) error {
+	return s.publishOperationsReview(ctx, run, next, rows, nil)
+}
+func (s *Store) PublishLocalOperationsReview(ctx context.Context, run string, next OperationsReview, rows []OperationsReviewRow, roster ItemResult) error {
+	return s.publishOperationsReview(ctx, run, next, rows, &roster)
+}
+func (s *Store) publishOperationsReview(ctx context.Context, run string, next OperationsReview, rows []OperationsReviewRow, roster *ItemResult) error {
 	if !operationsActionKey.MatchString(next.Digest) || len(rows) > 5000 {
 		return ErrInvalid
 	}
@@ -149,6 +157,12 @@ func (s *Store) PublishOperationsReview(ctx context.Context, run string, next Op
 	if err = storeOperationsItem(ctx, tx, run, OperationsReviewItem, next); err != nil {
 		return err
 	}
+	if roster != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO wb_items(run_id,item_id,state,body) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE state=VALUES(state),body=VALUES(body)`, run, roster.ID, roster.State, jsonText(roster)); err != nil {
+			return err
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -162,6 +176,14 @@ func (s *Store) BeginOperationsEdit(ctx context.Context, run, edit, digest, key 
 	defer tx.Rollback()
 	if err = guardWrite(ctx, tx); err != nil {
 		return err
+	}
+	var cycle string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(JSON_TYPE(JSON_EXTRACT(s.body,'$.cycle')),'NULL') FROM wb_settings s JOIN wb_runs r ON s.id=CONCAT('operations-',r.project_id) WHERE r.id=? FOR SHARE`, run).Scan(&cycle)
+	if err != nil {
+		return err
+	}
+	if cycle != "NULL" {
+		return ErrDenied
 	}
 	head, err := operationsItem[OperationsReview](ctx, tx, run, OperationsReviewItem, " FOR UPDATE")
 	if err != nil {
@@ -226,6 +248,14 @@ func (s *Store) ConfirmOperationsReview(ctx context.Context, parent Run, confirm
 	if err = guardWrite(ctx, tx); err != nil {
 		return err
 	}
+	var cancelled string
+	err = tx.QueryRowContext(ctx, `SELECT item_id FROM wb_items WHERE run_id=? AND item_id=? FOR SHARE`, confirm, OperationsBatchCancelItem).Scan(&cancelled)
+	if err == nil {
+		return ErrConflict
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
 	head, err := operationsItem[OperationsReview](ctx, tx, parent.ID, OperationsReviewItem, " FOR UPDATE")
 	if err != nil {
 		return err
@@ -240,14 +270,52 @@ func (s *Store) ConfirmOperationsReview(ctx context.Context, parent Run, confirm
 		Staff      string `json:"staffId"`
 		Transport  string
 		ReadSource bool
+		Cycle      json.RawMessage `json:"cycle"`
 	}
 	config, err = scanJSON[struct {
 		Staff      string `json:"staffId"`
 		Transport  string
 		ReadSource bool
+		Cycle      json.RawMessage `json:"cycle"`
 	}](tx.QueryRowContext(ctx, `SELECT body FROM wb_settings WHERE id=? FOR SHARE`, "operations-"+parent.Principal.ProjectID))
 	if err != nil || !config.ReadSource || config.Staff != staff || config.Transport != transport {
 		return ErrConflict
+	}
+	if len(config.Cycle) != 0 && string(config.Cycle) != "null" && !IsLocalOperations(parent) {
+		return ErrDenied
+	}
+	if IsLocalOperations(parent) {
+		if err = AuthorizeAll(ctx, transactionGate{tx}, parent.Principal, UnionRefs(parent.Sources, parent.Lineage)); err != nil {
+			return err
+		}
+		if parent.Operations == nil || parent.Operations.Review == nil {
+			return ErrInvalid
+		}
+		pending := []Ref{parent.Operations.Review.Selection}
+		seen := map[Ref]bool{}
+		for len(pending) > 0 {
+			ref := pending[len(pending)-1]
+			pending = pending[:len(pending)-1]
+			if seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			if len(seen) > MaxSourceRefs {
+				return ErrInvalid
+			}
+			resource, e := (transactionGate{tx}).Resource(ctx, ref.ResourceID)
+			if e != nil {
+				return e
+			}
+			if resource.CurrentVersion != ref.Version {
+				return ErrConflict
+			}
+			snap, e := (transactionGate{tx}).Snapshot(ctx, ref.ResourceID, ref.Version)
+			if e != nil {
+				return e
+			}
+			pending = append(pending, snap.Dependencies...)
+		}
 	}
 	rows, err := operationsReviewRows(ctx, tx, parent.ID, "", 5001, false)
 	if err != nil {
@@ -261,6 +329,9 @@ func (s *Store) ConfirmOperationsReview(ctx context.Context, parent Run, confirm
 		active[key] = true
 	}
 	for _, row := range rows {
+		if row.Blocked != "" {
+			continue
+		}
 		if !active[row.Key] || (row.ExpiresAt != nil && !time.Now().Before(*row.ExpiresAt)) {
 			row.Blocked = "原服务动作已经失效。"
 			if err = storeOperationsItem(ctx, tx, parent.ID, operationsRowPrefix+row.Key, row); err != nil {
@@ -288,6 +359,25 @@ func (s *Store) ConfirmOperationsReview(ctx context.Context, parent Run, confirm
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) OperationsBatchStopped(ctx context.Context, id string) (bool, error) {
+	_, err := s.Item(ctx, id, OperationsBatchCancelItem)
+	if IsMissing(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *Store) StopOperationsBatch(ctx context.Context, p Principal, id string) error {
+	r, e := s.Run(ctx, p, id)
+	if e != nil {
+		return e
+	}
+	if r.Operation != "operations_batch_confirm" {
+		return ErrInvalid
+	}
+	return s.RecordItem(ctx, id, ItemResult{ID: OperationsBatchCancelItem, State: "succeeded", InputHash: Digest(id), Text: "Cancelled before further submission; existing external results remain queryable."})
 }
 
 func (s *Store) OperationsBatchManifest(ctx context.Context, id string) (Run, []OperationsBatchItem, error) {
@@ -345,4 +435,57 @@ func (s *Store) SaveOperationsBatchResult(ctx context.Context, run string, resul
 		return err
 	}
 	return tx.Commit()
+}
+
+// Local edits share the review row/head transaction. The original source and
+// frozen generated snapshot are never rewritten, and an old confirmation
+// cannot approve the edited body.
+func (s *Store) EditLocalOperationsReview(ctx context.Context, p Principal, run, key, digest, text string, revision int) (OperationsReview, OperationsReviewRow, error) {
+	var head OperationsReview
+	var row OperationsReviewRow
+	parent, e := s.Run(ctx, p, run)
+	if e != nil || !IsLocalOperations(parent) {
+		return head, row, ErrDenied
+	}
+	tx, e := s.DB.BeginTx(ctx, nil)
+	if e != nil {
+		return head, row, e
+	}
+	defer tx.Rollback()
+	head, e = operationsItem[OperationsReview](ctx, tx, run, OperationsReviewItem, " FOR UPDATE")
+	if e != nil {
+		return head, row, e
+	}
+	if head.Confirm != "" || head.Edit != "" || head.Digest != digest {
+		return head, row, ErrConflict
+	}
+	if e = AuthorizeAll(ctx, transactionGate{tx}, p, UnionRefs(parent.Sources, parent.Lineage)); e != nil {
+		return head, row, e
+	}
+	row, e = operationsItem[OperationsReviewRow](ctx, tx, run, operationsRowPrefix+key, " FOR UPDATE")
+	if e != nil {
+		return head, row, e
+	}
+	if row.Revision != revision || !row.Editable || (row.ExpiresAt != nil && !time.Now().Before(*row.ExpiresAt)) {
+		return head, row, ErrConflict
+	}
+	if row.Message == text {
+		return head, row, tx.Commit()
+	}
+	row.Message = text
+	row.Revision++
+	row.Edited = true
+	if e = storeOperationsItem(ctx, tx, run, operationsRowPrefix+key, row); e != nil {
+		return head, row, e
+	}
+	rows, e := operationsReviewRows(ctx, tx, run, "", 5001, false)
+	if e != nil {
+		return head, row, e
+	}
+	head.Digest = Digest(rows)
+	head.Version = Digest([]string{head.Digest, Digest(rows)})
+	if e = storeOperationsItem(ctx, tx, run, OperationsReviewItem, head); e != nil {
+		return head, row, e
+	}
+	return head, row, tx.Commit()
 }

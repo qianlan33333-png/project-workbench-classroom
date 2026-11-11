@@ -199,6 +199,26 @@ func (a *Activities) EditOriginalOperationsItem(ctx context.Context, id string) 
 	if err != nil || run.Operation != "operations_package_edit" {
 		return nil, failure(errors.Join(err, core.ErrDenied))
 	}
+	if daily := sharedString(run, "daily"); daily != "" {
+		parent, e := a.Store.Run(ctx, run.Principal, daily)
+		if e != nil {
+			return nil, e
+		}
+		if core.IsLocalOperations(parent) {
+			revision, e := strconv.Atoi(sharedString(run, "revision"))
+			if e != nil {
+				return nil, failure(core.ErrInvalid)
+			}
+			head, row, e := a.Store.EditLocalOperationsReview(ctx, run.Principal, daily, sharedString(run, "item"), sharedString(run, "digest"), sharedString(run, "text"), revision)
+			if errors.Is(e, core.ErrConflict) {
+				return json.RawMessage(`{"state":"source_changed"}`), nil
+			}
+			if e != nil {
+				return nil, e
+			}
+			return json.Marshal(map[string]any{"state": "saved", "digest": head.Digest, "revision": row.Revision})
+		}
+	}
 	params, err := originalPackageParams(run)
 	if err != nil {
 		return nil, failure(err)

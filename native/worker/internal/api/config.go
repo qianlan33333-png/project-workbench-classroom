@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -247,7 +248,25 @@ func (a *Server) moreTools(s *mcp.Server, bound core.Principal) {
 			_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.DispatchBatch, engine.DispatchBatchInput{RunID: r.ID})
 			return nil, RunRef{RunID: r.ID}, accepted(e)
 		}
-		if r.Operation != "generate" && r.Operation != "pipeline" && r.Operation != "sync" {
+		if r.Operation == "operations_cycle" {
+			checkpoint, e := a.Store.Checkpoint(ctx, r, "operations-cycle")
+			if e != nil {
+				return nil, RunRef{}, e
+			}
+			raw, _ := json.Marshal(checkpoint.Input)
+			var input engine.OperationsCycleInput
+			if json.Unmarshal(raw, &input) != nil {
+				return nil, RunRef{}, core.ErrInvalid
+			}
+			input.Resume = true
+			_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.OperationsCycle, input)
+			return nil, RunRef{RunID: r.ID}, accepted(e)
+		}
+		if core.IsLocalOperations(r) {
+			_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.Principal.ProjectID, Operation: "operations_local_review"})
+			return nil, RunRef{RunID: r.ID}, accepted(e)
+		}
+		if r.Operation != "generate" && r.Operation != "pipeline" && r.Operation != "sync" && r.Operation != "data_refresh" && r.Operation != "strategy_select" {
 			return nil, RunRef{}, core.ErrInvalid
 		}
 		_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.Principal.ProjectID, Operation: r.Operation})

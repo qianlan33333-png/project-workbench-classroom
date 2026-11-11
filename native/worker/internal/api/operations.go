@@ -13,21 +13,23 @@ import (
 	"github.com/google/uuid"
 	"go.temporal.io/api/serviceerror"
 	"workbench-native/internal/core"
+	"workbench-native/internal/engine"
 )
 
 const onboardingTitle = "新人前 7 天承接"
 
 type operationsConfig struct {
-	ReadSource  bool               `json:"readSource,omitempty"`
-	ProjectID   string             `json:"projectId"`
-	Input       core.Ref           `json:"input"`
-	Eligibility core.Ref           `json:"eligibility"`
-	Check       string             `json:"check"`
-	Knowledge   core.Ref           `json:"knowledge"`
-	Transport   string             `json:"transport"`
-	Staff       string             `json:"staffId"`
-	Profile     operationsSchedule `json:"profile"`
-	Strategy    operationsSchedule `json:"strategy"`
+	Cycle       *engine.OperationsCycleInput `json:"cycle,omitempty"`
+	ReadSource  bool                         `json:"readSource,omitempty"`
+	ProjectID   string                       `json:"projectId"`
+	Input       core.Ref                     `json:"input"`
+	Eligibility core.Ref                     `json:"eligibility"`
+	Check       string                       `json:"check"`
+	Knowledge   core.Ref                     `json:"knowledge"`
+	Transport   string                       `json:"transport"`
+	Staff       string                       `json:"staffId"`
+	Profile     operationsSchedule           `json:"profile"`
+	Strategy    operationsSchedule           `json:"strategy"`
 }
 
 type operationsSchedule struct {
@@ -400,6 +402,9 @@ func (a *Server) saveOperationsSchedule(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *Server) configureOperationsSchedule(ctx context.Context, cfg operationsConfig, kind string, schedule operationsSchedule) (string, error) {
+	if cfg.Cycle != nil {
+		return "", core.ErrConflict
+	}
 	t, err := time.Parse("15:04", schedule.Time)
 	if err != nil {
 		return "", err

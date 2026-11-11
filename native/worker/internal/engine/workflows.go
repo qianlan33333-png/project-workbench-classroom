@@ -243,11 +243,15 @@ func (a *Activities) GenerateItem(ctx context.Context, in ItemInput) error {
 	if e != nil {
 		return e
 	}
+	method, e := r.MethodFor(records)
+	if e != nil {
+		return failure(e)
+	}
 	hash := core.Digest(struct {
 		Method  core.Method
 		Records []core.Record
-	}{r.Method, records})
-	input, e := core.PrepareInput(r.Method, records)
+	}{method, records})
+	input, e := core.PrepareInput(method, records)
 	if e != nil {
 		return a.Store.RecordItem(ctx, r.ID, core.ItemResult{ID: in.ID, State: "failed", Error: e.Error(), InputHash: hash})
 	}
@@ -268,14 +272,21 @@ func (a *Activities) GenerateItem(ctx context.Context, in ItemInput) error {
 			}
 		}
 	}()
-	result, e := a.Model.Generate(ctx, ModelRequest{Lane: "batch", RunID: r.ID, ItemID: in.ID, Method: r.Method, Input: input})
+	fixed, isFixed, e := method.FixedOutput(records)
+	if e != nil {
+		return failure(e)
+	}
+	result := ModelResult{Text: fixed}
+	if !isFixed {
+		result, e = a.Model.Generate(ctx, ModelRequest{Lane: "batch", RunID: r.ID, ItemID: in.ID, Method: method, Input: input})
+	}
 	if e != nil {
 		return e
 	}
 	if _, e = a.Store.ExecutionRun(ctx, r.ID); e != nil {
 		return failure(e)
 	}
-	if e = r.Method.ValidateOutput(result.Text); e != nil {
+	if e = method.ValidateOutput(result.Text); e != nil {
 		return e
 	}
 	v := core.ItemResult{ID: in.ID, State: "succeeded", Text: result.Text, InputHash: hash, Usage: result.Usage}
@@ -299,7 +310,15 @@ func (a *Activities) stageOutput(ctx context.Context, r core.Run, v core.ItemRes
 	if snap.State == "published" {
 		return nil
 	}
-	return failure(a.Store.Stage(ctx, r.Principal, r.Destination, r.ID, []core.Record{{ID: v.ID, Fields: map[string]any{"text": v.Text, "methodDigest": r.Method.Digest, "inputHash": v.InputHash}}}))
+	records, e := a.Store.Prepared(ctx, r.ID, v.ID)
+	if e != nil {
+		return e
+	}
+	method, e := r.MethodFor(records)
+	if e != nil {
+		return failure(e)
+	}
+	return failure(a.Store.Stage(ctx, r.Principal, r.Destination, r.ID, []core.Record{{ID: v.ID, Fields: map[string]any{"text": v.Text, "methodDigest": method.Digest, "inputHash": v.InputHash}}}))
 }
 func (a *Activities) RecordFailure(ctx context.Context, in FailedItem) error {
 	ctx = core.WithFence(ctx, in.Fence)
@@ -311,10 +330,14 @@ func (a *Activities) RecordFailure(ctx context.Context, in FailedItem) error {
 	if e != nil {
 		return e
 	}
+	method, e := r.MethodFor(records)
+	if e != nil {
+		return a.Store.RecordItem(ctx, r.ID, core.ItemResult{ID: in.ID, State: "failed", Error: in.Error, InputHash: core.Digest([]any{r.Methods, r.MethodPointer, records})})
+	}
 	hash := core.Digest(struct {
 		Method  core.Method
 		Records []core.Record
-	}{r.Method, records})
+	}{method, records})
 	return a.Store.RecordItem(ctx, r.ID, core.ItemResult{ID: in.ID, State: "failed", Error: in.Error, InputHash: hash})
 }
 func (a *Activities) FinishBatch(ctx context.Context, in TaskInput) error {

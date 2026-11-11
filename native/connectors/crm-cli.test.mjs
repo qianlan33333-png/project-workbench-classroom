@@ -126,7 +126,7 @@ test('a lost reservation response reads back only the caller’s own attempt',as
  }
 });
 
-function operationsBatchFixture(count,{lostApproval=false,invalid=false,merged=false,edited=false,materialDrift=false,lostCreate=false}={}){
+function operationsBatchFixture(count,{lostApproval=false,invalid=false,merged=false,edited=false,materialDrift=false,lostCreate=false,onCheck,onClaim,onApproving}={}){
  const states=new Map(),calls=[];
  const runId='12345678-1234-4abc-8123-123456789abc';
  const cover=crypto.createHash('sha256').update(JSON.stringify([303,'cover-version'])).digest('hex');
@@ -168,11 +168,16 @@ function operationsBatchFixture(count,{lostApproval=false,invalid=false,merged=f
   }
  };
  const workerCall=async(path,input)=>{
-  if(path.startsWith('/operations/batch-manifest?'))return {staff:'20',rows,sendEnabled:true};
+  if(path.startsWith('/operations/batch-manifest?')){
+   const enabled=path.includes('check=write')&&onCheck?await onCheck():true;
+   return {staff:'20',rows,sendEnabled:enabled};
+  }
   if(path.startsWith('/connector-state?'))return states.get(new URL(path,'http://local').searchParams.get('id'))||{};
   assert.equal(path,'/connector-state/compare');
   assert.deepEqual(states.get(input.id)||{},input.expected);
   states.set(input.id,input.value);
+  if(input.value.phase==='creating'&&onClaim)await onClaim();
+  if(input.value.phase==='approving'&&onApproving)await onApproving();
   return {ok:true};
  };
  const crm=createCRM({id:'batch-test',allowedCustomerIds:Array.from({length:count},(_,i)=>i+1)},workerCall,invoke);
@@ -246,6 +251,126 @@ test('a verified pending original plan can continue after losing the create resp
  const f=operationsBatchFixture(2,{lostCreate:true});
  assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'unknown');
  assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'accepted');
+ assert.equal(f.calls.filter(c=>c.operation==='admin.createAIAssistantPlan').length,1);
+ assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,1);
+});
+
+test('source-owned report card uses only CRM CLI and recovers a lost material response without recreating',async()=>{
+ const states=new Map(),calls=[];let created,visible=false;
+ const worker=async(path,body)=>{
+  if(!body)return structuredClone(states.get(new URL('http://test'+path).searchParams.get('id'))||{});
+  assert.deepEqual(states.get(body.id)||{},body.expected);states.set(body.id,structuredClone(body.value));return{};
+ };
+ const base={enabled:true,thumbnail_status:'ready',thumb_image_id:303,version:1,app_id:'wx-owned',title:'Existing cover',page_path:'pages/home/home'};
+ const invoke=async(op,args)=>{
+  calls.push(op);
+  if(op==='admin.getMediaMiniProgram')return{item:String(args.params.id)==='20'?{...base,id:20}:{...created}};
+  if(op==='admin.getMediaImage')return{item:{id:303,enabled:true,updated_at:'2026-11-11T08:00:00Z'}};
+  if(op==='admin.listMediaMiniPrograms')return{items:visible&&created?[created]:[],has_more:false};
+  if(op==='admin.createMediaMiniProgram'){
+   assert.match(args.key,/^crm-material-/);
+   created={...base,id:21,...args.body,app_id:args.body.appid,page_path:args.body.pagepath};
+   throw Error('response lost');
+  }
+  throw Error('Unexpected operation '+op);
+ };
+ const crm=createCRM({id:'crm',allowedCustomerIds:[10],materialTemplates:{'wx-owned':20}},worker,invoke);
+ const request={ids:[],drafts:[{title:'报告',appId:'wx-owned',page:'pages/outcome/outcome?id=original-report'}]};
+ await assert.rejects(crm.materialVersions(request),/original readback/);
+ await assert.rejects(crm.materialVersions(request),/original readback/);
+ visible=true;
+ const first=await crm.materialVersions(request),again=await crm.materialVersions(request);
+ assert.equal(first.cards[0].id,'21');assert.deepEqual(first,again);
+ assert.equal(calls.filter(x=>x==='admin.createMediaMiniProgram').length,1);
+ assert.ok(calls.every(x=>/Media/.test(x)));
+ await assert.rejects(crm.materialVersions({ids:[],drafts:[{...request.drafts[0],appId:'unregistered'}]}),/template missing/);
+ await assert.rejects(crm.materialVersions({ids:[],drafts:[{...request.drafts[0],page:request.drafts[0].page+'&dt=borrowed'}]}),/Invalid source material/);
+});
+
+test('material preparation uses one concurrent claim and releases only proven pre-create failures',async()=>{
+ for(const scenario of ['concurrent','canceled','rejected','lost_claim']){
+  const states=new Map(),controller=new AbortController();let creates=0,item,first=true;
+  const template={id:20,name:'template',title:'template',app_id:'wx-owned',page_path:'pages/home/home',version:1,enabled:true,thumbnail_status:'ready',thumb_image_id:30};
+  const worker=async(path,body)=>{
+   if(!body)return structuredClone(states.get(new URL('http://test'+path).searchParams.get('id'))||{});
+   assert.deepEqual(states.get(body.id)||{},body.expected);states.set(body.id,structuredClone(body.value));
+   if(body.value.phase==='creating'&&first){first=false;if(scenario==='canceled')controller.abort();if(scenario==='lost_claim')throw Error('lost CAS response')}
+   return{ok:true};
+  };
+  const invoke=async(op,args)=>{
+   if(op==='admin.getMediaMiniProgram')return{item:String(args.params.id)==='20'?template:item};
+   if(op==='admin.getMediaImage')return{item:{id:30,enabled:true,updated_at:'2026-11-11T00:00:00Z'}};
+   if(op==='admin.listMediaMiniPrograms')return{items:item?[item]:[],has_more:false};
+   if(op==='admin.createMediaMiniProgram'){
+    creates++;if(scenario==='rejected'&&creates===1)throw Object.assign(Error('denied'),{crmRejected:true,status:403});
+    item={...template,...args.body,id:21,app_id:args.body.appid,page_path:args.body.pagepath};return{item};
+   }
+   throw Error('unexpected '+op);
+  };
+  const crm=createCRM({id:'crm',allowedCustomerIds:[10],materialTemplates:{'wx-owned':20}},worker,invoke);
+  const request={ids:[],drafts:[{title:'报告',appId:'wx-owned',page:'pages/outcome/outcome?id=original-report'}]};
+  if(scenario==='concurrent'){
+   const result=await Promise.allSettled([crm.materialVersions(request),crm.materialVersions(request)]);
+   assert.ok(result.some(x=>x.status==='fulfilled'));assert.equal(creates,1);
+  }else if(scenario==='canceled'){
+   await assert.rejects(crm.materialVersions(request,{signal:controller.signal}));assert.equal(creates,0);
+  }else if(scenario==='rejected')await assert.rejects(crm.materialVersions(request),/denied/);
+  const result=await crm.materialVersions(request);assert.equal(result.cards[0].id,'21');
+  assert.equal(creates,scenario==='rejected'?2:1);
+ }
+});
+
+
+test('one confirmed batch survives temporary source failure without another confirmation or plan',async()=>{
+ for(const phase of [1,2]){
+  let checks=0;
+  const f=operationsBatchFixture(2,{onCheck:()=>{if(++checks===phase)throw Error('temporary read failure');return true}});
+  if(phase===1)await assert.rejects(f.crm.batch({runId:f.runId},true),/temporary read/);
+  else assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'unknown');
+  await f.crm.batch({runId:f.runId},false);
+  assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,0);
+  assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'accepted');
+  assert.equal(f.calls.filter(c=>c.operation==='admin.createAIAssistantPlan').length,1);
+  assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,1);
+ }
+});
+
+test('cancellation during live source read or reservation leaves no false unknown CRM plan',async()=>{
+ for(const phase of ['source','claim']){
+  const controller=new AbortController();let first=true;
+  const stop=()=>{if(first){first=false;controller.abort()}return true};
+  const f=operationsBatchFixture(2,phase==='source'?{onCheck:stop}:{onClaim:stop});
+  await assert.rejects(f.crm.batch({runId:f.runId},true,{signal:controller.signal}),{name:'AbortError'});
+  assert.equal(f.calls.filter(c=>c.operation==='admin.createAIAssistantPlan').length,0);
+  assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'accepted');
+  assert.equal(f.calls.filter(c=>c.operation==='admin.createAIAssistantPlan').length,1);
+ }
+});
+
+
+test('cancellation before approval invocation preserves the original created plan',async()=>{
+ const controller=new AbortController();let first=true;
+ const f=operationsBatchFixture(2,{onApproving:()=>{if(first){first=false;controller.abort()}}});
+ assert.equal((await f.crm.batch({runId:f.runId},true,{signal:controller.signal})).entries['item-0'].state,'unknown');
+ assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,0);
+ assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'accepted');
+ assert.equal(f.calls.filter(c=>c.operation==='admin.createAIAssistantPlan').length,1);
+ assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,1);
+});
+
+test('an explicit source change stops the original pending plan permanently',async()=>{
+ let checks=0;const f=operationsBatchFixture(2,{onCheck:()=>++checks!==2});
+ assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'failed');
+ assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'failed');
+ assert.equal(f.calls.filter(c=>c.operation==='admin.createAIAssistantPlan').length,1);
+ assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,0);
+});
+
+
+test('a lost approval reservation response reads back this attempt before approving once',async()=>{
+ let first=true;const f=operationsBatchFixture(2,{onApproving:()=>{if(first){first=false;throw Error('lost committed CAS response')}}});
+ assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'accepted');
+ await f.crm.batch({runId:f.runId},true);
  assert.equal(f.calls.filter(c=>c.operation==='admin.createAIAssistantPlan').length,1);
  assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,1);
 });

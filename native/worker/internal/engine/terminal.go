@@ -35,6 +35,12 @@ func (a *Activities) RecordTerminal(ctx context.Context, in Terminal) error {
 		return e
 	}
 	if in.State == "canceled" {
+		// A prepared delivery has not crossed the connector boundary. Persist
+		// its cancellation even if execution stopped before creating a decision.
+		// Submitting/unknown requests retain their original receipt lookup.
+		if _, e := a.Store.DB.ExecContext(ctx, `UPDATE wb_deliveries SET state='failed',body=JSON_SET(body,'$.state','failed','$.error','run_canceled_before_submission') WHERE run_id=? AND state='prepared'`, r.ID); e != nil {
+			return e
+		}
 		if _, e := a.Store.DB.ExecContext(ctx, `UPDATE wb_decisions SET state='canceled',body=JSON_SET(body,'$.state','canceled') WHERE run_id=? AND state='waiting'`, r.ID); e != nil {
 			return e
 		}

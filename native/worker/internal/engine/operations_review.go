@@ -77,62 +77,122 @@ func (a *Activities) publishOperationsReview(ctx context.Context, run core.Run, 
 
 // Reading the CRM card catalog is optional for opening drafts. Only an
 // exact catalog version fixed here can later be submitted for delivery.
-func (a *Activities) bindOperationsMaterialVersions(ctx context.Context, run core.Run, rows []core.OperationsReviewRow) {
+func (a *Activities) bindOperationsMaterialVersions(ctx context.Context, run core.Run, rows []core.OperationsReviewRow) error {
 	ids := []string{}
+	drafts := []map[string]string{}
 	seen := map[string]bool{}
 	for _, row := range rows {
 		for _, card := range row.Materials {
+			if card.ID == "" && core.IsLocalOperations(run) {
+				key := core.Digest([]string{card.AppID, card.Title, card.Page})
+				if !seen[key] {
+					seen[key] = true
+					drafts = append(drafts, map[string]string{"appId": card.AppID, "title": card.Title, "page": card.Page})
+				}
+				continue
+			}
 			if !seen[card.ID] {
 				ids = append(ids, card.ID)
 				seen[card.ID] = true
 			}
 		}
 	}
-	if len(ids) == 0 {
-		return
+	if len(ids) == 0 && len(drafts) == 0 {
+		return nil
 	}
 	var cfg struct{ Transport string }
 	var config []byte
 	if err := a.Store.DB.QueryRowContext(ctx, `SELECT body FROM wb_settings WHERE id=?`, "operations-"+run.Principal.ProjectID).Scan(&config); err != nil || json.Unmarshal(config, &cfg) != nil {
-		return
+		return core.ErrDenied
 	}
 	transport, err := a.Store.Transport(ctx, run.Principal, cfg.Transport)
 	if err != nil || transport.Kind != "crm-cli" {
-		return
+		return core.ErrDenied
 	}
-	bounded, cancel := context.WithTimeout(ctx, 50*time.Second)
-	defer cancel()
-	session, err := connectConnectorWithTimeout(bounded, transport, 45*time.Second)
+	session, err := connectConnectorWithTimeout(ctx, transport, 2*time.Minute)
 	if err != nil {
-		return
+		return err
 	}
 	defer session.Close()
-	result, err := session.CallTool(bounded, &mcp.CallToolParams{Name: "operations_material_versions",
-		Arguments: map[string]any{"connectionId": transport.ID, "ids": ids}})
-	if err != nil || result.IsError {
-		return
+	allCards := []core.OperationsMaterial{}
+	read := func(ids []string, drafts []map[string]string) error {
+		key := "operations-material-" + core.Digest([]any{ids, drafts})
+		var out struct{ Cards []core.OperationsMaterial }
+		if core.IsLocalOperations(run) {
+			frozen, e := a.Store.Checkpoint(ctx, run, key)
+			if e == nil {
+				raw, e := json.Marshal(frozen.Input)
+				if e != nil {
+					return e
+				}
+				if e = json.Unmarshal(raw, &out); e != nil {
+					return e
+				}
+				allCards = append(allCards, out.Cards...)
+				return nil
+			}
+			if !core.IsMissing(e) {
+				return e
+			}
+		}
+		bounded, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		result, e := session.CallTool(bounded, &mcp.CallToolParams{Name: "operations_material_versions",
+			Arguments: map[string]any{"connectionId": transport.ID, "ids": ids, "drafts": drafts}})
+		if e != nil || result.IsError {
+			return errors.Join(e, core.ErrConflict)
+		}
+		raw, e := json.Marshal(result.StructuredContent)
+		if e != nil {
+			return e
+		}
+		if json.Unmarshal(raw, &out) != nil || len(out.Cards) != len(ids)+len(drafts) {
+			return core.ErrConflict
+		}
+		if core.IsLocalOperations(run) {
+			var input map[string]any
+			if e = json.Unmarshal(raw, &input); e != nil {
+				return e
+			}
+			if _, e = a.Store.FreezeCheckpoint(ctx, run, key, core.Checkpoint{Input: input}); e != nil {
+				return e
+			}
+		}
+		allCards = append(allCards, out.Cards...)
+		return nil
 	}
-	raw, err := json.Marshal(result.StructuredContent)
-	if err != nil {
-		return
+	// The existing task checkpoint keeps completed preparations across an
+	// interrupted activity. A retry does not re-create or re-read its prefix.
+	for i := 0; i < len(ids); i += 8 {
+		if e := read(ids[i:min(i+8, len(ids))], []map[string]string{}); e != nil {
+			return e
+		}
 	}
-	var out struct{ Cards []core.OperationsMaterial }
-	if json.Unmarshal(raw, &out) != nil {
-		return
+	for _, draft := range drafts {
+		if e := read([]string{}, []map[string]string{draft}); e != nil {
+			return e
+		}
 	}
 	byID := map[string]core.OperationsMaterial{}
-	for _, card := range out.Cards {
+	for _, card := range allCards {
 		byID[card.ID] = card
+		byID[core.Digest([]string{card.AppID, card.Title, card.Page})] = card
 	}
 	for i := range rows {
 		for j := range rows[i].Materials {
 			card := &rows[i].Materials[j]
 			known := byID[card.ID]
+			if card.ID == "" {
+				known = byID[core.Digest([]string{card.AppID, card.Title, card.Page})]
+			}
 			if known.Title == card.Title && known.AppID == card.AppID && known.Page == card.Page && known.Version > 0 && known.Cover != "" {
-				card.Version, card.Cover = known.Version, known.Cover
+				card.ID, card.Version, card.Cover = known.ID, known.Version, known.Cover
+			} else if core.IsLocalOperations(run) {
+				return core.ErrConflict
 			}
 		}
 	}
+	return nil
 }
 
 func (a *Activities) PublishOriginalOperationsReview(ctx context.Context, id string, batch originalPackage) error {
@@ -190,6 +250,27 @@ func (a *Activities) FreezeOperationsBatch(ctx context.Context, id string) error
 		!OperationsBatchEnabled(sharedString(parent, "strategy"), staff) ||
 		head.Edit != "" || head.Confirm != "" || version != core.OperationsReviewVersion(head, transport, staff, name) {
 		return a.operationsBatchSourceChanged(ctx, id, version)
+	}
+	if core.IsLocalOperations(parent) {
+		stale, e := a.Store.IsStale(ctx, parent.Operations.Review.Selection)
+		if e != nil {
+			return e
+		}
+		if stale {
+			return a.operationsBatchSourceChanged(ctx, id, version)
+		}
+		rows, e := a.Store.OperationsReviewRows(ctx, parent.ID, "", 5001)
+		if e != nil {
+			return e
+		}
+		keys := make([]string, 0, len(rows))
+		for _, row := range rows {
+			keys = append(keys, row.Key)
+		}
+		if e = a.Store.ConfirmOperationsReview(ctx, parent, id, version, staff, transport, name, keys); e != nil {
+			return failure(e)
+		}
+		return a.StartOperationsBatchDelivery(ctx, id)
 	}
 	params := map[string]string{"package": head.Package, "week": head.Week, "run": head.Run, "version": "1",
 		"day": sharedString(parent, "day"), "strategy": sharedString(parent, "strategy"),
@@ -252,6 +333,16 @@ func OperationsBatchDelivery(ctx workflow.Context, id string) error {
 }
 
 func (a *Activities) ReadOrSubmitOperationsBatch(ctx context.Context, id string) error {
+	return a.readOrSubmitOperationsBatch(ctx, id, true)
+}
+func (a *Activities) ReadOnlyOperationsBatch(ctx context.Context, id string) error {
+	return a.readOrSubmitOperationsBatch(ctx, id, false)
+}
+func OperationsBatchReceipt(ctx workflow.Context, id string) error {
+	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{TaskQueue: InteractiveQueue, StartToCloseTimeout: 12 * time.Minute, HeartbeatTimeout: 2 * time.Minute, WaitForCancellation: true, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}})
+	return workflow.ExecuteActivity(ctx, "ReadOnlyOperationsBatch", id).Get(ctx, nil)
+}
+func (a *Activities) readOrSubmitOperationsBatch(ctx context.Context, id string, maySend bool) error {
 	defer keepAlive(ctx)()
 	run, manifest, err := a.Store.OperationsBatchManifest(ctx, id)
 	if err != nil {
@@ -274,7 +365,11 @@ func (a *Activities) ReadOrSubmitOperationsBatch(ctx context.Context, id string)
 	if err != nil || transport.Kind != "crm-cli" {
 		return errors.Join(err, core.ErrDenied)
 	}
-	send := OperationsBatchEnabled(sharedString(run, "strategy"), sharedString(run, "staff"))
+	stopped, e := a.Store.OperationsBatchStopped(ctx, id)
+	if e != nil {
+		return e
+	}
+	send := maySend && !stopped && OperationsBatchEnabled(sharedString(run, "strategy"), sharedString(run, "staff"))
 	session, err := connectConnectorWithTimeout(ctx, transport, 11*time.Minute)
 	if err != nil {
 		return err
@@ -322,6 +417,9 @@ func (a *Activities) StartOperationsReviewMaintenance(ctx context.Context) error
 }
 
 func (a *Activities) QueueOperationsReviewMaintenance(ctx context.Context) error {
+	if e := a.recoverLocalOperationsPreparation(ctx); e != nil {
+		return e
+	}
 	defer keepAlive(ctx)()
 	day := originalOperationsDay(time.Now())
 	rows, err := a.Store.DB.QueryContext(ctx, `SELECT r.id, r.project_id, COALESCE(JSON_UNQUOTE(JSON_EXTRACT(i.body,'$.text')),'')
@@ -329,6 +427,7 @@ func (a *Activities) QueueOperationsReviewMaintenance(ctx context.Context) error
 		LEFT JOIN wb_items i ON i.run_id=r.id AND i.item_id=?
 		WHERE JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.shared.day'))=?
 		  AND JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.operation'))='operations_package'
+ AND COALESCE(JSON_EXTRACT(r.body,'$.shared.local'),false)=false
 		  AND JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(roster.body,'$.text')),'$.state')='ready'
 		  AND (i.item_id IS NULL OR JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(i.body,'$.text')),'$.Edit')<>'')
 		ORDER BY r.created_at LIMIT 20`, OriginalOperationsRoster, core.OperationsReviewItem, day)
@@ -401,6 +500,15 @@ func (a *Activities) QueueOperationsBatchReceipts(ctx context.Context) error {
 }
 
 func (a *Activities) StartOperationsBatchDelivery(ctx context.Context, id string) error {
+	if stopped, e := a.Store.OperationsBatchStopped(ctx, id); e != nil {
+		return e
+	} else if stopped {
+		_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id + "-receipt", TaskQueue: InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, OperationsBatchReceipt, id)
+		if temporal.IsWorkflowExecutionAlreadyStartedError(e) {
+			return nil
+		}
+		return e
+	}
 	_, err := a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id + "-delivery", TaskQueue: InteractiveQueue,
 		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, OperationsBatchDelivery, id)
 	if temporal.IsWorkflowExecutionAlreadyStartedError(err) {

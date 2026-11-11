@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 )
 
 // Lock the exact metadata used for a send claim, so a grant/configuration
@@ -10,7 +11,19 @@ import (
 type transactionGate struct{ tx *sql.Tx }
 
 func (g transactionGate) Resource(ctx context.Context, id string) (Resource, error) {
-	return scanJSON[Resource](g.tx.QueryRowContext(ctx, `SELECT body FROM wb_resources WHERE id=? FOR SHARE`, id))
+	var out Resource
+	var raw []byte
+	var version string
+	var revision int64
+	err := g.tx.QueryRowContext(ctx, `SELECT body,current_version,revision FROM wb_resources WHERE id=? FOR SHARE`, id).Scan(&raw, &version, &revision)
+	if err != nil {
+		return out, err
+	}
+	if err = json.Unmarshal(raw, &out); err != nil {
+		return out, err
+	}
+	out.CurrentVersion, out.Revision = version, revision
+	return out, nil
 }
 func (g transactionGate) Snapshot(ctx context.Context, id, version string) (Snapshot, error) {
 	var state string

@@ -103,6 +103,18 @@ func (m modelBridge) Generate(ctx context.Context, input engine.ModelRequest) (e
 	return out, e
 }
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "operations-export-crm" {
+		if len(os.Args) != 4 {
+			fmt.Fprintln(os.Stderr, "expected private request and output paths")
+			os.Exit(1)
+		}
+		if err := core.ExportOperationsCRMArchive(context.Background(), os.Args[2], os.Args[3]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if e := run(); e != nil {
 		slog.Error("native worker stopped", "error", e)
 		os.Exit(1)
@@ -192,6 +204,8 @@ func run() error {
 	bw.RegisterWorkflow(engine.Program)
 	bw.RegisterWorkflow(engine.ScheduledProgram)
 	bw.RegisterWorkflow(engine.ScheduledOperations)
+	bw.RegisterWorkflow(engine.LocalOperationsReview)
+	bw.RegisterWorkflow(engine.OperationsTask)
 	bw.RegisterWorkflow(engine.OperationsPackage)
 	bw.RegisterWorkflow(engine.OperationsPackageEdit)
 	bw.RegisterWorkflow(engine.OperationsPackageConfirm)
@@ -215,6 +229,9 @@ func run() error {
 	iw.RegisterWorkflow(engine.SubmitMessage)
 	iw.RegisterWorkflow(engine.ReceiptSweep)
 	iw.RegisterWorkflow(engine.AutomaticReceipt)
+	iw.RegisterWorkflow(engine.OperationsCycle)
+	iw.RegisterWorkflow(engine.ScheduledOperationsCycle)
+	iw.RegisterWorkflow(engine.OperationsBatchReceipt)
 	iw.RegisterWorkflow(engine.OperationsBatchDelivery)
 	iw.RegisterActivity(a)
 	if e = iw.Start(); e != nil {

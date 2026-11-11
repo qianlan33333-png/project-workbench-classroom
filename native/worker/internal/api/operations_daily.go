@@ -206,7 +206,7 @@ func (a *Server) operationsReviewView(ctx context.Context, p core.Principal, cfg
 	}
 	name := operationsStaffName(cfg)
 	strategy, _ := run.Shared["strategy"].(string)
-	editable := head.Confirm == "" && head.Edit == "" && run.Shared["day"] == operationsDay(time.Now())
+	editable := (cfg.Cycle == nil || core.IsLocalOperations(run)) && head.Confirm == "" && head.Edit == "" && run.Shared["day"] == operationsDay(time.Now())
 	canSend := editable && head.Count > 0 && name != "" && cfg.Transport != "" && engine.OperationsBatchEnabled(strategy, cfg.Staff)
 	view := map[string]any{"state": "ready", "run": head.Run, "digest": head.Digest,
 		"reviewVersion": core.OperationsReviewVersion(head, cfg.Transport, cfg.Staff, name), "sendEnabled": canSend,
@@ -291,10 +291,15 @@ func (a *Server) configureOriginalOperationsSchedule(w http.ResponseWriter, r *h
 		respond(w, nil, core.ErrDenied)
 		return
 	}
-	var in struct{ ProjectID, Strategy, Time string }
+	var in struct {
+		ProjectID, Strategy, Time string
+		Cycle                     *engine.OperationsCycleInput `json:"cycle,omitempty"`
+	}
 	if !decode(w, r, &in) {
 		return
 	}
+	a.operationsMu.Lock()
+	defer a.operationsMu.Unlock()
 	cfg, err := a.readOperations(ctx, in.ProjectID)
 	if err != nil || !cfg.ReadSource || !originalOperationsStrategy.MatchString(in.Strategy) {
 		respond(w, nil, core.ErrDenied)
@@ -303,6 +308,15 @@ func (a *Server) configureOriginalOperationsSchedule(w http.ResponseWriter, r *h
 	t, err := time.Parse("15:04", in.Time)
 	if err != nil {
 		respond(w, nil, core.ErrInvalid)
+		return
+	}
+	if in.Cycle != nil || cfg.Cycle != nil {
+		cycle := in.Cycle
+		if cycle == nil {
+			cycle = cfg.Cycle
+		}
+		view, e := a.configureLocalOperationsSchedule(ctx, cfg, in.Strategy, t, *cycle)
+		respond(w, view, e)
 		return
 	}
 	p := operationsPrincipal(cfg.ProjectID)
@@ -393,6 +407,10 @@ func (a *Server) confirmDailyOperations(w http.ResponseWriter, r *http.Request) 
 		respond(w, RunRef{RunID: id}, nil)
 		return
 	}
+	if cfg.Cycle != nil && !core.IsLocalOperations(parent) {
+		respond(w, nil, core.ErrDenied)
+		return
+	}
 	strategy, _ := parent.Shared["strategy"].(string)
 	name := operationsStaffName(cfg)
 	if !engine.OperationsBatchEnabled(strategy, cfg.Staff) || name == "" || cfg.Transport == "" {
@@ -441,6 +459,19 @@ func (a *Server) operationsBatchManifest(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *Server) operationsBatchWriteAllowed(ctx context.Context, id, connection string) (bool, error) {
+	ready, err := a.operationsBatchWriteCheck(ctx, id, connection, true)
+	if err != nil || !ready {
+		return false, err
+	}
+	// Source reads may take time. Withdrawal and cancellation still win before
+	// the connector receives permission for its exact external write.
+	return a.operationsBatchWriteCheck(ctx, id, connection, false)
+}
+
+func (a *Server) operationsBatchWriteCheck(ctx context.Context, id, connection string, checkSource bool) (bool, error) {
+	if stopped, e := a.Store.OperationsBatchStopped(ctx, id); e != nil || stopped {
+		return false, e
+	}
 	run, err := a.Store.ExecutionRun(ctx, id)
 	if err != nil || run.Operation != "operations_batch_confirm" || run.Shared["transport"] != connection {
 		return false, core.ErrDenied
@@ -457,6 +488,9 @@ func (a *Server) operationsBatchWriteAllowed(ctx context.Context, id, connection
 	if err != nil {
 		return false, err
 	}
+	if cfg.Cycle != nil && !core.IsLocalOperations(parent) {
+		return false, nil
+	}
 	strategy, _ := run.Shared["strategy"].(string)
 	if !cfg.ReadSource || cfg.Input.ResourceID != parent.Destination || cfg.Transport != connection ||
 		run.Shared["staff"] != cfg.Staff || !engine.OperationsBatchEnabled(strategy, cfg.Staff) {
@@ -465,6 +499,19 @@ func (a *Server) operationsBatchWriteAllowed(ctx context.Context, id, connection
 	transport, err := a.Store.Transport(ctx, run.Principal, connection)
 	if err != nil || transport.Kind != "crm-cli" {
 		return false, err
+	}
+	if core.IsLocalOperations(parent) {
+		stale, e := a.Store.IsStale(ctx, parent.Operations.Review.Selection)
+		if e != nil || stale {
+			return false, e
+		}
+		if !checkSource {
+			return true, nil
+		}
+		return a.Store.OriginalOperationsReady(ctx, parent, nil)
+	}
+	if !checkSource {
+		return true, nil
 	}
 	raw, err := a.Store.ReadOperationsDirectory(ctx, run.Principal, parent.Destination, "package_review",
 		map[string]string{"package": head.Package, "week": head.Week, "run": head.Run, "version": "authority"})

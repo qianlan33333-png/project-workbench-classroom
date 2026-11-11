@@ -9,10 +9,22 @@ import (
 )
 
 type CRMRefreshInput struct {
-	OperationKey string `json:"operationKey"`
-	Destination  string `json:"destination"`
+	Sources      []core.ResourceSelection `json:"sources,omitempty"`
+	OperationKey string                   `json:"operationKey"`
+	Destination  string                   `json:"destination"`
 }
 
+type CRMPushInput struct {
+	OperationKey string                 `json:"operationKey"`
+	Title        string                 `json:"title"`
+	Plan         *DispatchSelection     `json:"plan,omitempty"`
+	Review       *core.OperationsDrafts `json:"review,omitempty"`
+}
+type CRMReceiptResult struct {
+	core.Delivery
+	Batch       *core.OperationsBatchStatus `json:"batch,omitempty"`
+	ReviewRunID string                      `json:"reviewRunId,omitempty"`
+}
 type CRMReceiptInput struct {
 	PlanID     string `json:"planId,omitempty"`
 	RunID      string `json:"runId,omitempty"`
@@ -20,7 +32,10 @@ type CRMReceiptInput struct {
 }
 
 func (a *Server) crmTools(s *mcp.Server, p core.Principal) {
-	mcp.AddTool(s, &mcp.Tool{Name: "data_refresh", Description: "Export raw CRM facts with the installed CRM CLI and publish a registered collection through the existing resource sync. Read run_get for completion and count."}, func(ctx context.Context, _ *mcp.CallToolRequest, in CRMRefreshInput) (*mcp.CallToolResult, RunRef, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "data_refresh", Description: "Refresh registered raw sources, execute their original cleaning on this workbench, and publish fixed result references. Omitting sources retains the existing CRM CLI collection export. Read run_get for completion and count."}, func(ctx context.Context, _ *mcp.CallToolRequest, in CRMRefreshInput) (*mcp.CallToolResult, RunRef, error) {
+		if len(in.Sources) > 0 {
+			return a.refreshOperations(ctx, p, RefreshDataInput{OperationKey: in.OperationKey, Sources: in.Sources, Destination: in.Destination})
+		}
 		if p.Kind != "project" || !core.ValidID(in.OperationKey) || !core.ValidID(in.Destination) {
 			return nil, RunRef{}, core.ErrDenied
 		}
@@ -29,7 +44,16 @@ func (a *Server) crmTools(s *mcp.Server, p core.Principal) {
 		}
 		return a.syncResource(ctx, p, SyncInput{OperationKey: in.OperationKey, Destination: in.Destination, Title: "更新 CRM 资料"})
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "crm_push", Description: "Prepare a batch using fixed drafts and a registered CRM recipient list. After the existing owner confirmation, the installed CRM CLI submits and approves the original plans. Read message_batch_read for plan identifiers and states."}, func(ctx context.Context, _ *mcp.CallToolRequest, in DispatchRequest) (*mcp.CallToolResult, RunRef, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "crm_push", Description: "Prepare a batch from fixed selection and draft references for one owner confirmation. The installed CRM CLI then submits and approves the original plan. Use crm_receipts for per-recipient execution results."}, func(ctx context.Context, _ *mcp.CallToolRequest, in CRMPushInput) (*mcp.CallToolResult, RunRef, error) {
+		if in.Review != nil {
+			if in.Plan != nil {
+				return nil, RunRef{}, core.ErrInvalid
+			}
+			return a.prepareLocalOperations(ctx, p, in)
+		}
+		if in.Plan == nil {
+			return nil, RunRef{}, core.ErrInvalid
+		}
 		if p.Kind != "project" {
 			return nil, RunRef{}, core.ErrDenied
 		}
@@ -46,29 +70,41 @@ func (a *Server) crmTools(s *mcp.Server, p core.Principal) {
 		}
 		for _, check := range resource.Checks {
 			if check.ID == in.Plan.EligibilityCheck && check.Section == in.Plan.Eligibility.Section && check.Bindings["customerId"] != "" && check.Bindings["staffId"] != "" && check.Bindings["businessSlot"] != "" {
-				return a.prepareDispatch(ctx, p, in)
+				return a.prepareDispatch(ctx, p, DispatchRequest{OperationKey: in.OperationKey, Title: in.Title, Plan: *in.Plan})
 			}
 		}
 		return nil, RunRef{}, core.ErrInvalid
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "crm_receipts", Description: "Refresh an original CRM plan bound to this workbench's delivery. Returns the stored state while the existing receipt task queries CRM. Never submits or resends."}, func(ctx context.Context, _ *mcp.CallToolRequest, in CRMReceiptInput) (*mcp.CallToolResult, core.Delivery, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "crm_receipts", Description: "Refresh an original CRM plan bound to this workbench's delivery. Returns the stored state while the existing receipt task queries CRM. Never submits or resends."}, func(ctx context.Context, _ *mcp.CallToolRequest, in CRMReceiptInput) (*mcp.CallToolResult, CRMReceiptResult, error) {
 		if p.Kind != "project" && !p.IsOwner() {
-			return nil, core.Delivery{}, core.ErrDenied
+			return nil, CRMReceiptResult{}, core.ErrDenied
+		}
+
+		if in.RunID != "" && in.DeliveryID == "" && in.PlanID == "" {
+			return a.localCRMReceipts(ctx, p, in.RunID)
 		}
 		if in.PlanID != "" {
 			if in.RunID != "" || in.DeliveryID != "" {
-				return nil, core.Delivery{}, core.ErrInvalid
+				return nil, CRMReceiptResult{}, core.ErrInvalid
+			}
+			batch, err := a.crmPlanBatch(ctx, p, in.PlanID)
+			if err != nil {
+				return nil, CRMReceiptResult{}, err
+			}
+			if batch != "" {
+				return a.localCRMReceipts(ctx, p, batch)
 			}
 			ref, err := a.crmPlanDelivery(ctx, p, in.PlanID)
 			if err != nil {
-				return nil, core.Delivery{}, err
+				return nil, CRMReceiptResult{}, err
 			}
 			in.RunID, in.DeliveryID = ref.RunID, ref.DeliveryID
 		}
 		if !core.ValidID(in.RunID) || !core.ValidID(in.DeliveryID) {
-			return nil, core.Delivery{}, core.ErrInvalid
+			return nil, CRMReceiptResult{}, core.ErrInvalid
 		}
-		return a.reconcileDelivery(ctx, p, ReceiptRequest{RunID: in.RunID, DeliveryID: in.DeliveryID}, true)
+		result, delivery, err := a.reconcileDelivery(ctx, p, ReceiptRequest{RunID: in.RunID, DeliveryID: in.DeliveryID}, true)
+		return result, CRMReceiptResult{Delivery: delivery}, err
 	})
 }
 

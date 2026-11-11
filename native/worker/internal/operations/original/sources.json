@@ -1,0 +1,333 @@
+{
+  "agent_user_scheduler": {
+    "sourceSHA256": "497b69d3a8a5ffbc3be8a2ea66ba6357c76d2d62baa2ef89d18ba5c5124899c4",
+    "entries": [
+      "_service_for",
+      "choose_actions",
+      "potential_cooldown",
+      "priority_todo_candidate",
+      "safe_ref"
+    ]
+  },
+  "v3_strategy_drafts": {
+    "sourceSHA256": "92bdccb7837cf9a7898c97193f1b010d141e7fa07956173029029616ca027a66",
+    "entries": [
+      "audience_filter_result",
+      "derive_service_relationship_tier",
+      "normalize_operating_config",
+      "product_families_for_item"
+    ]
+  },
+  "hxc_lifecycle_strategy": {
+    "sourceSHA256": "492ac26ff64dd20e60e6b1739e3432c0755b76ddbe3291ff3f1d6cccf8ed2bbc",
+    "entries": [
+      "_blocked",
+      "_date",
+      "_first_grant",
+      "_first_paid_unlinked_68",
+      "_profile_known",
+      "branch_route",
+      "current_service_tier",
+      "evaluate"
+    ]
+  },
+  "user_operating_archive": {
+    "sourceSHA256": "f18f3f14b50911ea50c23c669e9a86eea15c427a2b10a40f197d5f23a01543a8",
+    "entries": [
+      "_facts_by_field",
+      "_freshness_status",
+      "_list",
+      "_now",
+      "_safe_value",
+      "_service_relationship",
+      "_source",
+      "_state",
+      "_text",
+      "build_user_operating_archive",
+      "determine_service_action",
+      "normalize_fact"
+    ]
+  },
+  "hxc_communication_context": {
+    "sourceSHA256": "c7e614dd1cfff3aa9ed58f1193b48e7a8d4aaf44621a86f492ff36ec429cf9d4",
+    "entries": [
+      "blocks",
+      "handoff"
+    ]
+  },
+  "sku299_owner_service": {
+    "sourceSHA256": "9454361140b565553a0b38d192b87bbce2ae818941be5f803584da1eebe05432",
+    "entries": [
+      "apply",
+      "at",
+      "current_rights",
+      "is_legacy",
+      "load_policy",
+      "order_codes",
+      "policy",
+      "resolve",
+      "valid_orders"
+    ]
+  },
+  "sku68_operations": {
+    "sourceSHA256": "26a3eacce9ea1ed92496ed89309e576416bc674ed4b66acfc244f60bf9d576d1",
+    "entries": [
+      "after_material",
+      "annotate",
+      "at",
+      "before_material",
+      "bind_request",
+      "continuation",
+      "current_expiry_verified",
+      "first_touch_hours",
+      "fixed_invitation_scope",
+      "fixed_response",
+      "opening_form_submitted",
+      "orders",
+      "paid_reentry_after_old_expiry",
+      "paid_reentry_decision",
+      "prepare_data",
+      "primary_299",
+      "prior_service_start",
+      "purchase",
+      "sha"
+    ]
+  },
+  "order_time_contract": {
+    "sourceSHA256": "bb5a15b5d07bcef1fb5cec8a56d56ad090a2b8da2821f5fd05431c62777a16bb",
+    "entries": [
+      "service_time"
+    ]
+  },
+  "hxc_routine_policy": {
+    "sourceSHA256": "30025d2a0eddc5cdad6a8320652e021171a92c61083e96a7dfebf487fbeeb25c",
+    "entries": [
+      "apply_pending_activation",
+      "current_catalog_candidates",
+      "digest",
+      "enrich",
+      "stamp",
+      "unified_week_material"
+    ]
+  },
+  "hxc_service_reviews": {
+    "sourceSHA256": "2ef32056d446722d79438d993dfaf1c5c2bf817fa1adf4fd5d69c8f2fab2c396",
+    "entries": [
+      "conflicted",
+      "effective",
+      "purchase_fingerprint",
+      "source_fingerprint"
+    ]
+  },
+  "sku99_operations": {
+    "sourceSHA256": "ecbcce385e7ed77abe04206d4ab95b4339bae8e9010733748bf41948bab098f3",
+    "entries": [
+      "after_material",
+      "annotate",
+      "before_material",
+      "bind_request",
+      "continuation",
+      "fixed_response",
+      "fresh",
+      "hold",
+      "prepare_data",
+      "purchase",
+      "route"
+    ]
+  },
+  "sku299_operations": {
+    "sourceSHA256": "65fc351c6021245b651e9d23c21d25bdbd7647a39c3fdb352d20a9b37ba44dfc",
+    "entries": [
+      "after_material",
+      "at",
+      "before_material",
+      "choose_material",
+      "hold",
+      "route",
+      "sha"
+    ]
+  },
+  "product_operation_packs": {
+    "sourceSHA256": "67421c5a04f55d274316bab33c022078a399845b7d433144496c50dadef0ee61",
+    "entries": [
+      "_after_material_legacy",
+      "_before_material_legacy",
+      "after_material",
+      "before_material",
+      "handler"
+    ],
+    "adapter": "handler uses the same closed product-version map as ops/plugins/products.py; unknown versions reject"
+  },
+  "product_service_scope": {
+    "sourceSHA256": "b7a8270e45b1e2a6ff849360d2b40d22d3a6707490fbd33a7e87ff6c8719ec0a",
+    "entries": [
+      "enforce",
+      "final_guard",
+      "reject",
+      "filter_queue_candidates"
+    ]
+  },
+  "sku299_renewal": {
+    "sourceSHA256": "6dd52bc473a31bbedfaf2e18342ec0daba622c7ef81943c4d5206c39a0a6b3f4",
+    "entries": [
+      "at",
+      "bind",
+      "deadline_window",
+      "describe",
+      "fixed_response",
+      "fresh_formal_payment",
+      "is_expiry_confirmation",
+      "key",
+      "occupied",
+      "standalone",
+      "stop_requested",
+      "thresholds"
+    ]
+  },
+  "sku99_ledger": {
+    "sourceSHA256": "b1086fc7c0bb1619aaec2ca7e76dba9abbd8defbdb4451c26ddb40922e1c24d0",
+    "entries": [
+      "decision_guard",
+      "keys"
+    ]
+  },
+  "sku299_service_state": {
+    "sourceSHA256": "898615066938e7c9b3e210647c7b8f7049c827b53b23abb65900fef0e663274e",
+    "entries": [
+      "at",
+      "decision_guard",
+      "keys"
+    ]
+  },
+  "hxc_report_delivery": {
+    "sourceSHA256": "3757e8f1e55563e3b0672c58a9d408710dcc008ac610583f9a501c26141e0053",
+    "entries": [
+      "material"
+    ]
+  },
+  "hxc_operating_events": {
+    "sourceSHA256": "b2afee00f329a8549faf40a119a2b317970f1077798be18ec5d76cb1e0080098",
+    "entries": [
+      "first_activation",
+      "stamp"
+    ]
+  },
+  "hxc_growth_report": {
+    "sourceSHA256": "fcf8c9c4afddbf79fb0893ba928d1da26d58d529c8c4b256209bb1457415817c",
+    "entries": [
+      "digest",
+      "validate_handoff"
+    ]
+  },
+  "decision_contract": {
+    "sources": [
+      {
+        "file": "local-api.py",
+        "sourceSHA256": "0f9d5555a6dd5f4e34f0bb53de162c106bc7f1e7c442688b37f0a7b91e27c703",
+        "entries": [
+          "short_hash"
+        ]
+      },
+      {
+        "file": "agent_user_scheduler.py",
+        "sourceSHA256": "b11ab08bb7e369e6dd389d6280f7e2439ce3e9217d41a9fea8502a93bc68fc91",
+        "entries": [
+          "_action_id"
+        ]
+      }
+    ]
+  },
+  "audience_projection": {
+    "sources": [
+      {
+        "file": "application/service_packs.py",
+        "sourceSHA256": "72fc4aae1c73e7e64638e9bf073034f8afef34c7548e2160bef7221e52214846",
+        "entries": [
+          "relationship_service_readiness"
+        ]
+      },
+      {
+        "file": "application/strategy.py",
+        "sourceSHA256": "3f616f79637fe8e54bb1e986b32122c8059eb699cb0ea16d11c3c3b9c27641c2",
+        "entries": [
+          "archive_need_context"
+        ]
+      },
+      {
+        "file": "application/copy_context.py",
+        "sourceSHA256": "6347200fc168537dbda9bcb894a2fd49dc4a743fc09f010a87a273476bb45fbc",
+        "entries": [
+          "service_safe_topic"
+        ]
+      },
+      {
+        "file": "application/strategy.py",
+        "sourceSHA256": "3f616f79637fe8e54bb1e986b32122c8059eb699cb0ea16d11c3c3b9c27641c2",
+        "entries": [
+          "v3_strategy_audience_snapshot canonical row assignments"
+        ]
+      }
+    ]
+  },
+  "newcomer_copy_contract": {
+    "sourceSHA256": "b762638da15baca1717902bef60c70c7644f57f7aa6f3aaffb2a72f5c942fc13",
+    "entries": [
+      "approved_entry",
+      "at",
+      "attach_server_state",
+      "conditional_d7_checkin",
+      "conditional_first_use_candidate",
+      "current_mainline_fields",
+      "existing_usage_guidance",
+      "fixed_candidate",
+      "pending_activation_last_reminder",
+      "questionnaire_focus",
+      "render_fixed_template",
+      "standard_unknown_first_contact",
+      "state"
+    ]
+  },
+  "salutation_policy": {
+    "sourceSHA256": "3914128f6333012e4102267de5bb5c74a0266ec0e8e754d4007771a24811d32c",
+    "entries": [
+      "_clean",
+      "copy_salutation_contract",
+      "resolved_send_name",
+      "suggest_salutation"
+    ]
+  },
+  "nickname_rules": {
+    "sourceSHA256": "5f06f07c3711aba9d829e772884bf09f203d265ea25c4e7d00f85595aef210b2",
+    "entries": [
+      "decide",
+      "natural_cn",
+      "normalize"
+    ]
+  },
+  "owner_service_copy": {
+    "sourceSHA256": "f4a641a5656add3f8ff949f2144653c18cccef1dc28e118ede67b7da3a7396c9",
+    "entries": [
+      "activation",
+      "asset",
+      "expiry",
+      "reference",
+      "render"
+    ]
+  },
+  "returning_registered_copy": {
+    "sourceSHA256": "e1e42d50041551cc9505ad2403548deba37dc555e27e1943a44c028ea2450937",
+    "entries": [
+      "apply_result",
+      "at",
+      "bind",
+      "render",
+      "scope"
+    ]
+  },
+  "hxc_delivery_card": {
+    "sourceSHA256": "94f568a50b258739847d2de36ed95d1d8cbc6f19f65c17d15791488b48d23563",
+    "entries": [
+      "descriptor"
+    ]
+  }
+}

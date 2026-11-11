@@ -12,36 +12,41 @@ import (
 )
 
 type Method struct {
-	Name            string         `json:"name"`
-	Instructions    string         `json:"instructions"`
-	Digest          string         `json:"digest"`
-	RequiredFields  []string       `json:"requiredFields"`
-	MaxInputBytes   int            `json:"maxInputBytes"`
-	MaxOutputTokens int            `json:"maxOutputTokens"`
-	ReasoningEffort string         `json:"reasoningEffort,omitempty"`
-	OutputSchema    map[string]any `json:"outputSchema,omitempty"`
+	Name               string         `json:"name"`
+	Instructions       string         `json:"instructions"`
+	Digest             string         `json:"digest"`
+	RequiredFields     []string       `json:"requiredFields"`
+	MaxInputBytes      int            `json:"maxInputBytes"`
+	MaxOutputTokens    int            `json:"maxOutputTokens"`
+	ReasoningEffort    string         `json:"reasoningEffort,omitempty"`
+	OutputSchema       map[string]any `json:"outputSchema,omitempty"`
+	FixedOutputPointer string         `json:"fixedOutputPointer,omitempty"`
 }
 type Run struct {
-	Quiet          bool           `json:"quiet,omitempty"`
-	ExplicitInputs bool           `json:"explicitInputs,omitempty"`
-	Selection      *Selection     `json:"selection,omitempty"`
-	TargetRunIDs   []string       `json:"targetRunIds,omitempty"`
-	WorkflowID     string         `json:"workflowId,omitempty"`
-	Dispatch       *DispatchPlan  `json:"dispatch,omitempty"`
-	ParentRunID    string         `json:"parentRunId,omitempty"`
-	Program        *PipelinePlan  `json:"program,omitempty"`
-	ID             string         `json:"id"`
-	Principal      Principal      `json:"principal"`
-	Operation      string         `json:"operation"`
-	Sources        []Ref          `json:"sources"`
-	Lineage        []Ref          `json:"lineage,omitempty"`
-	Destination    string         `json:"destination,omitempty"`
-	Method         Method         `json:"method"`
-	Shared         map[string]any `json:"shared,omitempty"`
-	Title          string         `json:"title"`
-	Goal           string         `json:"goal,omitempty"`
-	NotifySession  string         `json:"notifySession,omitempty"`
-	OriginMessage  string         `json:"originMessage,omitempty"`
+	Methods        map[string]Method    `json:"methods,omitempty"`
+	MethodRefs     map[string]RecordRef `json:"methodRefs,omitempty"`
+	MethodPointer  string               `json:"methodPointer,omitempty"`
+	Operations     *OperationsSpec      `json:"operations,omitempty"`
+	Quiet          bool                 `json:"quiet,omitempty"`
+	ExplicitInputs bool                 `json:"explicitInputs,omitempty"`
+	Selection      *Selection           `json:"selection,omitempty"`
+	TargetRunIDs   []string             `json:"targetRunIds,omitempty"`
+	WorkflowID     string               `json:"workflowId,omitempty"`
+	Dispatch       *DispatchPlan        `json:"dispatch,omitempty"`
+	ParentRunID    string               `json:"parentRunId,omitempty"`
+	Program        *PipelinePlan        `json:"program,omitempty"`
+	ID             string               `json:"id"`
+	Principal      Principal            `json:"principal"`
+	Operation      string               `json:"operation"`
+	Sources        []Ref                `json:"sources"`
+	Lineage        []Ref                `json:"lineage,omitempty"`
+	Destination    string               `json:"destination,omitempty"`
+	Method         Method               `json:"method"`
+	Shared         map[string]any       `json:"shared,omitempty"`
+	Title          string               `json:"title"`
+	Goal           string               `json:"goal,omitempty"`
+	NotifySession  string               `json:"notifySession,omitempty"`
+	OriginMessage  string               `json:"originMessage,omitempty"`
 }
 
 func (r Run) ExecutionID() string {

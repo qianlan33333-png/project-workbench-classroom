@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"workbench-native/internal/operations"
 )
 
 func (s *Store) Connections(ctx context.Context, p Principal) ([]Connection, error) {
@@ -46,7 +47,7 @@ func (s *Store) PutConnection(ctx context.Context, p Principal, v Connection) er
 		if !validMCPEndpoint(v.Location) || !ValidID(v.SourceTool) || !ValidID(v.SecretEnv) || !strings.HasPrefix(v.SecretEnv, "WORKBENCH_SOURCE_") {
 			return ErrInvalid
 		}
-	case "mysql", CRMArchiveSource:
+	case "mysql", CRMArchiveSource, "operations-original":
 		if !ValidID(v.SecretEnv) || !strings.HasPrefix(v.SecretEnv, "WORKBENCH_SOURCE_") {
 			return ErrInvalid
 		}
@@ -164,6 +165,31 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 		page = nil
 		return nil
 	}
+	var originalFile *struct {
+		SHA256 string `json:"sha256"`
+		Count  int    `json:"count"`
+	}
+	if conn.Kind == "operations-original" {
+		collectionID := r.ParentRunID
+		if collectionID == "" {
+			collectionID = r.ID
+		}
+		result, err := operations.Collect(ctx, os.Getenv(conn.SecretEnv), collectionID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		file, ok := result.Files[resource.Relation]
+		if !ok {
+			return Snapshot{}, ErrInvalid
+		}
+		originalFile = &file
+		conn.Kind = "jsonl"
+		conn.Location = result.Directory
+		if err = s.Emit(ctx, RunEvent{ID: r.ID + "-original-sources", RunID: r.ID, SessionID: r.Principal.SessionID, Kind: "operations.sources", Text: "原始多源读取与新环境清洗已完成。", Details: result.Report}); err != nil {
+			return Snapshot{}, err
+		}
+	}
+
 	fields := map[string]bool{}
 	for _, section := range resource.Sections {
 		for _, f := range section.Fields {
@@ -424,6 +450,9 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 			return snap, e
 		}
 		snap.SourceWatermark = hex.EncodeToString(hash.Sum(nil))
+		if originalFile != nil && originalFile.SHA256 != snap.SourceWatermark {
+			return snap, ErrConflict
+		}
 		if _, e = file.Seek(0, io.SeekStart); e != nil {
 			return snap, e
 		}
@@ -459,6 +488,9 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 		return snap, e
 	}
 
+	if originalFile != nil && originalFile.Count != count {
+		return snap, ErrConflict
+	}
 	if count < resource.MinRecords {
 		return snap, fmt.Errorf("%w: source is below configured minimum record count", ErrInvalid)
 	}

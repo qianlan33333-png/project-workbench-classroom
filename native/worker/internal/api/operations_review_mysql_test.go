@@ -183,9 +183,20 @@ func TestRealTemporalOperationsBatchUsesOneConfirmedManifest(t *testing.T) {
 		View   string            `json:"view"`
 		Params map[string]string `json:"params"`
 	}
-	mcp.AddTool(sourceServer, &mcp.Tool{Name: "operations_read"}, func(_ context.Context, _ *mcp.CallToolRequest, input sourceInput) (*mcp.CallToolResult, map[string]any, error) {
+	var withdrawDuringRead atomic.Bool
+	mcp.AddTool(sourceServer, &mcp.Tool{Name: "operations_read"}, func(ctx context.Context, _ *mcp.CallToolRequest, input sourceInput) (*mcp.CallToolResult, map[string]any, error) {
 		if input.View != "package_review" || input.Params["run"] != head.Run {
 			return nil, nil, errors.New("unexpected source request")
+		}
+		if withdrawDuringRead.Swap(false) {
+			cfg, err := api.readOperations(ctx, id)
+			if err != nil {
+				return nil, nil, err
+			}
+			cfg.ReadSource = false
+			if err = api.saveOperations(ctx, cfg); err != nil {
+				return nil, nil, err
+			}
 		}
 		return nil, map[string]any{"state": "ready", "digest": head.Digest, "identityVersion": head.IdentityVersion,
 			"exclusive": true, "activeKeys": []string{"one", "two"}}, nil
@@ -281,5 +292,16 @@ func TestRealTemporalOperationsBatchUsesOneConfirmedManifest(t *testing.T) {
 	must(err)
 	if result.Plan != "42" || result.Entries["one"].State != "sent" || result.Entries["two"].State != "failed" {
 		t.Fatal(result)
+	}
+	allowed, err := api.operationsBatchWriteAllowed(ctx, ref, transport)
+	must(err)
+	if !allowed {
+		t.Fatal("unchanged confirmed batch unexpectedly blocked")
+	}
+	withdrawDuringRead.Store(true)
+	allowed, err = api.operationsBatchWriteAllowed(ctx, ref, transport)
+	must(err)
+	if allowed || withdrawDuringRead.Load() {
+		t.Fatal("source-read permission withdrawn during the final read did not block submission")
 	}
 }

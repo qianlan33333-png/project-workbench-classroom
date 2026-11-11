@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/go-openapi/jsonpointer"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -200,15 +202,18 @@ type ReadInput struct {
 	Limit int      `json:"limit,omitempty"`
 }
 type BatchInput struct {
-	Selection    *core.Selection `json:"selection,omitempty"`
-	OperationKey string          `json:"operationKey"`
-	Title        string          `json:"title"`
-	Sources      []core.Ref      `json:"sources"`
-	Destination  string          `json:"destination"`
-	Method       core.Method     `json:"method,omitempty"`
-	MethodRef    *core.RecordRef `json:"methodRef,omitempty"`
+	MethodRefs    map[string]core.RecordRef `json:"methodRefs,omitempty"`
+	MethodPointer string                    `json:"methodPointer,omitempty"`
+	Selection     *core.Selection           `json:"selection,omitempty"`
+	OperationKey  string                    `json:"operationKey"`
+	Title         string                    `json:"title"`
+	Sources       []core.Ref                `json:"sources"`
+	Destination   string                    `json:"destination"`
+	Method        core.Method               `json:"method,omitempty"`
+	MethodRef     *core.RecordRef           `json:"methodRef,omitempty"`
 }
 type RunRef struct {
+	InputRefs []core.Ref          `json:"inputRefs,omitempty"`
 	RunID     string              `json:"runId"`
 	Selection *core.SelectionInfo `json:"selection,omitempty"`
 }
@@ -249,6 +254,7 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 	a.attachmentTools(s, bound)
 	a.programTools(s, bound)
 	a.crmTools(s, bound)
+	a.strategyTools(s, bound)
 	a.resourceTools(s, bound)
 	a.dispatchBatchTools(s, bound)
 	a.scheduleTools(s, bound)
@@ -285,6 +291,9 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 			return nil, RunRef{}, e
 		}
 		if in.MethodRef != nil {
+			if len(in.MethodRefs) > 0 {
+				return nil, RunRef{}, core.ErrInvalid
+			}
 			if in.Method.Instructions != "" {
 				return nil, RunRef{}, core.ErrInvalid
 			}
@@ -303,7 +312,51 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 				return nil, RunRef{}, core.ErrInvalid
 			}
 		}
-		if !core.ValidID(in.OperationKey) || len(in.Sources) == 0 || len(in.Sources) > 16 || in.Method.Instructions == "" || len(in.Method.Instructions) > 64000 {
+		methods := map[string]core.Method{}
+		methodSources := []core.Ref{}
+		if in.MethodRef != nil {
+			methodSources = append(methodSources, in.MethodRef.Ref)
+		}
+		if len(in.MethodRefs) > 0 {
+			if in.Method.Instructions != "" || len(in.MethodRefs) > 64 {
+				return nil, RunRef{}, core.ErrInvalid
+			}
+			if _, e := jsonpointer.New(in.MethodPointer); e != nil {
+				return nil, RunRef{}, core.ErrInvalid
+			}
+			keys := make([]string, 0, len(in.MethodRefs))
+			for key := range in.MethodRefs {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				if !core.ValidID(key) {
+					return nil, RunRef{}, core.ErrInvalid
+				}
+				ref := in.MethodRefs[key]
+				rows, e := a.Store.ReadIDs(ctx, p, ref.Ref, []string{ref.ID})
+				if e != nil {
+					return nil, RunRef{}, e
+				}
+				if len(rows) != 1 {
+					return nil, RunRef{}, core.ErrInvalid
+				}
+				b, _ := json.Marshal(rows[0].Fields["method"])
+				var method core.Method
+				if e = json.Unmarshal(b, &method); e != nil || method.Instructions == "" || len(method.Instructions) > 64000 {
+					return nil, RunRef{}, core.ErrInvalid
+				}
+				if _, e = method.ResolveOutput(); e != nil {
+					return nil, RunRef{}, e
+				}
+				method.Digest = ""
+				method.Digest = core.Digest(method)
+				methods[key] = method
+				methodSources = append(methodSources, ref.Ref)
+			}
+			in.Method = core.Method{Name: "固定逐条方法", Digest: core.Digest(methods)}
+		}
+		if !core.ValidID(in.OperationKey) || len(in.Sources) == 0 || len(in.Sources) > 16 || (in.Method.Instructions == "" && len(methods) == 0) || len(in.Method.Instructions) > 64000 {
 			return nil, RunRef{}, core.ErrInvalid
 		}
 		if _, e := in.Method.ResolveOutput(); e != nil {
@@ -316,7 +369,7 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 			return nil, RunRef{}, e
 		}
 		id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.OperationKey)).String()
-		r := core.Run{ID: id, Principal: p, Operation: "generate", Sources: in.Sources, Destination: in.Destination, Method: in.Method, Title: in.Title, Selection: selection}
+		r := core.Run{ID: id, Principal: p, Operation: "generate", ExplicitInputs: len(in.MethodRefs) > 0, Sources: in.Sources, Destination: in.Destination, Method: in.Method, Methods: methods, MethodRefs: in.MethodRefs, MethodPointer: in.MethodPointer, Lineage: core.UnionRefs(methodSources), Title: in.Title, Selection: selection}
 		if e := a.Store.SaveRun(ctx, r); e != nil {
 			return nil, RunRef{}, e
 		}
@@ -350,6 +403,12 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 		r, e := a.Store.Run(ctx, bound, in.RunID)
 		if e != nil {
 			return nil, in, e
+		}
+		if r.Operation == "operations_batch_confirm" {
+			if e = a.Store.StopOperationsBatch(ctx, bound, r.ID); e != nil {
+				return nil, in, e
+			}
+			_ = a.Temporal.CancelWorkflow(ctx, r.ID+"-delivery", "")
 		}
 		e = a.Temporal.CancelWorkflow(ctx, r.ExecutionID(), "")
 		return nil, in, e

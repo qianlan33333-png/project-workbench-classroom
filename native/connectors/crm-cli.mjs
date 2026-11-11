@@ -13,7 +13,7 @@ const operations=new Set(['admin.createAIAssistantPlan','admin.getAIAssistantPla
 export function cliCaller(config){
  if(typeof config.cli!=='string'||!config.cli.startsWith('/'))throw Error('CRM CLI requires an installed absolute executable');
  return async(operation,{params={},query={},body,key,signal,timeout=25000}={})=>{
-  if(!operations.has(operation))throw Error('Unregistered CRM operation');
+  if(!operations.has(operation)&&!['admin.createMediaMiniProgram','admin.listMediaMiniPrograms'].includes(operation))throw Error('Unregistered CRM operation');
   const args=['invoke',operation];
   for(const[k,v]of Object.entries(params))args.push('--param',`${k}=${v}`);
   for(const[k,v]of Object.entries(query))args.push('--query',`${k}=${v}`);
@@ -142,7 +142,59 @@ export function createCRM(config,workerCall,invoke=cliCaller(config)){
    return{state:'accepted',receipt:String(plan.id)};
   }catch{return uncertain(state.planId?String(state.planId):'')}
  }
- async function materialVersions({ids},{signal}={}){
+ async function prepareMaterial(card,signal){
+  if(!card||typeof card.appId!=='string'||typeof card.title!=='string'||!card.title.trim()||Buffer.byteLength(card.title)>64||
+     typeof card.page!=='string'||!/^pages\/[A-Za-z0-9_/-]+\?[^#\x00-\x20]{1,450}$/.test(card.page)||card.page.includes('dt='))throw Error('Invalid source material');
+  const templateID=config.materialTemplates?.[card.appId];
+  if(!positive(templateID))throw Error('Approved CRM material template missing');
+  const template=await readMiniProgram(invoke,String(templateID),signal);
+  if(!template||template.app_id!==card.appId)throw Error('CRM material template unavailable');
+  const body={name:'workbench-'+digest([card.appId,card.title,card.page,template.thumb_image_id]),title:card.title,
+   appid:card.appId,pagepath:card.page,thumb_image_id:template.thumb_image_id,enabled:true};
+  const stateID='crm-material-'+digest([config.id,body]).slice(0,48);
+  let state=await load(stateID);
+  const matching=item=>item?.name===body.name&&item.title===body.title&&item.app_id===body.appid&&item.page_path===body.pagepath&&item.thumb_image_id===body.thumb_image_id&&positive(item.id);
+  const find=async()=>{
+   let match=null;
+   for(let offset=0;;offset+=100){
+    const page=await invoke('admin.listMediaMiniPrograms',{query:{q:body.name,enabled_only:false,limit:100,offset},signal});
+    if(!Array.isArray(page.items)||page.items.length>100||typeof page.has_more!=='boolean')throw Error('CRM material readback incomplete');
+    for(const item of page.items)if(matching(item)){if(match&&match.id!==item.id)throw Error('CRM material ambiguous');match=item;}
+    if(!page.has_more)return match;
+    if(page.items.length===0||offset>=5000)throw Error('CRM material readback incomplete');
+   }
+  };
+  let item=state.id?(await invoke('admin.getMediaMiniProgram',{params:{id:state.id},signal})).item:await find();
+  if(item&&!matching(item))throw Error('CRM material changed');
+  if(!item&&!Object.keys(state).length){
+   signal?.throwIfAborted();
+   const claim={body,phase:'creating',attempt:crypto.randomUUID()};
+   if(!await reserve(stateID,claim))throw Error('CRM material preparation in progress');
+   state=claim;
+   if(signal?.aborted){
+    // This attempt has made no external request. Release only its own claim;
+    // an ambiguous create below remains query-only across all later attempts.
+    await compare(stateID,claim,{});
+    signal.throwIfAborted();
+   }
+   try{const created=await invoke('admin.createMediaMiniProgram',{body,key:stateID,signal});item=created.item;}
+   catch(error){
+    if(error.crmRejected&&[401,403,422].includes(error.status)){
+     await compare(stateID,claim,{});
+     throw error;
+    }
+    item=await find();
+   }
+  }
+  // An ambiguous create is reconciled by the same exact name/body. Never
+  // mint another key or re-create when the response was lost.
+  if(!matching(item))throw Error('CRM material outcome requires original readback');
+  if(!state.id)await compare(stateID,state,{body,phase:'ready',id:String(item.id)});
+  const current=await readMiniProgram(invoke,String(item.id),signal);
+  if(!matching(current)||!positive(current.version))throw Error('CRM material not ready');
+  return {id:String(current.id),title:current.title,appId:current.app_id,page:current.page_path,version:current.version,cover:current.cover};
+ }
+ async function materialVersions({ids,drafts=[]},{signal}={}){
   const cards=[];
   for(let i=0;i<ids.length;i+=8){
    const page=await Promise.all(ids.slice(i,i+8).map(async id=>{
@@ -155,6 +207,7 @@ export function createCRM(config,workerCall,invoke=cliCaller(config)){
    }));
    cards.push(...page.filter(Boolean));
   }
+  for(const draft of drafts)cards.push(await prepareMaterial(draft,signal));
   return {cards};
  }
  return{send,receipt,materialVersions,batch:createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,compare,pages)};
@@ -342,7 +395,11 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
   }
   const remember=async patch=>{
    const next={...state,...patch};
-   await compare(stateID,state,next);
+   try { await compare(stateID,state,next); }
+   catch(error){
+    // A lost CAS response is recoverable only when the exact attempt persisted.
+    if(digest(await load(stateID))!==digest(next))throw error;
+   }
    state=next;
   };
   if(!send||!manifest.sendEnabled)return read();
@@ -353,11 +410,17 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
     setAll(fail('发送账号、原稿或来源授权已变化，未提交。'));
     return finish();
    }
+   signal?.throwIfAborted();
    const used=new Set(recipients.flatMap(row=>row.content.filter(block=>block.kind==='mini_program').map(block=>String(block.material_id))));
    const cardVersions=Object.fromEntries(Object.entries(versions).filter(([id])=>used.has(id)));
    state={digest:sourceDigest,admitted:recipients.map(row=>String(row.customer_id)),cardVersions:digest(cardVersions),
     attempt:crypto.randomUUID(),phase:'creating'};
    if(!await reserve(stateID,state))return finish();
+   if(signal?.aborted){
+    // No CLI write has started; release only this exact attempt.
+    await compare(stateID,state,{});
+    signal.throwIfAborted();
+   }
   }else if(state.digest!==sourceDigest)return finish();
   const recordFailure=async error=>{
    await remember({phase:'failed',error});
@@ -407,7 +470,13 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
    if(deadlines.some(deadline=>!(deadline>Date.now())))
     return recordFailure('计划中的原服务动作已经过期，未批准发送。');
    signal?.throwIfAborted();
-   await remember({phase:'approving',contents:contentStamp(saved)});
+   const beforeApproval=state;
+   await remember({phase:'approving',approvalAttempt:crypto.randomUUID(),contents:contentStamp(saved)});
+   if(signal?.aborted){
+    // Approval has not started; retain the exact created plan for recovery.
+    await compare(stateID,state,beforeApproval);state=beforeApproval;
+    signal.throwIfAborted();
+   }
    await invoke('admin.approveAIAssistantPlan',{params,body:{expected_version:preview.plan_version,preview_digest:preview.preview_digest},
     key:key('approve'),signal,timeout:120000});
    await remember({phase:'submitted'});

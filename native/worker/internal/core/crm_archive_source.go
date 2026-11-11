@@ -27,9 +27,18 @@ type crmArchiveConfig struct {
 }
 
 func exportCRMArchive(ctx context.Context, conn Connection) (*os.File, error) {
+	return exportCRMArchiveRequest(ctx, conn, "")
+}
+func exportCRMArchiveRequest(ctx context.Context, conn Connection, request string) (*os.File, error) {
 	var cfg crmArchiveConfig
 	if json.Unmarshal([]byte(os.Getenv(conn.SecretEnv)), &cfg) != nil || !filepath.IsAbs(cfg.CLI) || !filepath.IsAbs(cfg.RequestFile) || !validHTTPSource(cfg.Origin) || cfg.ClientID == "" || !ValidID(cfg.ClientSecretEnv) || !strings.HasPrefix(cfg.ClientSecretEnv, "WORKBENCH_SOURCE_") {
 		return nil, fmt.Errorf("CRM archive CLI connection is not configured")
+	}
+	if request != "" {
+		if !filepath.IsAbs(request) {
+			return nil, ErrInvalid
+		}
+		cfg.RequestFile = request
 	}
 	origin, err := url.Parse(cfg.Origin)
 	if err != nil || origin.Path != "" || origin.RawQuery != "" || origin.ForceQuery {
@@ -245,4 +254,33 @@ func streamCRMArchive(reader io.Reader, spec JSONSource, accept func(Record) err
 		return "", fmt.Errorf("%w: CRM archive manifest or collection mismatch", ErrInvalid)
 	}
 	return entry.SHA256, nil
+}
+
+// ExportOperationsCRMArchive is the private source adapter entry. It reuses
+// exactly the installed CLI machine authentication/export implementation.
+func ExportOperationsCRMArchive(ctx context.Context, request, output string) error {
+	if !filepath.IsAbs(request) || !filepath.IsAbs(output) {
+		return ErrInvalid
+	}
+	source, e := exportCRMArchiveRequest(ctx, Connection{SecretEnv: "WORKBENCH_SOURCE_CRM_ARCHIVE"}, request)
+	if e != nil {
+		return e
+	}
+	defer source.Close()
+	f, e := os.OpenFile(output, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if e != nil {
+		return e
+	}
+	_, e = io.Copy(f, source)
+	if e == nil {
+		e = f.Sync()
+	}
+	closeErr := f.Close()
+	if e == nil {
+		e = closeErr
+	}
+	if e != nil {
+		os.Remove(output)
+	}
+	return e
 }
