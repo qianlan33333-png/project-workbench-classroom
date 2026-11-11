@@ -29,10 +29,18 @@ export class AgentDelivery {
   constructor(ctx) {
     this.ctx = ctx;
     ctx.on('session/event', (session, event) => {
-      if (event.type !== 'user/message') return;
-      const id = deliveryId(event.data);
-      if (id) this.#seen.get(session)?.ids.add(id);
+      const state = this.#seen.get(session);
+      if (state) this.#observe(state, event);
     });
+  }
+
+  #observe(state, event) {
+    const messages = event.type === 'user/message' ? [event.data]
+      : event.type === 'agent/inbox/spliced' ? event.data.inserted : [];
+    for (const message of messages) {
+      const id = deliveryId(message);
+      if (id) state.ids.add(id);
+    }
   }
 
   async #history(agent) {
@@ -47,11 +55,7 @@ export class AgentDelivery {
       for (let offset = 0; ; ) {
         const { events } = await handle.read(offset, 512);
         if (!events.length) break;
-        for (const event of events) {
-          if (event.type !== 'user/message') continue;
-          const id = deliveryId(event.data);
-          if (id) state.ids.add(id);
-        }
+        for (const event of events) this.#observe(state, event);
         offset += events.length;
       }
     })().catch(error => {

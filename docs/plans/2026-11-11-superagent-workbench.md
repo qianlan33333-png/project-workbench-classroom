@@ -31,3 +31,18 @@ DeepSeek Harness 团队的 [dsh-superagent-prototype](https://github.com/deepsee
 2. 移植上游会话投递模块，保留原 Session ID，给原生主会话绑定 SuperAgent 行为和工具，复用结果与本人渠道入口。验证重复事件、重启及投递后的原来源投影。
 3. 用现有侧栏组件更新入口文字，并从同一个入口复测历史和关注栏。
 4. 执行 Node、Go 与有真实 MySQL 的 MCP 旅程；真实 Harness 使用原问题，校验首选工具、统计口径、原 Session 延续及项目工具隔离。按实录分别记录本地、隔离环境和正式环境验证结果。
+
+## 回滚与回执补投修复
+
+```mermaid
+flowchart LR
+  Q[本人查询应答] --> P[确认已发布的私有来源]
+  P --> R[登记来源并返回统计]
+  R --> S[原会话在新旧版本校验同一来源]
+  E[收到原编号回执] --> D{历史有该编号的入队或消费事件}
+  D -->|有| A[确认原投递]
+  D -->|无| I[入队并持久化]
+  I --> A
+```
+
+参考上游 [Session 投递](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/app/delivery.ts) 及 [MySQL 事务](https://dev.mysql.com/doc/refman/8.0/en/commit.html)。资源和空快照在同一事务初始化，现有鉴权可校验本人来源，项目仍受范围限制。回执按原编号识别持久化入队和消费事件，漏投仍可补办。验收覆盖同一隔离库中新版查询后由旧版校验原会话，以及移除已入队回执后重试和重启。
