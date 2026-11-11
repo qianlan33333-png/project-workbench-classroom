@@ -6,6 +6,7 @@ window.__ModuleLoader__.load({
     const { useState, useEffect, useRef, useSyncExternalStore } = React;
     const {IconClockOutlineRegular, IconDatabaseOutlineRegular}=require("@deepseek-ai/dsh-client-ui-primitives");
     let resourceProject="";
+    let requestedBusinessPolicy=new URLSearchParams(window.location.search).get("businessPolicy");
     const css = `.wb-page{height:100%;overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:14px;line-height:1.6}.wb-content{max-width:960px;margin:auto;padding:28px clamp(20px,4vw,48px) 48px}.wb-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}.wb-heading h1{font-size:20px;font-weight:500;margin:0}.wb-page button,.wb-inline{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:6px 12px;cursor:pointer}.wb-short-label{display:none}@media(max-width:600px){.wb-full-label{display:none}.wb-short-label{display:inline}.wb-inline{font-size:12px;padding:4px 6px}}.wb-page button:disabled{opacity:.5;cursor:wait}.wb-page textarea{font:inherit;width:100%;box-sizing:border-box;min-height:88px;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:10px}.wb-page input,.wb-page select{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:7px 10px;min-width:0;max-width:100%;box-sizing:border-box}.wb-muted{color:var(--dsw-alias-label-secondary)}.wb-list{border-top:1px solid var(--dsw-alias-border-l3)}.wb-row{display:flex;gap:16px;align-items:center;padding:18px 0;border-bottom:1px solid var(--dsw-alias-border-l3);flex-wrap:wrap}.wb-row-main{flex:1;min-width:180px}.wb-row strong{font-weight:500}.wb-tag{font-size:12px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l3);border-radius:6px}.wb-form{padding:20px 0;display:grid;gap:16px}.wb-field{display:grid;gap:6px;min-width:0}.wb-columns{display:grid;grid-template-columns:1fr 1fr;gap:16px}.wb-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start}.wb-form>h2{font-size:16px;font-weight:500;margin:0}.wb-note{padding:12px 0;overflow-wrap:anywhere}.wb-check{display:flex;gap:8px;align-items:center;padding:6px 0}.wb-section{border:1px solid var(--dsw-alias-border-l3);border-radius:10px;padding:16px;margin-top:12px}.wb-section h2{font-size:16px;font-weight:500;margin:0 0 8px}@media(max-width:600px){.wb-columns{grid-template-columns:1fr}.wb-heading{align-items:flex-start}.wb-row-main{min-width:140px}}`;
     async function api(path, data) {
       const r = await fetch("/workbench-api" + path, {
@@ -33,6 +34,66 @@ window.__ModuleLoader__.load({
       revision: 0,
       sections: [{ id: "main", name: "资料", fields: [] }],
     });
+    const businessPolicyRelation = "wb_business_policies";
+    const businessTopics = { product: "商品和课程", replay: "直播回放", survey: "问卷", activity: "活动" };
+    const beijingInput = value => value ? new Date(Date.parse(value) + 8 * 3600000).toISOString().slice(0, 16) : "";
+    const beijingTime = value => value ? new Date(value + ":00+08:00").toISOString() : null;
+
+    function BusinessPolicyPanel({resource, rows, close, save, busy}) {
+      const [draft, setDraft] = useState();
+      const [permanent, setPermanent] = useState(false);
+      const [validation, setValidation] = useState("");
+      const start = row => {
+        setDraft({...row, validFrom: beijingInput(row.validFrom), validUntil: beijingInput(row.validUntil)});
+        setPermanent(Boolean(row.id && !row.validUntil));
+        setValidation("");
+      };
+      const update = (key, value) => setDraft(previous => ({...previous, [key]:value}));
+      const textField = (label, key, options = {}) => field(label, h("input", {...options,
+        value:draft[key] || "", onChange:e=>update(key,e.target.value)}));
+      const submit = async e => {
+        e.preventDefault();
+        const validFrom = beijingTime(draft.validFrom);
+        const validUntil = permanent ? null : beijingTime(draft.validUntil);
+        if (validFrom && validUntil && validFrom >= validUntil) {
+          setValidation("截止时间须晚于生效时间");
+          return;
+        }
+        if (await save({...draft,validFrom,validUntil})) setDraft(undefined);
+      };
+      const status = row => {
+        const now = Date.now();
+        if (!row.enabled) return "已停用";
+        if (row.validUntil && Date.parse(row.validUntil) <= now) return "已过期";
+        if (row.validFrom && Date.parse(row.validFrom) > now) return "待生效";
+        return row.validUntil ? "有效至 " + beijingInput(row.validUntil).replace("T"," ") : "永久有效";
+      };
+      return h("section",{className:"wb-section"},
+        h("div",{className:"wb-heading"},h("h2",null,resource.name),
+          h("div",{className:"wb-actions"},button("新增口径",()=>start({topic:"product",enabled:true})),button("关闭",close))),
+        draft && h("form",{className:"wb-form",onSubmit:submit},
+          h("h2",null,draft.id ? "编辑口径" : "新增口径"),
+          h("div",{className:"wb-columns"},
+            field("事项类型",h("select",{value:draft.topic,onChange:e=>update("topic",e.target.value)},
+              ...Object.entries(businessTopics).map(([value,label])=>h("option",{key:value,value},label)))),
+            textField("对象名称","name",{required:true,maxLength:160})),
+          textField("常见叫法","aliases",{maxLength:512}),
+          field("对客口径（含适用条件、链接）",h("textarea",{value:draft.answer||"",required:true,maxLength:1200,onChange:e=>update("answer",e.target.value)})),
+          h("div",{className:"wb-columns"},
+            textField("生效时间（北京时间，可留空）","validFrom",{type:"datetime-local"}),
+            !permanent && textField("截止时间（北京时间）","validUntil",{type:"datetime-local",required:true})),
+          h("label",{className:"wb-check"},h("input",{type:"checkbox",checked:permanent,onChange:e=>setPermanent(e.target.checked)}),"永久有效"),
+          h("label",{className:"wb-check"},h("input",{type:"checkbox",checked:draft.enabled,onChange:e=>update("enabled",e.target.checked)}),"启用"),
+          validation && h("p",{role:"alert"},validation),
+          h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:busy},"保存"),button("取消",()=>setDraft(undefined)))),
+        h("div",{className:"wb-list"},...rows.map(row=>h("div",{className:"wb-row",key:row.id},
+          h("div",{className:"wb-row-main"},h("strong",null,row.name),h("div",{className:"wb-muted"},businessTopics[row.topic] || row.topic)),
+          h("span",{className:"wb-tag"},status(row)),
+          button("编辑",()=>start(row),{"aria-label":"编辑 "+row.name}),
+          row.enabled && button("停用",()=>save({...row,enabled:false}),{disabled:busy,"aria-label":"停用 "+row.name}))),
+          !rows.length && h("p",{className:"wb-muted"},"还没有口径。")));
+    }
+
     function ResourcePage() {
       const [projectFilter,setProjectFilter]=useState(resourceProject);
       const [kind,setKind]=useState("database"),[documents,setDocuments]=useState(),[record,setRecord]=useState();
@@ -47,7 +108,7 @@ window.__ModuleLoader__.load({
         [edit, setEdit] = useState(),
         [connection, setConnection] = useState(),
         [sharing, setSharing] = useState(),
-        [selected, setSelected] = useState({}),[preview,setPreview]=useState();
+        [selected, setSelected] = useState({}),[preview,setPreview]=useState(),[business,setBusiness]=useState();
       const load = async () => {
         try {
           const [c, n, g] = await Promise.all([
@@ -80,8 +141,39 @@ window.__ModuleLoader__.load({
           setBusy(false);
         }
       };
+      const openBusiness = async resource => {
+        resetView();
+        const n = ++previewRequest.current;
+        try {
+          const items = await api(query("/business-policies",{resourceId:resource.id}));
+          if (n === previewRequest.current) setBusiness({resource,items});
+        } catch (e) { if (n === previewRequest.current) setError(e.message); }
+      };
+      useEffect(()=>{
+        if (!catalog || !requestedBusinessPolicy) return;
+        const id = requestedBusinessPolicy;
+        requestedBusinessPolicy = null;
+        const resource = catalog.resources.find(item=>item.id===id && item.relation===businessPolicyRelation && !item.connectionId);
+        if (!resource) {
+          setError("当前账号无法打开这张业务口径表");
+          return;
+        }
+        setProjectFilter(resource.ownerProject);
+        openBusiness(resource);
+      },[catalog]);
+      const saveBusiness = async policy => {
+        setBusy(true); setError(""); setNotice("");
+        try {
+          const saved = await api("/business-policies",{resourceId:business.resource.id,policy});
+          setBusiness(current=>current?.resource.id===business.resource.id ? {...current,
+            items:[...current.items.filter(row=>row.id!==saved.id),saved]} : current);
+          setNotice("已保存");
+          return true;
+        } catch (e) { setError(e.message); return false; }
+        finally { setBusy(false); }
+      };
       const openPreview=async(r,section=r.sections[0]?.id,after="")=>{
-        const n=++previewRequest.current;setError("");setDocuments(undefined);documentRequest.current++;
+        const n=++previewRequest.current;setError("");setDocuments(undefined);setBusiness(undefined);documentRequest.current++;
         try{const page=await api(query("/resource-page",{resourceId:r.id,version:r.currentVersion,section,after}));if(n===previewRequest.current)setPreview({resource:r,section,page})}
         catch(e){if(n===previewRequest.current)setError(e.message)}
       };
@@ -95,7 +187,7 @@ window.__ModuleLoader__.load({
           await openPreview(r);
         }catch(e){if(n===documentRequest.current)setError(e.message)}
       };
-      const resetView=()=>{documentRequest.current++;previewRequest.current++;setDocuments(undefined);setPreview(undefined);setRecord(undefined)};
+      const resetView=()=>{documentRequest.current++;previewRequest.current++;setDocuments(undefined);setPreview(undefined);setRecord(undefined);setBusiness(undefined)};
       const change = (key, value) => setEdit({ ...edit, [key]: value });
       const startShare = (r) => {
         const map = {};
@@ -455,6 +547,7 @@ window.__ModuleLoader__.load({
             h("div",{className:"wb-heading"},h("h2",null,documents.resource.name),button("关闭预览",resetView)),
             documents.content!==undefined?h(React.Fragment,null,button("返回语料目录",()=>setDocuments({...documents,content:undefined})),markdown(documents.content)):
               h("div",{className:"wb-list"},...(documents.documents||[]).map(d=>h("div",{className:"wb-row",key:d.uri},h("span",{className:"wb-row-main"},d.title||d.name),button("阅读",()=>openCorpus(documents.resource,d.uri)))))),
+          business&&h(BusinessPolicyPanel,{key:business.resource.id,resource:business.resource,rows:business.items,close:resetView,save:saveBusiness,busy}),
           preview&&h("section",{className:"wb-section"},h("div",{className:"wb-heading"},h("h2",null,preview.resource.name),button("关闭预览",resetView)),
             h("div",{className:"wb-actions"},field("资料板块",h("select",{value:preview.section,onChange:e=>openPreview(preview.resource,e.target.value)},...preview.resource.sections.map(s=>h("option",{key:s.id,value:s.id},s.name||s.id)))),
               h("a",{className:"wb-inline",href:"/workbench-api/resource-export?"+new URLSearchParams({resourceId:preview.resource.id,version:preview.page.ref.version,section:preview.section}),download:true},"下载此板块")),
@@ -484,10 +577,10 @@ window.__ModuleLoader__.load({
                 h(
                   "span",
                   { className: "wb-tag" },
-                  r.currentVersion ? "已发布" : "尚未发布",
+                  r.relation===businessPolicyRelation ? "实时表" : r.currentVersion ? "已发布" : "尚未发布",
                 ),
-                r.currentVersion&&button("查看资料",()=>kind==="corpus"?openCorpus(r):openPreview(r)),
-                button("设置引用", () => startShare(r)),
+                r.relation===businessPolicyRelation ? button("查看资料",()=>openBusiness(r)) : r.currentVersion&&button("查看资料",()=>kind==="corpus"?openCorpus(r):openPreview(r)),
+                r.relation!==businessPolicyRelation && button("设置引用", () => startShare(r)),
                 button("编辑", () => setEdit(r)),
               ),
             ),
@@ -1527,6 +1620,9 @@ window.__ModuleLoader__.load({
             ),
           );
         }
+        if (requestedBusinessPolicy) ctx.effect(()=>{
+          ctx.layout.selectPanel("wb-resources");
+        },"open linked business policy table");
         function ReadableButton({sessionId}){
           const [project,setProject]=useState(),[error,setError]=useState(""),[busy,setBusy]=useState(false);
           if(!visibleSession(sessionId))return null;

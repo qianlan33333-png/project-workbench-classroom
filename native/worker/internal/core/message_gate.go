@@ -193,6 +193,9 @@ func (s *Store) deliveryGate(ctx context.Context, tx *sql.Tx, d Delivery) error 
 		if !route.Enabled || !route.AutoReply || route.Principal != r.Principal || m.State != "reply_queued" || routeRevision(route) != max(int64(1), m.RouteRevision) {
 			return ErrDenied
 		}
+		if m.BusinessValidUntil != nil && !time.Now().Before(*m.BusinessValidUntil) {
+			return errBusinessPolicyExpired
+		}
 		m.State = "reply_submitting"
 		_, e = tx.ExecContext(ctx, `UPDATE wb_messages SET body=? WHERE connection_id=? AND event_id=?`, jsonText(m), d.ConnectionID, m.EventID)
 		return e

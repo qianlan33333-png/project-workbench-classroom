@@ -564,7 +564,7 @@ export async function apply(ctx, config) {
               res.writeHead(200,{'content-type':response.headers.get('content-type'),'content-disposition':response.headers.get('content-disposition')});
               const stream=Readable.fromWeb(response.body);stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);return;
             }
-            const readPaths = new Set(["/reply-states","/reply-timeline","/reply-accounts","/reply-resources","/transports","/reply-projects","/reply-settings","/message-routes","/reply-session","/reply-channel-history","/resource-page", "/schedules", "/notification-targets",
+            const readPaths = new Set(["/reply-states","/reply-timeline","/reply-accounts","/reply-resources","/transports","/reply-projects","/reply-settings","/message-routes","/reply-session","/reply-channel-history","/resource-page", "/business-policies", "/schedules", "/notification-targets",
               "/resources",
               "/connections",
               "/grants",
@@ -574,7 +574,7 @@ export async function apply(ctx, config) {
               "/personal/settings",
               "/notifications",
             ]);
-            const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause",
+            const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause","/business-policies",
               "/resources",
               "/connections",
               "/grants",

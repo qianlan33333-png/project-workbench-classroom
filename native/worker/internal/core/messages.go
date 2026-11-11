@@ -51,12 +51,13 @@ type IncomingMessage struct {
 	ReplyTo        string     `json:"replyTo,omitempty"`
 }
 type StoredMessage struct {
-	RouteRevision    int64  `json:"routeRevision,omitempty"`
-	SettingsRevision int64  `json:"settingsRevision,omitempty"`
-	ExpertSkill      string `json:"expertSkill,omitempty"`
-	Knowledge        []Ref  `json:"knowledge,omitempty"`
-	ID               string `json:"id"`
-	DecisionID       string `json:"decisionId,omitempty"`
+	BusinessValidUntil *time.Time `json:"businessValidUntil,omitempty"`
+	RouteRevision      int64      `json:"routeRevision,omitempty"`
+	SettingsRevision   int64      `json:"settingsRevision,omitempty"`
+	ExpertSkill        string     `json:"expertSkill,omitempty"`
+	Knowledge          []Ref      `json:"knowledge,omitempty"`
+	ID                 string     `json:"id"`
+	DecisionID         string     `json:"decisionId,omitempty"`
 	IncomingMessage
 	RouteID   string      `json:"routeId,omitempty"`
 	Principal Principal   `json:"principal"`
@@ -417,6 +418,14 @@ func (s *Store) MessageDisposition(ctx context.Context, p Principal, connection,
 	if m.State != "received" && m.State != "reply_queued" {
 		return ErrConflict
 	}
+	if e = s.setMessageDisposition(ctx, tx, route, m, state); e != nil {
+		return e
+	}
+	return tx.Commit()
+}
+
+func (s *Store) setMessageDisposition(ctx context.Context, tx *sql.Tx, route MessageRoute, m StoredMessage, state string) error {
+	var e error
 	m.State = state
 	if state == "handoff" {
 		if routeRevision(route) != max(int64(1), m.RouteRevision) {
@@ -439,10 +448,8 @@ func (s *Store) MessageDisposition(ctx context.Context, p Principal, connection,
 			}
 		}
 	}
-	if _, e = tx.ExecContext(ctx, `UPDATE wb_messages SET body=? WHERE connection_id=? AND event_id=?`, jsonText(m), connection, event); e != nil {
-		return e
-	}
-	return tx.Commit()
+	_, e = tx.ExecContext(ctx, `UPDATE wb_messages SET body=? WHERE connection_id=? AND event_id=?`, jsonText(m), m.ConnectionID, m.EventID)
+	return e
 }
 
 func (s *Store) SetMessageState(ctx context.Context, p Principal, connection, event, state string) error {

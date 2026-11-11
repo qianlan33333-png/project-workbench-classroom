@@ -300,7 +300,8 @@ func (s *Store) PrepareReplyDelivery(ctx context.Context, id string, connected T
 		return d, false, err
 	}
 	if err = s.deliveryGate(ctx, tx, d); err != nil {
-		if !errors.Is(err, ErrDenied) && !errors.Is(err, ErrConflict) {
+		expired := errors.Is(err, errBusinessPolicyExpired)
+		if !expired && !errors.Is(err, ErrDenied) && !errors.Is(err, ErrConflict) {
 			return d, false, err
 		}
 		if _, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT reply_gate`); err != nil {
@@ -309,7 +310,12 @@ func (s *Store) PrepareReplyDelivery(ctx context.Context, id string, connected T
 		d.State = "failed"
 		d.Error = "自动回复未提交：会话、资料或配置已停止或失效。"
 		d.UpdatedAt = time.Now().UTC()
-		if _, err = tx.ExecContext(ctx, `UPDATE wb_messages SET body=JSON_SET(body,'$.state','reply_failed') WHERE connection_id=? AND event_id=? AND message_state='reply_queued'`, d.ConnectionID, d.Target["replyTo"]); err != nil {
+		if expired {
+			d.Error = "自动回复未提交：业务口径已过期，已转人工。"
+			if err = s.expiredBusinessReply(ctx, tx, d); err != nil {
+				return d, false, err
+			}
+		} else if _, err = tx.ExecContext(ctx, `UPDATE wb_messages SET body=JSON_SET(body,'$.state','reply_failed') WHERE connection_id=? AND event_id=? AND message_state='reply_queued'`, d.ConnectionID, d.Target["replyTo"]); err != nil {
 			return d, false, err
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE wb_deliveries SET state=?,body=? WHERE id=?`, d.State, jsonText(d), id); err != nil {
@@ -332,4 +338,16 @@ func (s *Store) PrepareReplyDelivery(ctx context.Context, id string, connected T
 		return d, false, err
 	}
 	return d, true, tx.Commit()
+}
+
+func (s *Store) expiredBusinessReply(ctx context.Context, tx *sql.Tx, d Delivery) error {
+	m, err := scanJSON[StoredMessage](tx.QueryRowContext(ctx, `SELECT body FROM wb_messages WHERE connection_id=? AND event_id=?`, d.ConnectionID, d.Target["replyTo"]))
+	if err != nil {
+		return err
+	}
+	route, err := scanJSON[MessageRoute](tx.QueryRowContext(ctx, `SELECT body FROM wb_message_routes WHERE id=? FOR UPDATE`, m.RouteID))
+	if err != nil {
+		return err
+	}
+	return s.setMessageDisposition(ctx, tx, route, m, "handoff")
 }

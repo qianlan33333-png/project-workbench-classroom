@@ -142,3 +142,18 @@ CREATE TABLE IF NOT EXISTS wb_deliveries (
  UNIQUE(run_id,item_id)
 );
 CREATE TABLE IF NOT EXISTS wb_delivery_transports(id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY, body JSON NOT NULL);
+
+CREATE TABLE IF NOT EXISTS wb_business_policies (
+ resource_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ topic VARCHAR(48) NOT NULL,
+ name VARCHAR(160) NOT NULL,
+ aliases VARCHAR(512) NOT NULL DEFAULT '',
+ answer TEXT NOT NULL,
+ enabled BOOLEAN NOT NULL DEFAULT TRUE,
+ valid_from DATETIME(6) NULL,
+ valid_until DATETIME(6) NULL,
+ PRIMARY KEY(resource_id,id),
+ KEY business_lookup(resource_id,topic,enabled,valid_until),
+ FOREIGN KEY(resource_id) REFERENCES wb_resources(id)
+);

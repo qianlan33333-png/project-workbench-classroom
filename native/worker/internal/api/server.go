@@ -46,6 +46,7 @@ func (a *Server) Handler() http.Handler {
 	a.configRoutes(mux)
 	a.personalRoutes(mux)
 	a.messageRoutes(mux)
+	a.businessPolicyRoutes(mux)
 	a.replyRoutes(mux)
 	a.scheduleRoutes(mux)
 	a.resourceRoutes(mux)
@@ -243,6 +244,9 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 		cancel()
 		if e == nil {
 			a.messageTools(s, bound)
+			if a.Store.HasBusinessPolicies(bound.ProjectID) {
+				a.businessPolicyTool(s, bound)
+			}
 			a.resourceTools(s, bound)
 			s.RemoveTools("message_prepare")
 			return s
