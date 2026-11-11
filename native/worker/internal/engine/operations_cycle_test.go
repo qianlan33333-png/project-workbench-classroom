@@ -41,6 +41,9 @@ func TestOperationsCycleSharesRefreshAcrossSeparateBatches(t *testing.T) {
 		}
 		key := call.Arguments["operationKey"].(string)
 		operations = append(operations, key)
+		if call.Name == "resource_sync" && call.Arguments["destination"] != "profiles" {
+			return nil, fmt.Errorf("profile refresh pointed to the wrong resource: %v", call.Arguments)
+		}
 		if call.Name == "strategy_select" {
 			data := call.Arguments["data"].(map[string]any)
 			if data["version"] != runID(id+"-data") || call.Arguments["asOf"] != stamp {
@@ -66,14 +69,14 @@ func TestOperationsCycleSharesRefreshAcrossSeparateBatches(t *testing.T) {
 		}
 		return nil
 	})
-	env.ExecuteWorkflow(OperationsCycle, OperationsCycleInput{Principal: p, Section: "main", CleanDestination: "clean",
+	env.ExecuteWorkflow(OperationsCycle, OperationsCycleInput{Principal: p, Section: "main", CleanDestination: "clean", ProfileDirectory: "profiles",
 		StrategyKeys: []string{"hxc:ongoing"}, SelectedDestination: "selected", DraftDestination: "drafts",
 		AdditionalBatch: &OperationsCycleBatch{"hxc:onboarding", "newcomer-selected", "newcomer-drafts"}})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
 	var expected []string
-	for _, suffix := range []string{"-data", "-select", "-generate-0", "-crm", "-additional-select", "-additional-generate-0", "-additional-crm"} {
+	for _, suffix := range []string{"-data", "-select", "-generate-0", "-crm", "-additional-select", "-additional-generate-0", "-additional-crm", "-profile-directory"} {
 		expected = append(expected, id+suffix)
 	}
 	if !reflect.DeepEqual(operations, expected) {

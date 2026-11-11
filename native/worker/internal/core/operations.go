@@ -7,6 +7,8 @@ import (
 	"workbench-native/internal/operations"
 )
 
+const OperationsProfileSource = "operations-profile-directory"
+
 func (s *Store) CleanupOperationsSources(ctx context.Context, run Run) error {
 	if run.Operation != "data_refresh" {
 		return nil
@@ -78,6 +80,9 @@ func (s *Store) TrimOperationsSelection(ctx context.Context, r Run) error {
 	}
 	defer tx.Rollback()
 	if e = guardWrite(ctx, tx); e != nil {
+		return e
+	}
+	if _, e = s.lockSnapshotWrite(ctx, tx, r.Principal, r.Destination); e != nil {
 		return e
 	}
 	var state string

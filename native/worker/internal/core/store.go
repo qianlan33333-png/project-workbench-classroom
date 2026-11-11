@@ -151,7 +151,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return e
 		}
 	}
-	return s.ensureReplyActivitySource(ctx)
+	if err := s.ensureReplyActivitySource(ctx); err != nil {
+		return err
+	}
+	return s.migrateResourceGrants(ctx)
 }
 func jsonText(v any) string { b, _ := json.Marshal(v); return string(b) }
 func scanJSON[T any](row interface{ Scan(...any) error }) (T, error) {
@@ -255,7 +258,7 @@ func (s *Store) Resources(ctx context.Context, p Principal) ([]Resource, error) 
 		}
 		r.CurrentVersion = version
 		r.Revision = revision
-		if p.Kind == "project" && r.OwnerProject != p.ProjectID && r.MaintainerProject != p.ProjectID {
+		if p.Kind == "project" {
 			sections := []Section{}
 			for _, v := range r.Sections {
 				if allowed[r.ID][v.ID] || allowed[r.ID]["*"] {
@@ -290,7 +293,16 @@ func (s *Store) Resources(ctx context.Context, p Principal) ([]Resource, error) 
 	}
 	return out, rows.Err()
 }
+
+// PutResource also provisions the project access for a resource created by an existing
+// workbench workflow. Browser registration does not derive ACLs from ownership.
 func (s *Store) PutResource(ctx context.Context, p Principal, r Resource) error {
+	return s.putResource(ctx, p, r, true)
+}
+func (s *Store) RegisterResource(ctx context.Context, p Principal, r Resource) error {
+	return s.putResource(ctx, p, r, false)
+}
+func (s *Store) putResource(ctx context.Context, p Principal, r Resource, seed bool) error {
 	if !p.IsOwner() || r.ID == replyActivitySource.ResourceID || r.Relation == VaultRelation || validVaultID(r.ID) {
 		return ErrDenied
 	}
@@ -298,8 +310,20 @@ func (s *Store) PutResource(ctx context.Context, p Principal, r Resource) error 
 		return e
 	}
 	if r.Revision == 0 {
-		_, e := s.DB.ExecContext(ctx, `INSERT INTO wb_resources(id,owner_project,body) VALUES(?,?,?)`, r.ID, r.OwnerProject, jsonText(r))
-		return e
+		tx, e := s.DB.BeginTx(ctx, nil)
+		if e != nil {
+			return e
+		}
+		defer tx.Rollback()
+		if _, e = tx.ExecContext(ctx, `INSERT INTO wb_resources(id,owner_project,body) VALUES(?,?,?)`, r.ID, r.OwnerProject, jsonText(r)); e != nil {
+			return e
+		}
+		if seed {
+			if e = seedResourceGrants(ctx, tx, r); e != nil {
+				return e
+			}
+		}
+		return tx.Commit()
 	}
 	result, e := s.DB.ExecContext(ctx, `UPDATE wb_resources SET owner_project=?,body=?,revision=revision+1 WHERE id=? AND revision=?`, r.OwnerProject, jsonText(r), r.ID, r.Revision)
 	if e != nil {
@@ -320,44 +344,16 @@ func (s *Store) Granted(ctx context.Context, id, project, section string) (bool,
 	return n > 0, e
 }
 func (s *Store) SetGrant(ctx context.Context, p Principal, g Grant) error {
-	if !p.IsOwner() || g.ResourceID == replyActivitySource.ResourceID {
-		return ErrDenied
-	}
-	r, e := s.Resource(ctx, g.ResourceID)
-	if e != nil {
-		return e
-	}
-	allowed := map[string]bool{"*": true}
-	for _, v := range r.Sections {
-		allowed[v.ID] = true
-	}
-	for _, v := range g.Sections {
-		if !allowed[v] {
-			return ErrInvalid
-		}
-	}
-	tx, e := s.DB.BeginTx(ctx, nil)
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback()
-	if _, e = tx.ExecContext(ctx, `DELETE FROM wb_grants WHERE resource_id=? AND project_id=?`, g.ResourceID, g.ProjectID); e != nil {
-		return e
-	}
-	for _, section := range g.Sections {
-		if _, e = tx.ExecContext(ctx, `INSERT IGNORE INTO wb_grants VALUES(?,?,?)`, g.ResourceID, g.ProjectID, section); e != nil {
-			return e
-		}
-	}
-	return tx.Commit()
+	_, err := s.SetResourceGrant(ctx, p, g.ResourceID, ResourceAccess{ProjectID: g.ProjectID, Sections: g.Sections})
+	return err
 }
 func (s *Store) Snapshot(ctx context.Context, id, version string) (Snapshot, error) {
-	return scanSnapshot(s.DB.QueryRowContext(ctx, `SELECT body,state,record_count,published_at FROM wb_snapshots WHERE resource_id=? AND version=?`, id, version))
+	return readSnapshot(ctx, s.DB, id, version)
 }
-func scanSnapshot(row *sql.Row) (Snapshot, error) {
+func readSnapshot(ctx context.Context, q resourceQuery, id, version string) (Snapshot, error) {
 	var v Snapshot
 	var b []byte
-	e := row.Scan(&b, &v.State, &v.Count, &v.PublishedAt)
+	e := q.QueryRowContext(ctx, `SELECT body,state,record_count,published_at FROM wb_snapshots WHERE resource_id=? AND version=?`, id, version).Scan(&b, &v.State, &v.Count, &v.PublishedAt)
 	if e != nil {
 		return v, e
 	}
@@ -379,10 +375,7 @@ func (s *Store) canWrite(ctx context.Context, p Principal, id string) (Resource,
 	if e != nil {
 		return r, e
 	}
-	if r.Relation == VaultRelation || (!p.IsOwner() && (p.Kind != "project" || (r.OwnerProject != p.ProjectID && r.MaintainerProject != p.ProjectID))) {
-		return r, ErrDenied
-	}
-	return r, nil
+	return r, s.snapshotWriteAllowed(ctx, s.DB, p, r)
 }
 func (s *Store) BeginSnapshot(ctx context.Context, p Principal, v Snapshot) error {
 	r, e := s.canWrite(ctx, p, v.ResourceID)
@@ -427,6 +420,9 @@ func (s *Store) BeginSnapshot(ctx context.Context, p Principal, v Snapshot) erro
 	if e = guardWrite(ctx, tx); e != nil {
 		return e
 	}
+	if _, e = s.lockSnapshotWrite(ctx, tx, p, v.ResourceID); e != nil {
+		return e
+	}
 	_, e = tx.ExecContext(ctx, `INSERT INTO wb_snapshots(resource_id,version,previous_version,state,body) VALUES(?,?,?,'staging',?)`, v.ResourceID, v.Version, v.Previous, jsonText(v))
 	if e != nil {
 		return e
@@ -443,12 +439,15 @@ func (s *Store) Stage(ctx context.Context, p Principal, id, version string, reco
 	if len(records) == 0 {
 		return nil
 	}
-	tx, e := s.DB.BeginTx(ctx, nil)
+	tx, e := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
 	if e = guardWrite(ctx, tx); e != nil {
+		return e
+	}
+	if _, e = s.lockSnapshotWrite(ctx, tx, p, id); e != nil {
 		return e
 	}
 	var state string
@@ -461,6 +460,9 @@ func (s *Store) Stage(ctx context.Context, p Principal, id, version string, reco
 	}
 	var snapshot Snapshot
 	if e = json.Unmarshal(raw, &snapshot); e != nil {
+		return e
+	}
+	if e = AuthorizeAll(ctx, resourceTransactionGate{tx}, p, snapshot.Dependencies); e != nil {
 		return e
 	}
 	validator, e := (Method{OutputSchema: snapshot.RecordSchema}).ResolveOutput()
@@ -540,12 +542,18 @@ func (s *Store) Publish(ctx context.Context, p Principal, id, version string, ex
 			return v, e
 		}
 	}
-	tx, e := s.DB.BeginTx(ctx, nil)
+	tx, e := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if e != nil {
 		return v, e
 	}
 	defer tx.Rollback()
 	if e = guardWrite(ctx, tx); e != nil {
+		return v, e
+	}
+	if _, e = s.lockSnapshotWrite(ctx, tx, p, id); e != nil {
+		return v, e
+	}
+	if e = AuthorizeAll(ctx, resourceTransactionGate{tx}, p, v.Dependencies); e != nil {
 		return v, e
 	}
 	var current, state, previous string

@@ -222,7 +222,7 @@ func (a *Server) moreTools(s *mcp.Server, bound core.Principal) {
 		_, e := a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.Followup, engine.FollowupInput{RunID: r.ID, NextAt: in.NextAt})
 		return nil, RunRef{RunID: r.ID}, accepted(e)
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "memory_list", Description: "Read personal memories and their sources. Available only in 今日."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, struct {
+	mcp.AddTool(s, &mcp.Tool{Name: "memory_list", Description: "Read personal memories and their sources. Available only in the SuperAgent session."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, struct {
 		Memories []core.Memory `json:"memories"`
 	}, error) {
 		v, e := a.Store.Memories(ctx, bound)
@@ -285,19 +285,26 @@ func (a *Server) moreTools(s *mcp.Server, bound core.Principal) {
 		if r.Operation != "generate" && r.Operation != "pipeline" && r.Operation != "sync" && r.Operation != "data_refresh" && r.Operation != "strategy_select" {
 			return nil, RunRef{}, core.ErrInvalid
 		}
-		_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.Principal.ProjectID, Operation: r.Operation})
+		_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.WriteScope(), Operation: r.Operation})
 		return nil, RunRef{RunID: r.ID}, accepted(e)
 	})
 }
 
 func (a *Server) syncResource(ctx context.Context, p core.Principal, in SyncInput) (*mcp.CallToolResult, RunRef, error) {
-	if p.Kind != "project" || !core.ValidID(in.OperationKey) {
+	if (p.Kind != "project" && p.Kind != "personal") || !core.ValidID(in.OperationKey) {
+		return nil, RunRef{}, core.ErrDenied
+	}
+	resource, e := a.Store.Resource(ctx, in.Destination)
+	if e != nil {
+		return nil, RunRef{}, e
+	}
+	if resource.ConnectionID == "" {
 		return nil, RunRef{}, core.ErrDenied
 	}
 	r := core.Run{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.OperationKey)).String(), Principal: p, Operation: "sync", Destination: in.Destination, Title: in.Title}
 	if e := a.Store.SaveRun(ctx, r); e != nil {
 		return nil, RunRef{}, e
 	}
-	_, e := a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.Principal.ProjectID, Operation: r.Operation})
+	_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: r.WriteScope(), Operation: r.Operation})
 	return nil, RunRef{RunID: r.ID}, accepted(e)
 }

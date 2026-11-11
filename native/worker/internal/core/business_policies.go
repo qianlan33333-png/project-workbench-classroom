@@ -88,6 +88,14 @@ func (s *Store) PutBusinessPolicy(ctx context.Context, p Principal, id string, v
 	if _, err := s.businessPolicyResource(ctx, id); err != nil {
 		return v, err
 	}
+	create := v.ID == ""
+	if create {
+		v.ID = uuid.NewString()
+	}
+	return saveBusinessPolicy(ctx, s.DB, id, v, create)
+}
+
+func normalizeBusinessPolicy(v BusinessPolicy) (BusinessPolicy, error) {
 	v.Topic = strings.TrimSpace(v.Topic)
 	v.Name = strings.TrimSpace(v.Name)
 	v.Aliases = strings.TrimSpace(v.Aliases)
@@ -107,9 +115,21 @@ func (s *Store) PutBusinessPolicy(ctx context.Context, p Principal, id string, v
 			return v, ErrInvalid
 		}
 	}
-	if v.ID == "" {
-		v.ID = uuid.NewString()
-		_, err := s.DB.ExecContext(ctx, `INSERT INTO wb_business_policies
+	return v, nil
+}
+
+type policyWriter interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func saveBusinessPolicy(ctx context.Context, q policyWriter, id string, v BusinessPolicy, create bool) (BusinessPolicy, error) {
+	v, err := normalizeBusinessPolicy(v)
+	if err != nil {
+		return v, err
+	}
+	if create {
+		_, err := q.ExecContext(ctx, `INSERT INTO wb_business_policies
 			(resource_id,id,topic,name,aliases,answer,enabled,valid_from,valid_until) VALUES (?,?,?,?,?,?,?,?,?)`,
 			id, v.ID, v.Topic, v.Name, v.Aliases, v.Answer, v.Enabled, v.ValidFrom, v.ValidUntil)
 		return v, err
@@ -117,7 +137,7 @@ func (s *Store) PutBusinessPolicy(ctx context.Context, p Principal, id string, v
 	if _, err := uuid.Parse(v.ID); err != nil {
 		return v, ErrInvalid
 	}
-	result, err := s.DB.ExecContext(ctx, `UPDATE wb_business_policies SET topic=?,name=?,aliases=?,answer=?,enabled=?,valid_from=?,valid_until=?
+	result, err := q.ExecContext(ctx, `UPDATE wb_business_policies SET topic=?,name=?,aliases=?,answer=?,enabled=?,valid_from=?,valid_until=?
 		WHERE resource_id=? AND id=?`, v.Topic, v.Name, v.Aliases, v.Answer, v.Enabled, v.ValidFrom, v.ValidUntil, id, v.ID)
 	if err != nil {
 		return v, err
@@ -127,7 +147,7 @@ func (s *Store) PutBusinessPolicy(ctx context.Context, p Principal, id string, v
 			return v, err
 		}
 		var exists int
-		err = s.DB.QueryRowContext(ctx, `SELECT 1 FROM wb_business_policies WHERE resource_id=? AND id=?`, id, v.ID).Scan(&exists)
+		err = q.QueryRowContext(ctx, `SELECT 1 FROM wb_business_policies WHERE resource_id=? AND id=?`, id, v.ID).Scan(&exists)
 		return v, err
 	}
 	return v, nil
@@ -161,6 +181,13 @@ func (s *Store) LookupBusinessFacts(ctx context.Context, p Principal, connection
 	if r.OwnerProject != p.ProjectID {
 		return out, ErrDenied
 	}
+	if len(r.Sections) != 1 {
+		return out, ErrDenied
+	}
+	ref := Ref{r.ID, LivePolicyVersion, r.Sections[0].ID}
+	if err = Authorize(ctx, s, p, ref); err != nil {
+		return out, err
+	}
 	hint = strings.Join(strings.Fields(hint), "")
 	rows, err := s.DB.QueryContext(ctx, `SELECT name,answer,valid_until FROM wb_business_policies
 		WHERE resource_id=? AND topic=? AND enabled
@@ -185,6 +212,12 @@ func (s *Store) LookupBusinessFacts(ctx context.Context, p Principal, connection
 		if err != nil {
 			return BusinessFacts{}, err
 		}
+	}
+	if err = Authorize(ctx, s, p, ref); err != nil {
+		return BusinessFacts{}, err
+	}
+	if err = s.RememberRead(ctx, p, []Ref{ref}); err != nil {
+		return BusinessFacts{}, err
 	}
 	return out, nil
 }

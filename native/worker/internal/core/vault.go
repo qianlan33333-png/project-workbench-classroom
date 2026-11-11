@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -20,8 +21,9 @@ const VaultRelation = "obsidian-vault"
 const vaultSection = "text"
 
 type VaultChange struct {
-	Path string  `json:"path"`
-	Text *string `json:"text"`
+	Path   string  `json:"path"`
+	Text   *string `json:"text"`
+	Create bool    `json:"create,omitempty"`
 }
 
 func validVaultID(id string) bool {
@@ -49,8 +51,25 @@ func validVaultPath(name string) bool {
 }
 
 func (s *Store) CreateVault(ctx context.Context, p Principal, root, id, name string) (Resource, error) {
+	return s.createVault(ctx, p, root, id, name, "")
+}
+
+func (s *Store) CreateVaultLibrary(ctx context.Context, p Principal, root, commandID string, in LibraryInput) (ResourceDiscovery, error) {
+	if in.Kind != "corpus" || len(in.Columns) != 0 {
+		return ResourceDiscovery{}, ErrInvalid
+	}
+	r, err := s.createVault(ctx, p, root, libraryID("vault", p.SessionID+"/"+commandID), in.Name, in.Description)
+	if err != nil {
+		return ResourceDiscovery{}, err
+	}
+	return ResourceDiscovery{ID: r.ID, Name: r.Name, Kind: r.Kind, Description: r.Description, Access: "manage", Version: r.CurrentVersion, Editable: true, Sections: r.Sections}, nil
+}
+
+func (s *Store) createVault(ctx context.Context, p Principal, root, id, name, description string) (Resource, error) {
 	if !p.IsOwner() {
-		return Resource{}, ErrDenied
+		if err := s.CheckLibraryPersonal(ctx, p); err != nil {
+			return Resource{}, err
+		}
 	}
 	name = strings.TrimSpace(name)
 	if !filepath.IsAbs(root) || !validVaultID(id) || name == "" ||
@@ -58,16 +77,19 @@ func (s *Store) CreateVault(ctx context.Context, p Principal, root, id, name str
 		return Resource{}, ErrInvalid
 	}
 	if existing, err := s.Resource(ctx, id); err == nil {
-		if existing.Relation != VaultRelation || existing.Name != name {
+		if existing.Relation != VaultRelation || existing.Name != name || existing.Description != strings.TrimSpace(description) {
 			return Resource{}, ErrConflict
 		}
 		return existing, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Resource{}, err
 	}
-	r := Resource{ID: id, Name: name, Relation: VaultRelation, Sections: []Section{
+	r := Resource{ID: id, Name: name, Description: strings.TrimSpace(description), Kind: "corpus", NativeEditable: true, Relation: VaultRelation, Sections: []Section{
 		{ID: vaultSection, Name: "笔记", Fields: []string{"name", "text", "sha256"}},
 	}}
+	if err := r.Validate(); err != nil {
+		return Resource{}, err
+	}
 	version := Digest(id)
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return Resource{}, err
@@ -91,7 +113,7 @@ func (s *Store) CreateVault(ctx context.Context, p Principal, root, id, name str
 		r.ID, jsonText(r), version); err != nil {
 		_ = tx.Rollback()
 		if existing, readErr := s.Resource(ctx, id); readErr == nil {
-			if existing.Relation != VaultRelation || existing.Name != name {
+			if existing.Relation != VaultRelation || existing.Name != name || existing.Description != strings.TrimSpace(description) {
 				return Resource{}, ErrConflict
 			}
 			return existing, nil
@@ -111,12 +133,25 @@ func (s *Store) CreateVault(ctx context.Context, p Principal, root, id, name str
 }
 
 func (s *Store) SaveVault(ctx context.Context, p Principal, root, id, previous string, changes []VaultChange) (Snapshot, error) {
-	if !p.IsOwner() {
-		return Snapshot{}, ErrDenied
-	}
-	if !filepath.IsAbs(root) || !validVaultID(id) || len(previous) != 64 || !ValidID(previous) ||
-		len(changes) == 0 || len(changes) > 200 {
+	if len(previous) != 64 || !ValidID(previous) || len(changes) == 0 || len(changes) > 200 {
 		return Snapshot{}, ErrInvalid
+	}
+	version := Digest(struct {
+		Previous string
+		Changes  []VaultChange
+	}{previous, changes})
+	return s.saveVault(ctx, p, root, id, previous, version, "", func(_ []Record) ([]VaultChange, string, error) {
+		return changes, "", nil
+	})
+}
+
+// saveVault serializes changes and permission updates on the resource row.
+func (s *Store) saveVault(ctx context.Context, p Principal, root, id, previous, version, operation string, build func([]Record) ([]VaultChange, string, error)) (Snapshot, error) {
+	if !filepath.IsAbs(root) || !validVaultID(id) {
+		return Snapshot{}, ErrInvalid
+	}
+	if err := p.Validate(); err != nil {
+		return Snapshot{}, err
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -133,16 +168,19 @@ func (s *Store) SaveVault(ctx context.Context, p Principal, root, id, previous s
 	if r.Relation != VaultRelation || r.ConnectionID != "" {
 		return Snapshot{}, ErrDenied
 	}
-	version := Digest(struct {
-		Previous string
-		Changes  []VaultChange
-	}{previous, changes})
-	readSnapshot := func(version string) (Snapshot, error) {
-		return scanSnapshot(tx.QueryRowContext(ctx, `SELECT body,state,record_count,published_at FROM wb_snapshots WHERE resource_id=? AND version=?`, id, version))
+	if err = s.resourceWriteAllowed(ctx, tx, p, r); err != nil {
+		return Snapshot{}, err
 	}
-	priorAttempt, err := readSnapshot(version)
+	if previous == "" {
+		previous = r.CurrentVersion
+	}
+	load := func(version string) (Snapshot, error) { return readSnapshot(ctx, tx, id, version) }
+	priorAttempt, err := load(version)
 	switch {
 	case err == nil && priorAttempt.State == "published":
+		if priorAttempt.VaultOperation != operation {
+			return Snapshot{}, ErrConflict
+		}
 		return priorAttempt, nil
 	case err == nil && (priorAttempt.State != "staging" || priorAttempt.Previous != previous):
 		return Snapshot{}, ErrConflict
@@ -161,12 +199,16 @@ func (s *Store) SaveVault(ctx context.Context, p Principal, root, id, previous s
 	if err != nil {
 		return Snapshot{}, err
 	}
-	published, err := readSnapshot(previous)
+	published, err := load(previous)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	if published.State != "published" || published.Count != len(records) || (published.SourceWatermark != "" && published.SourceWatermark != fingerprint) {
 		return Snapshot{}, fmt.Errorf("%w: Markdown directory differs from the published snapshot", ErrConflict)
+	}
+	changes, itemID, err := build(records)
+	if err != nil {
+		return Snapshot{}, err
 	}
 	notes, err := applyVaultChanges(records, changes)
 	if err != nil {
@@ -200,7 +242,7 @@ func (s *Store) SaveVault(ctx context.Context, p Principal, root, id, previous s
 		}
 	}
 	snapshot := Snapshot{ResourceID: id, Version: version, Previous: previous,
-		Sections: r.Sections, SourceWatermark: fingerprint}
+		Sections: r.Sections, SourceWatermark: fingerprint, VaultOperation: operation, VaultItemID: itemID}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO wb_snapshots
 		(resource_id,version,previous_version,state,body,record_count,published_at)
 		VALUES(?,?,?,'published',?,?,UTC_TIMESTAMP(6))`, id, version, previous, jsonText(snapshot), len(records)); err != nil {
@@ -216,7 +258,7 @@ func (s *Store) SaveVault(ctx context.Context, p Principal, root, id, previous s
 	if _, err = tx.ExecContext(ctx, `UPDATE wb_resources SET current_version=?,revision=revision+1 WHERE id=?`, version, id); err != nil {
 		return Snapshot{}, err
 	}
-	snapshot, err = readSnapshot(version)
+	snapshot, err = load(version)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -226,6 +268,79 @@ func (s *Store) SaveVault(ctx context.Context, p Principal, root, id, previous s
 		return Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func (s *Store) ChangeVaultItem(ctx context.Context, p Principal, root string, in LibraryChange) (LibraryReceipt, error) {
+	out := LibraryReceipt{ResourceID: in.ResourceID, Action: in.Action, ItemID: in.ItemID}
+	if !ValidID(in.OperationKey) {
+		return out, ErrInvalid
+	}
+	version := Digest([]string{p.SessionID, in.ResourceID, in.OperationKey})
+	v, err := s.saveVault(ctx, p, root, in.ResourceID, "", version, Digest(in), func(records []Record) ([]VaultChange, string, error) {
+		return vaultItemChanges(records, in)
+	})
+	if err != nil {
+		return out, err
+	}
+	out.ItemID, out.Version = v.VaultItemID, v.Version
+	return out, nil
+}
+
+func vaultItemChanges(records []Record, in LibraryChange) ([]VaultChange, string, error) {
+	var oldPath, body string
+	switch in.Action {
+	case "create":
+		if in.ItemID != "" || len(in.Fields) != 2 {
+			return nil, "", ErrInvalid
+		}
+	case "update", "delete":
+		for _, record := range records {
+			if record.ID == in.ItemID {
+				oldPath, body = record.Fields["name"].(string), record.Fields["text"].(string)
+				break
+			}
+		}
+		if oldPath == "" {
+			return nil, "", ErrConflict
+		}
+		if in.Action == "delete" {
+			if len(in.Fields) != 0 {
+				return nil, "", ErrInvalid
+			}
+			return []VaultChange{{Path: oldPath}}, in.ItemID, nil
+		}
+		if len(in.Fields) == 0 {
+			return nil, "", ErrInvalid
+		}
+	default:
+		return nil, "", ErrInvalid
+	}
+	name := oldPath
+	for key, value := range in.Fields {
+		text, ok := value.(string)
+		if !ok {
+			return nil, "", ErrInvalid
+		}
+		switch key {
+		case "title":
+			name = strings.TrimSpace(text)
+			if name != "" && !strings.EqualFold(path.Ext(name), ".md") {
+				name += ".md"
+			}
+		case "markdown":
+			body = text
+		default:
+			return nil, "", ErrInvalid
+		}
+	}
+	if !validVaultPath(name) {
+		return nil, "", ErrInvalid
+	}
+	changes := []VaultChange{{Path: name, Text: &body, Create: name != oldPath}}
+	if oldPath != "" && oldPath != name {
+		changes = append(changes, VaultChange{Path: oldPath})
+	}
+	return changes, fmt.Sprintf("%x", sha256.Sum256([]byte(name))), nil
 }
 
 func applyVaultChanges(records []Record, changes []VaultChange) (map[string]string, error) {
@@ -239,6 +354,9 @@ func applyVaultChanges(records []Record, changes []VaultChange) (map[string]stri
 			return nil, ErrInvalid
 		}
 		touched[change.Path] = true
+		if _, exists := notes[change.Path]; change.Create && exists {
+			return nil, ErrConflict
+		}
 		if change.Text == nil {
 			if _, exists := notes[change.Path]; !exists {
 				return nil, ErrConflict

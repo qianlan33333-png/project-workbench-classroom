@@ -30,7 +30,7 @@ func (g *testGate) Granted(_ context.Context, r, p, section string) (bool, error
 	return g.grants[r+"/"+p+"/"+section] || g.grants[r+"/"+p+"/*"], nil
 }
 func TestResourceMatrixAndRevocation(t *testing.T) {
-	g := &testGate{resources: map[string]Resource{"A": {ID: "A", OwnerProject: "A"}, "D": {ID: "D"}}, snapshots: map[string]Snapshot{}, grants: map[string]bool{"D/A/public": true, "D/B/public": true}}
+	g := &testGate{resources: map[string]Resource{"A": {ID: "A", OwnerProject: "A"}, "D": {ID: "D"}}, snapshots: map[string]Snapshot{}, grants: map[string]bool{"A/A/*": true, "D/A/public": true, "D/B/public": true}}
 	for _, id := range []string{"A", "D"} {
 		g.snapshots[id+"/v1"] = Snapshot{ResourceID: id, Version: "v1", State: "published", Sections: []Section{{ID: "public"}, {ID: "private"}}}
 	}

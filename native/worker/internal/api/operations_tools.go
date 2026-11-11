@@ -58,7 +58,7 @@ func (a *Server) refreshOperations(ctx context.Context, p core.Principal, in Ref
 		if e != nil {
 			return nil, RunRef{}, e
 		}
-		if resource.OwnerProject != p.ProjectID && resource.MaintainerProject != p.ProjectID {
+		if a.Store.CheckResourceWrite(ctx, p, source.ResourceID) != nil {
 			return nil, RunRef{}, core.ErrDenied
 		}
 		found := false

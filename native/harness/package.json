@@ -46,6 +46,7 @@
     "reply-evidence.js",
     "channel-context.js",
     "resource-documents.js",
+    "library-command.js",
     "vault-markdown.js",
     "vault-editor.bundle.js",
     "vault-editor.LICENSES.txt"

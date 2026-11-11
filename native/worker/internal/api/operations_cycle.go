@@ -42,6 +42,23 @@ func (a *Server) configureLocalOperationsSchedule(ctx context.Context, cfg opera
 			return view, e
 		}
 	}
+	if in.ProfileDirectory != "" {
+		if seen[in.ProfileDirectory] {
+			return view, core.ErrInvalid
+		}
+		if e := a.Store.RequireSourceKind(ctx, p, in.ProfileDirectory, core.OperationsProfileSource); e != nil {
+			return view, e
+		}
+		directory, e := a.Store.Resource(ctx, in.ProfileDirectory)
+		if e != nil {
+			return view, e
+		}
+		ref := core.Ref{ResourceID: directory.ID, Version: directory.CurrentVersion, Section: operationsProfileSection}
+		if directory.OwnerProject != p.ProjectID || directory.CurrentVersion == "" || core.Authorize(ctx, a.Store, p, ref) != nil {
+			return view, core.ErrDenied
+		}
+		seen[in.ProfileDirectory] = true
+	}
 	destinations := []string{in.CleanDestination, in.SelectedDestination, in.DraftDestination}
 	if batch := in.AdditionalBatch; batch != nil {
 		if batch.Strategy == strategy || !originalOperationsStrategy.MatchString(batch.Strategy) {
@@ -54,9 +71,8 @@ func (a *Server) configureLocalOperationsSchedule(ctx context.Context, cfg opera
 			return view, core.ErrInvalid
 		}
 		seen[id] = true
-		r, e := a.Store.Resource(ctx, id)
-		if e != nil || r.OwnerProject != p.ProjectID {
-			return view, core.ErrDenied
+		if e := a.Store.CheckResourceWrite(ctx, p, id); e != nil {
+			return view, e
 		}
 	}
 	for key, ref := range in.MethodRefs {

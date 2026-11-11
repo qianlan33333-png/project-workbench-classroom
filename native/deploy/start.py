@@ -38,6 +38,10 @@ elif role == 'worker':
     # The installed controller owns this path; private standalone acceptance
     # may inject a fixture into the binary without touching a live deployment.
     env['WORKBENCH_DEPLOYMENT_MARKER'] = '/opt/project-workbench/.deploying'
+    env.setdefault('WORKBENCH_VAULT_ROOT', '/var/lib/project-workbench-native/vaults')
+    manifest = json.loads((release / 'native-release.json').read_text())
+    if manifest.get('resourceAccess') == 1:
+        env['WORKBENCH_RESOURCE_ACL_EDIT'] = '0' if manifest.get('resourceAccessReadOnly') else '1'
     command = [str(release / 'bin/workbench-worker'), *sys.argv[2:]]
 elif role == 'channels':
     command = [node, str(release / 'runtime/connectors/server.mjs')]

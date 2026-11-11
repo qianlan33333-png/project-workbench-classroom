@@ -50,6 +50,16 @@ type Run struct {
 	ReplyParts     []string             `json:"replyParts,omitempty"`
 }
 
+func (r Run) WriteScope() string {
+	if r.Principal.Kind == "project" {
+		return r.Principal.ProjectID
+	}
+	if r.Principal.Kind == "personal" && r.Operation == "sync" {
+		return "library-" + Digest(r.Destination)[:24]
+	}
+	return ""
+}
+
 func (r Run) ExecutionID() string {
 	if r.WorkflowID != "" {
 		return r.WorkflowID

@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory(prefix='workbench-native-build-',dir=a.output.p
     subprocess.run([str(stage/'node/bin/npm'),'run','build:vault-editor'],cwd=runtime,env=env,check=True)
     subprocess.run([str(stage/'node/bin/npm'),'prune','--omit=dev','--ignore-scripts','--no-audit','--no-fund'],cwd=runtime,env=env,check=True)
     files={str(f.relative_to(stage)):hashlib.file_digest(f.open('rb'),'sha256').hexdigest() for f in stage.rglob('*') if f.is_file() and not f.is_symlink()}
-    manifest={'format':'personal-workbench-native-v1','harness':'0.2.2-rc.1','node':'24.22.0','temporal':temporal_version,'workerStartupGate':1,'files':files}
+    manifest={'format':'personal-workbench-native-v1','harness':'0.2.2-rc.1','node':'24.22.0','temporal':temporal_version,'workerStartupGate':1,'resourceAccess':1,'files':files}
     (stage/'native-release.json').write_text(json.dumps(manifest,sort_keys=True))
     with tarfile.open(a.output,'w:gz',compresslevel=3) as tar:
         for f in sorted(stage.iterdir()):tar.add(f,arcname=f.name)

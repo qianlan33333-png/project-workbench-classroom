@@ -138,7 +138,16 @@ func (a *Activities) ProgramGeneration(ctx context.Context, id string) (string, 
 				return "", e
 			}
 			version = resource.CurrentVersion
-			if source.Optional && version == "" && resource.OwnerProject == r.Principal.ProjectID {
+			if source.Optional && version == "" {
+				for _, section := range source.Sections {
+					granted, err := a.Store.Granted(ctx, resource.ID, r.Principal.ProjectID, section)
+					if err != nil {
+						return "", failure(err)
+					}
+					if !granted {
+						return "", failure(core.ErrDenied)
+					}
+				}
 				continue
 			}
 		}

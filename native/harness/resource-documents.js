@@ -4,17 +4,37 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 // The owner selects a registered resource, not an endpoint or arbitrary file.
 // Standard MCP Resources supplies the actual knowledge document catalogue.
-export async function resourceDocuments(config,call,projectId,resourceId,uri,{all=false,version,signal}={}){
- const p={kind:'project',projectId,sessionId:'resource-view-'+createHash('sha256').update(projectId).digest('hex').slice(0,24)};
- const server=(config.toolServers||[]).find(s=>s.projects?.includes(projectId)&&s.sources?.some(r=>r.resourceId===resourceId));
+export async function resourceDocuments(config,call,projectId,resourceId,uri,{all=false,version,signal,identity}={}){
+ const projectPrincipal=id=>({kind:'project',projectId:id,sessionId:'resource-view-'+createHash('sha256').update(id).digest('hex').slice(0,24)});
+ const p=identity||projectPrincipal(projectId);
+ const server=(config.toolServers||[]).find(s=>s.sources?.some(r=>r.resourceId===resourceId));
  if(!server)return{external:false};
  const url=new URL(server.url);if(url.username||url.password||url.search||url.hash||(url.protocol!=='https:'&&(url.protocol!=='http:'||url.hostname!=='127.0.0.1')))throw Error('Invalid MCP endpoint');
  if(!/^WORKBENCH_MCP_[A-Z0-9_]+$/.test(server.tokenEnv)||!process.env[server.tokenEnv])throw Error('MCP credential unavailable');
  const declared=server.sources.filter(r=>r.resourceId===resourceId);
  const refs=version?declared.map(ref=>({...ref,version})):await call('/session/resolve-sources',p,declared,signal);
  await call('/session/external-sources',p,refs,signal);
+ // The external connector may only accept its registered project identity.
+ // Check the requesting principal separately before and after the remote read.
+ let connector=p;
+ if(server.projects?.length&&!server.projects.includes(p.projectId)){
+  let denied;
+  for(const id of server.projects){
+   try{
+    const candidate=projectPrincipal(id);
+    await call('/session/external-sources',candidate,refs,signal);
+    connector=candidate;
+    denied=undefined;
+    break;
+   }catch(error){
+    if(error.status!==403)throw error;
+    denied=error;
+   }
+  }
+  if(denied)throw denied;
+ }
  const client=new Client({name:'workbench-resource-view',version:'1'});
- const transport=new StreamableHTTPClientTransport(url,{requestInit:{headers:{authorization:'Bearer '+process.env[server.tokenEnv],'X-Workbench-Kind':p.kind,'X-Workbench-Project':p.projectId,'X-Workbench-Session':p.sessionId,'X-Workbench-Sources':JSON.stringify(refs)}}});
+ const transport=new StreamableHTTPClientTransport(url,{requestInit:{headers:{authorization:'Bearer '+process.env[server.tokenEnv],'X-Workbench-Kind':connector.kind,'X-Workbench-Project':connector.projectId||'','X-Workbench-Session':connector.sessionId,'X-Workbench-Sources':JSON.stringify(refs)}}});
  try{
   await client.connect(transport,{signal});
   const documents=[];let cursor;const seen=new Set();
@@ -40,6 +60,7 @@ export async function resourceDocuments(config,call,projectId,resourceId,uri,{al
     notes.push({path:document.name,text});
    }
   }
+  if(connector!==p)await call('/session/external-sources',connector,refs,signal);
   await call('/session/external-sources',p,refs,signal);
   return{external:true,documents:documents.map(d=>({uri:d.uri,name:d.name,title:d.title})),content,notes,version:refs[0].version};
  }finally{await client.close()}

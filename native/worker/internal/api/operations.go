@@ -417,7 +417,7 @@ func (a *Server) configureOperationsSchedule(ctx context.Context, cfg operations
 		if err != nil {
 			return "", err
 		}
-		input.Refresh = resource.ConnectionID != "" && resource.OwnerProject == cfg.ProjectID
+		input.Refresh = resource.ConnectionID != "" && a.Store.CheckResourceWrite(ctx, operationsPrincipal(cfg.ProjectID), input.ResourceID) == nil
 	}
 	method := operationsMethodRef(cfg.ProjectID, kind, schedule.Expert)
 	req := ProgramRequest{Title: title, Destination: operationsResource(cfg.ProjectID, kind), LatestMethod: &method, Quiet: true,
@@ -478,6 +478,10 @@ func (a *Server) operationsProfiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
+	if cfg.Cycle != nil && cfg.Cycle.ProfileDirectory != "" {
+		a.localOperationsProfiles(w, r, p, cfg.Cycle.ProfileDirectory)
+		return
+	}
 	if cfg.ReadSource {
 		q := r.URL.Query()
 		if id != "" {

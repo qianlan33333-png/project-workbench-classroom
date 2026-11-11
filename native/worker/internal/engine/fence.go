@@ -13,10 +13,15 @@ func (a *Activities) BeginWrite(ctx context.Context, id, execution string) (core
 	if e != nil {
 		return core.WriteFence{}, failure(e)
 	}
-	if r.Principal.Kind != "project" {
+	if r.WriteScope() == "" {
 		return core.WriteFence{}, failure(core.ErrDenied)
 	}
-	f, e := a.Store.BeginWrite(ctx, r.Principal.ProjectID, execution)
+	if r.Destination != "" {
+		if e = a.Store.CheckResourceWrite(ctx, r.Principal, r.Destination); e != nil {
+			return core.WriteFence{}, failure(e)
+		}
+	}
+	f, e := a.Store.BeginWrite(ctx, r.WriteScope(), execution)
 	return f, failure(e)
 }
 func (a *Activities) EndWrite(ctx context.Context, id, execution string) error {
@@ -30,7 +35,7 @@ func (a *Activities) EndWrite(ctx context.Context, id, execution string) error {
 			return e
 		}
 	}
-	return a.Store.EndWrite(ctx, core.WriteFence{ProjectID: r.Principal.ProjectID, Execution: execution})
+	return a.Store.EndWrite(ctx, core.WriteFence{ProjectID: r.WriteScope(), Execution: execution})
 }
 func finishWrite(ctx workflow.Context, id, execution string, err *error) func() {
 	return func() {

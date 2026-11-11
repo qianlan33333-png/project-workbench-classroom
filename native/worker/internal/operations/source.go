@@ -33,8 +33,17 @@ func Collect(ctx context.Context, config, id string) (SourceResult, error) {
 	return result, err
 }
 
+func CollectProfileDirectory(ctx context.Context, config, id string) (SourceResult, error) {
+	var result SourceResult
+	err := invokeSource(ctx, "source_collect_directory.py", config, id, &result)
+	if err == nil && (!filepath.IsAbs(result.Directory) || len(result.Files) != 1) {
+		err = errors.New("original profile directory result is invalid")
+	}
+	return result, err
+}
+
 func invokeSource(ctx context.Context, script, config, id string, result any) error {
-		if !filepath.IsAbs(config) {
+	if !filepath.IsAbs(config) {
 		return errors.New("original source connection not configured")
 	}
 	folder, e := os.MkdirTemp("", "workbench-source-")

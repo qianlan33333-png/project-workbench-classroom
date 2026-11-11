@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"workbench-native/internal/core"
 )
 
@@ -39,7 +40,8 @@ func TestMySQLVaultCreateSaveAndExistingAccess(t *testing.T) {
 	project := core.Principal{Kind: "project", ProjectID: id + "-project", SessionID: id + "-session"}
 	token := strings.Repeat("v", 40)
 	root := t.TempDir()
-	handler := (&Server{Store: store, Token: token, VaultRoot: root}).Handler()
+	server := &Server{Store: store, Token: token, VaultRoot: root}
+	handler := server.Handler()
 	call := func(p core.Principal, method, path string, payload any, want int, target any) {
 		t.Helper()
 		data, err := json.Marshal(payload)
@@ -156,5 +158,79 @@ func TestMySQLVaultCreateSaveAndExistingAccess(t *testing.T) {
 	directories, err := os.ReadDir(filepath.Join(root, id))
 	if err != nil || len(directories) != snapshots {
 		t.Fatalf("Markdown versions do not match SQL versions: %d, %v", len(directories), err)
+	}
+
+	reply := core.Principal{Kind: "project", ProjectID: id + "-reply", SessionID: id + "-reply-session"}
+	operations := core.Principal{Kind: "project", ProjectID: id + "-ops", SessionID: id + "-ops-session"}
+	personal := core.Principal{Kind: "personal", SessionID: id + "-super"}
+	for _, p := range []core.Principal{reply, operations} {
+		call(owner, "POST", "/projects", core.Project{ID: p.ProjectID, Name: p.ProjectID}, 200, nil)
+	}
+	call(owner, "POST", "/reply-projects", map[string]string{"projectId": reply.ProjectID}, 200, nil)
+	call(owner, "POST", "/operations/register", map[string]string{"projectId": operations.ProjectID}, 200, nil)
+	if _, err = store.DB.ExecContext(ctx, "INSERT INTO wb_settings(id,body) VALUES('personal',JSON_OBJECT('sessionId',?)) ON DUPLICATE KEY UPDATE body=VALUES(body)", personal.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []core.Principal{project, reply, operations, personal} {
+		t.Run(p.SessionID, func(t *testing.T) {
+			left, right := mcp.NewInMemoryTransports()
+			s, err := server.MCP(p).Connect(ctx, left, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			c, err := mcp.NewClient(&mcp.Implementation{Name: "vault-acl-test", Version: "1"}, nil).Connect(ctx, right, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			tool := func(name string, args any, denied bool) *mcp.CallToolResult {
+				t.Helper()
+				result, err := c.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+				if err != nil || result.IsError != denied {
+					t.Fatalf("%s denied=%t: %+v %v", name, denied, result, err)
+				}
+				return result
+			}
+			grant := func(mode string) {
+				t.Helper()
+				g := core.ResourceAccess{ProjectID: p.ProjectID, Mode: mode}
+				if mode != "none" {
+					g.Sections = []string{"text"}
+				}
+				if _, err := store.SetResourceGrant(ctx, owner, id, g); err != nil {
+					t.Fatal(err)
+				}
+			}
+			edit := core.LibraryChange{ResourceID: id, OperationKey: "edit-vault", Action: "create",
+				Fields: map[string]any{"title": p.SessionID, "markdown": "Agent 正文"}}
+			read := ReadInput{Ref: core.Ref{ResourceID: id, Version: replays[0].snapshot.Version, Section: "text"}}
+			if p.Kind == "project" {
+				grant("read")
+				tool("resource_read", read, false)
+				tool("resource_item_write", edit, true)
+				grant("manage")
+			}
+			first := tool("resource_item_write", edit, false)
+			retry := tool("resource_item_write", edit, false)
+			raw, err := json.Marshal(first.StructuredContent)
+			var receipt core.LibraryReceipt
+			if err != nil || json.Unmarshal(raw, &receipt) != nil || receipt.Version == "" {
+				t.Fatalf("missing write receipt: %s", raw)
+			}
+			again, _ := json.Marshal(retry.StructuredContent)
+			if string(raw) != string(again) {
+				t.Fatalf("retry receipt changed: %s", again)
+			}
+			source, err := os.ReadFile(filepath.Join(root, id, receipt.Version, p.SessionID+".md"))
+			if err != nil || string(source) != "Agent 正文" {
+				t.Fatalf("MCP write bypassed Markdown: %q %v", source, err)
+			}
+			if p.Kind == "project" {
+				grant("none")
+				tool("resource_read", read, true)
+				tool("resource_item_write", edit, true)
+			}
+		})
 	}
 }

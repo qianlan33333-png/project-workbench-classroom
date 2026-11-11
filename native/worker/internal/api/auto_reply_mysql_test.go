@@ -248,7 +248,7 @@ func TestMySQLCustomerToolsOnlyReadBoundSubjectAndSelectedKnowledge(t *testing.T
 	tools, e := session.ListTools(ctx, nil)
 	must(e)
 	for _, tool := range tools.Tools {
-		if tool.Name == "message_prepare" || tool.Name == "batch_generate" || tool.Name == "task_delegate" {
+		if tool.Name == "message_prepare" || tool.Name == "batch_generate" || tool.Name == "task_delegate" || tool.Name == "resource_list" || tool.Name == "resource_item_write" || tool.Name == "resource_policy_list" || tool.Name == "resource_grant" || tool.Name == "resource_create" || tool.Name == "resource_document" {
 			t.Fatal("customer got project operation", tool.Name)
 		}
 	}

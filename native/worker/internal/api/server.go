@@ -25,16 +25,19 @@ import (
 )
 
 type Server struct {
-	Store           *core.Store
-	Temporal        client.Client
-	Token           string
-	CustomerClients []CustomerClient
-	CustomerStore   *core.Store
-	personalMu      sync.Mutex
-	operationsMu    sync.Mutex
-	Host            engine.AgentHost
-	VaultRoot       string
-	BackgroundReady func() bool
+	Store                    *core.Store
+	Temporal                 client.Client
+	Token                    string
+	CustomerClients          []CustomerClient
+	CustomerStore            *core.Store
+	personalMu               sync.Mutex
+	operationsMu             sync.Mutex
+	libraryMu                sync.Mutex
+	libraryEvidence          libraryCommand
+	LibraryPermissionsLocked bool
+	Host                     engine.AgentHost
+	VaultRoot                string
+	BackgroundReady          func() bool
 }
 type principalKey struct{}
 
@@ -48,6 +51,7 @@ func (a *Server) Handler() http.Handler {
 	a.personalRoutes(mux)
 	a.messageRoutes(mux)
 	a.businessPolicyRoutes(mux)
+	a.libraryRoutes(mux)
 	a.replyRoutes(mux)
 	a.scheduleRoutes(mux)
 	a.resourceRoutes(mux)
@@ -91,15 +95,9 @@ func (a *Server) Handler() http.Handler {
 		if !decode(w, r, &v) {
 			return
 		}
-		respond(w, v, a.Store.PutResource(r.Context(), principal(r.Context()), v))
+		respond(w, v, a.Store.RegisterResource(r.Context(), principal(r.Context()), v))
 	})
-	mux.HandleFunc("POST /grants", func(w http.ResponseWriter, r *http.Request) {
-		var v core.Grant
-		if !decode(w, r, &v) {
-			return
-		}
-		respond(w, v, a.Store.SetGrant(r.Context(), principal(r.Context()), v))
-	})
+
 	mux.HandleFunc("POST /snapshots", func(w http.ResponseWriter, r *http.Request) {
 		var v core.Snapshot
 		if !decode(w, r, &v) {
@@ -156,6 +154,17 @@ func (a *Server) Handler() http.Handler {
 			return
 		}
 		p := core.Principal{Kind: r.Header.Get("X-Workbench-Kind"), ProjectID: r.Header.Get("X-Workbench-Project"), SessionID: r.Header.Get("X-Workbench-Session")}
+		if p.Kind == "personal" {
+			config, err := a.personalConfig(r.Context())
+			if err != nil && !core.IsMissing(err) {
+				http.Error(w, "personal session unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if err == nil && p.SessionID != config.SessionID {
+				http.Error(w, "SuperAgent session required", http.StatusForbidden)
+				return
+			}
+		}
 		if e := a.Store.BindSession(r.Context(), p); e != nil {
 			http.Error(w, "invalid session binding", 403)
 			return
@@ -240,6 +249,14 @@ type ItemsResult struct {
 
 func (a *Server) MCP(bound core.Principal) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "workbench-tools", Version: "0.1.0"}, nil)
+	if bound.Kind == "personal" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		err := a.Store.CheckLibraryPersonal(ctx, bound)
+		cancel()
+		if err != nil {
+			return s
+		}
+	}
 	if bound.Kind == "project" {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_, e := a.Store.SessionRoute(ctx, bound)
@@ -270,10 +287,16 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 		a.replyActivityTool(s, bound)
 	}
 	a.messageTools(s, bound)
-	mcp.AddTool(s, &mcp.Tool{Name: "resource_list", Description: "List resources and sections readable in this Session. Connection secrets are never returned."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, Catalog, error) {
-		v, e := a.Store.Resources(ctx, bound)
-		return nil, Catalog{v}, e
+	a.libraryTools(s, bound)
+	mcp.AddTool(s, &mcp.Tool{Name: "resource_list", Description: "Discover registered databases and corpora by name, purpose and current access. A library with access none needs a project grant; it exposes no sections, schema or content."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, struct {
+		Resources []core.ResourceDiscovery `json:"resources"`
+	}, error) {
+		v, e := a.Store.ResourceDirectory(ctx, bound)
+		return nil, struct {
+			Resources []core.ResourceDiscovery `json:"resources"`
+		}{v}, e
 	})
+
 	mcp.AddTool(s, &mcp.Tool{Name: "resource_read", Description: "Read a small page from a fixed resource snapshot and section. Use batch_generate for bulk processing."}, func(ctx context.Context, _ *mcp.CallToolRequest, in ReadInput) (*mcp.CallToolResult, core.Page, error) {
 		if in.Limit <= 0 {
 			in.Limit = 5
