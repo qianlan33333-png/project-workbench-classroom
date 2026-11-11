@@ -393,6 +393,23 @@ func (s *Store) lockResourceWrite(ctx context.Context, tx *sql.Tx, p Principal, 
 	return r, s.resourceWriteAllowed(ctx, tx, p, r)
 }
 
+func resourceKind(r Resource, connectionKind string) string {
+	if r.Kind != "" {
+		return r.Kind
+	}
+	if connectionKind == "directory" || strings.Contains(r.Name, "语料") {
+		return "corpus"
+	}
+	for _, section := range r.Sections {
+		for _, field := range section.Fields {
+			if field == "markdown" {
+				return "corpus"
+			}
+		}
+	}
+	return "database"
+}
+
 func (s *Store) ResourceDirectory(ctx context.Context, p Principal) ([]ResourceDiscovery, error) {
 	if p.Kind == "project" {
 		if _, err := s.SessionRoute(ctx, p); !IsMissing(err) {
@@ -453,20 +470,7 @@ func (s *Store) ResourceDirectory(ctx context.Context, p Principal) ([]ResourceD
 		if r.ID == replyActivitySource.ResourceID || isAttachmentResource(r) {
 			continue
 		}
-		kind := r.Kind
-		if kind == "" {
-			kind = "database"
-			if entry.source.Kind == "directory" || strings.Contains(r.Name, "语料") {
-				kind = "corpus"
-			}
-			for _, section := range r.Sections {
-				for _, field := range section.Fields {
-					if field == "markdown" {
-						kind = "corpus"
-					}
-				}
-			}
-		}
+		kind := resourceKind(r, entry.source.Kind)
 		item := ResourceDiscovery{ID: r.ID, Name: r.Name, Kind: kind, Description: r.Description, Access: "none"}
 		if v, ok := byID[r.ID]; ok {
 			item.Access, item.Version = "read", v.CurrentVersion

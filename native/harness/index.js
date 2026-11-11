@@ -615,7 +615,7 @@ export async function apply(ctx, config) {
               "/personal/settings",
               "/notifications",
             ]);
-            const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause","/business-policies","/resource-permissions",
+            const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause","/business-policies","/resource-permissions","/resource-metadata",
               "/resources",
               "/connections",
               "/memory",

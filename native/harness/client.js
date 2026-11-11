@@ -106,7 +106,8 @@ window.__ModuleLoader__.load({
         [error, setError] = useState(""),
         [notice, setNotice] = useState(""),
         [busy, setBusy] = useState(false),
-        [edit, setEdit] = useState(),
+        [registration, setRegistration] = useState(),
+        [editingResource, setEditingResource] = useState(),
         [connection, setConnection] = useState(),
         [sharing, setSharing] = useState(),
         [preview,setPreview]=useState(),[business,setBusiness]=useState();
@@ -200,7 +201,7 @@ window.__ModuleLoader__.load({
         }catch(e){if(n===documentRequest.current)setError(e.message)}
       };
       const resetView=()=>{documentRequest.current++;previewRequest.current++;setDocuments(undefined);setPreview(undefined);setRecord(undefined);setBusiness(undefined)};
-      const change = (key, value) => setEdit({ ...edit, [key]: value });
+      const change = (key, value) => setRegistration({ ...registration, [key]: value });
       const rows = (catalog?.resources ?? []).filter(
         (r) => ((r.kind || (connections.find(c=>c.id===r.connectionId)?.kind==="directory" || Boolean(catalog?.documentResourceIds?.includes(r.id)) || r.name.includes("语料") || r.sections.some(s=>s.fields?.includes("markdown")) ? "corpus" : "database")) === kind) && (
           !projectFilter ||
@@ -234,7 +235,7 @@ window.__ModuleLoader__.load({
                   location: "",
                 }),
               ),
-              button("注册资源", () => setEdit({...emptyResource(),kind}), {disabled:!catalog||busy}),
+              button("注册资源", () => setRegistration({...emptyResource(),kind}), {disabled:!catalog||busy}),
             ),
           ),
           h("div",{className:"wb-tabs","aria-label":"资料类型"},
@@ -324,7 +325,7 @@ window.__ModuleLoader__.load({
                 button("取消", () => setConnection(undefined)),
               ),
             ),
-          edit &&
+          registration &&
             h(
               "form",
               {
@@ -332,24 +333,24 @@ window.__ModuleLoader__.load({
                 onSubmit: (e) => {
                   e.preventDefault();
                   act(async () => {
-                    const {schemaText,checksText,sourceFieldsText,...resource}=edit;
+                    const {schemaText,checksText,sourceFieldsText,...resource}=registration;
                     await api("/resources", {
                       ...resource,
-                      jsonSource:connections.find(c=>c.id===edit.connectionId)?.kind==="http-json" ? {...edit.jsonSource,fields:sourceFieldsText===undefined?edit.jsonSource?.fields:JSON.parse(sourceFieldsText||"{}")} : undefined,
-                      recordSchema:schemaText===undefined?edit.recordSchema:JSON.parse(schemaText||"{}"),
-                      checks:checksText===undefined?edit.checks:JSON.parse(checksText||"[]"),
-                      sections: edit.sections.map(({selectText,...s}) => ({
+                      jsonSource:connections.find(c=>c.id===registration.connectionId)?.kind==="http-json" ? {...registration.jsonSource,fields:sourceFieldsText===undefined?registration.jsonSource?.fields:JSON.parse(sourceFieldsText||"{}")} : undefined,
+                      recordSchema:schemaText===undefined?registration.recordSchema:JSON.parse(schemaText||"{}"),
+                      checks:checksText===undefined?registration.checks:JSON.parse(checksText||"[]"),
+                      sections: registration.sections.map(({selectText,...s}) => ({
                         ...s,
                         fields: s.fields.map((f) => f.trim()).filter(Boolean),
                         select:selectText===undefined?s.select:JSON.parse(selectText||"{}"),
                       })),
                     });
-                    setEdit(undefined);
+                    setRegistration(undefined);
                   });
                 },
               },
-              h("h2", null, edit.revision ? "编辑资源" : "注册资源"),
-              field("用途描述",h("textarea",{value:edit.description||"",maxLength:500,placeholder:"写下这份资料包含什么、能回答哪些问题",onChange:e=>change("description",e.target.value)})),
+              h("h2", null, "注册资源"),
+              field("用途描述",h("textarea",{value:registration.description||"",maxLength:500,placeholder:"写下这份资料包含什么、能回答哪些问题",onChange:e=>change("description",e.target.value)})),
               h("p",{className:"wb-muted"},"所有内部项目都能看到用途描述，请勿填写个人资料或连接信息。"),
               h(
                 "div",
@@ -358,7 +359,7 @@ window.__ModuleLoader__.load({
                   "资源名称",
                   h("input", {
                     required: true,
-                    value: edit.name,
+                    value: registration.name,
                     onChange: (e) => change("name", e.target.value),
                   }),
                 ),
@@ -367,7 +368,7 @@ window.__ModuleLoader__.load({
                   h(
                     "select",
                     {
-                      value: edit.ownerProject,
+                      value: registration.ownerProject,
                       onChange: (e) => change("ownerProject", e.target.value),
                     },
                     h("option", { value: "" }, "独立共享资源"),
@@ -385,7 +386,7 @@ window.__ModuleLoader__.load({
                   h(
                     "select",
                     {
-                      value: edit.connectionId,
+                      value: registration.connectionId,
                       onChange: (e) => change("connectionId", e.target.value),
                     },
                     h("option", { value: "" }, "生成产物（无需来源连接）"),
@@ -394,30 +395,30 @@ window.__ModuleLoader__.load({
                     ),
                   ),
                 ),
-                connections.find(c=>c.id===edit.connectionId)?.kind!=="http-json" && field(
+                connections.find(c=>c.id===registration.connectionId)?.kind!=="http-json" && field(
                   "表 / 视图 / 文件名称",
                   h("input", {
-                    value: edit.relation,
+                    value: registration.relation,
                     onChange: (e) => change("relation", e.target.value),
                   }),
                 ),
               ),
-              connections.find(c=>c.id===edit.connectionId)?.kind!=="http-json" && field(
+              connections.find(c=>c.id===registration.connectionId)?.kind!=="http-json" && field(
                 "记录唯一编号字段",
                 h("input", {
-                  value: edit.keyField,
+                  value: registration.keyField,
                   onChange: (e) => change("keyField", e.target.value),
                 }),
               ),
-              connections.find(c=>c.id===edit.connectionId)?.kind==="http-json" && h("section",{className:"wb-section"},h("h2",null,"快照记录映射"),
-                field("记录数组字段（顶层数组则留空）",h("input",{value:edit.jsonSource?.arrayField||"",onChange:e=>change("jsonSource",{...edit.jsonSource,arrayField:e.target.value})})),
-                field("唯一编号路径（JSON Pointer）",h("input",{value:edit.jsonSource?.keyPointer||"",placeholder:"/id",onChange:e=>change("jsonSource",{...edit.jsonSource,keyPointer:e.target.value})})),
-                field("保存字段与来源路径",h("textarea",{value:edit.sourceFieldsText??JSON.stringify(edit.jsonSource?.fields||{},null,2),onChange:e=>change("sourceFieldsText",e.target.value)})),
+              connections.find(c=>c.id===registration.connectionId)?.kind==="http-json" && h("section",{className:"wb-section"},h("h2",null,"快照记录映射"),
+                field("记录数组字段（顶层数组则留空）",h("input",{value:registration.jsonSource?.arrayField||"",onChange:e=>change("jsonSource",{...registration.jsonSource,arrayField:e.target.value})})),
+                field("唯一编号路径（JSON Pointer）",h("input",{value:registration.jsonSource?.keyPointer||"",placeholder:"/id",onChange:e=>change("jsonSource",{...registration.jsonSource,keyPointer:e.target.value})})),
+                field("保存字段与来源路径",h("textarea",{value:registration.sourceFieldsText??JSON.stringify(registration.jsonSource?.fields||{},null,2),onChange:e=>change("sourceFieldsText",e.target.value)})),
                 h("p",{className:"wb-muted"},"例如 {\"name\":\"/display/name\"}。资料板块从这些保存字段中选择；空路径表示保留整条原文。")),
-              field("维护项目",h("select",{value:edit.maintainerProject||"",onChange:e=>change("maintainerProject",e.target.value)},h("option",{value:""},"未指定维护项目"),...(catalog?.projects??[]).map(p=>h("option",{key:p.id,value:p.id},p.name)))),
-              h("details",null,h("summary",null,"使用条件（可选）"),h("p",{className:"wb-muted"},"登记可供专家选择的固定校验条件。发送时，资格和收件对象从此资料中核对；专家不能在调用时放宽条件。"),field("条件定义",h("textarea",{rows:6,value:edit.checksText??JSON.stringify(edit.checks||[],null,2),onChange:e=>change("checksText",e.target.value)}))),
-              h("details",null,h("summary",null,"发布校验（可选）"),field("最少记录数",h("input",{type:"number",min:0,value:edit.minRecords||0,onChange:e=>change("minRecords",Number(e.target.value))})),field("至少保留上一版数量的百分比",h("input",{type:"number",min:0,max:100,value:edit.minRetainedPercent||0,onChange:e=>change("minRetainedPercent",Number(e.target.value))})),field("来源发布版本字段",h("input",{value:edit.watermarkField||"",onChange:e=>change("watermarkField",e.target.value)})),field("记录结构（JSON Schema）",h("textarea",{value:edit.schemaText??JSON.stringify(edit.recordSchema||{},null,2),onChange:e=>change("schemaText",e.target.value)}))),
-              ...edit.sections.map((s, i) =>
+              field("维护项目",h("select",{value:registration.maintainerProject||"",onChange:e=>change("maintainerProject",e.target.value)},h("option",{value:""},"未指定维护项目"),...(catalog?.projects??[]).map(p=>h("option",{key:p.id,value:p.id},p.name)))),
+              h("details",null,h("summary",null,"使用条件（可选）"),h("p",{className:"wb-muted"},"登记可供专家选择的固定校验条件。发送时，资格和收件对象从此资料中核对；专家不能在调用时放宽条件。"),field("条件定义",h("textarea",{rows:6,value:registration.checksText??JSON.stringify(registration.checks||[],null,2),onChange:e=>change("checksText",e.target.value)}))),
+              h("details",null,h("summary",null,"发布校验（可选）"),field("最少记录数",h("input",{type:"number",min:0,value:registration.minRecords||0,onChange:e=>change("minRecords",Number(e.target.value))})),field("至少保留上一版数量的百分比",h("input",{type:"number",min:0,max:100,value:registration.minRetainedPercent||0,onChange:e=>change("minRetainedPercent",Number(e.target.value))})),field("来源发布版本字段",h("input",{value:registration.watermarkField||"",onChange:e=>change("watermarkField",e.target.value)})),field("记录结构（JSON Schema）",h("textarea",{value:registration.schemaText??JSON.stringify(registration.recordSchema||{},null,2),onChange:e=>change("schemaText",e.target.value)}))),
+              ...registration.sections.map((s, i) =>
                 h(
                   "div",
                   { className: "wb-section", key: s.id },
@@ -432,7 +433,7 @@ window.__ModuleLoader__.load({
                         onChange: (e) =>
                           change(
                             "sections",
-                            edit.sections.map((v, j) =>
+                            registration.sections.map((v, j) =>
                               j === i ? { ...v, name: e.target.value } : v,
                             ),
                           ),
@@ -446,7 +447,7 @@ window.__ModuleLoader__.load({
                         onChange: (e) =>
                           change(
                             "sections",
-                            edit.sections.map((v, j) =>
+                            registration.sections.map((v, j) =>
                               j === i
                                 ? {
                                     ...v,
@@ -460,12 +461,12 @@ window.__ModuleLoader__.load({
                       }),
                     ),
                   ),
-                  h("details",null,h("summary",null,"资料切片（可选）"),field("输出字段与 JSON Pointer",h("textarea",{value:s.selectText??JSON.stringify(s.select||{},null,2),onChange:e=>change("sections",edit.sections.map((v,j)=>j===i?{...v,selectText:e.target.value}:v))})),h("p",{className:"wb-muted"},"只从本板块包含的字段选择子项。留空时保留全部已选字段；缺少的资料返回空值。")),
-                  edit.sections.length > 1 &&
+                  h("details",null,h("summary",null,"资料切片（可选）"),field("输出字段与 JSON Pointer",h("textarea",{value:s.selectText??JSON.stringify(s.select||{},null,2),onChange:e=>change("sections",registration.sections.map((v,j)=>j===i?{...v,selectText:e.target.value}:v))})),h("p",{className:"wb-muted"},"只从本板块包含的字段选择子项。留空时保留全部已选字段；缺少的资料返回空值。")),
+                  registration.sections.length > 1 &&
                     button("移除板块", () =>
                       change(
                         "sections",
-                        edit.sections.filter((_, j) => j !== i),
+                        registration.sections.filter((_, j) => j !== i),
                       ),
                     ),
                 ),
@@ -475,7 +476,7 @@ window.__ModuleLoader__.load({
                 { className: "wb-actions" },
                 button("增加资料板块", () =>
                   change("sections", [
-                    ...edit.sections,
+                    ...registration.sections,
                     {
                       id: "s_" + crypto.randomUUID().slice(0, 8),
                       name: "",
@@ -484,9 +485,22 @@ window.__ModuleLoader__.load({
                   ]),
                 ),
                 h("button", { type: "submit", disabled: busy }, "保存资源"),
-                button("取消", () => setEdit(undefined)),
+                button("取消", () => setRegistration(undefined)),
               ),
             ),
+          editingResource&&h(ResourceMetadataDialog,{
+            key:editingResource.id,resource:editingResource,close:()=>setEditingResource(undefined),
+            saved:updated=>{
+              const updateResource=resource=>resource.id===updated.id?{...resource,...updated}:resource;
+              const updatePreview=panel=>panel?{...panel,resource:updateResource(panel.resource)}:panel;
+              setCatalog(current=>({...current,resources:current.resources.map(updateResource)}));
+              setDocuments(updatePreview);
+              setBusiness(updatePreview);
+              setPreview(updatePreview);
+              setNotice("已保存");
+              setEditingResource(undefined);
+            },
+          }),
           sharing&&h(ResourcePermissionsDialog,{key:sharing.id,resource:sharing,close:()=>setSharing(undefined),saved:async()=>{setSharing(undefined);await load();setNotice("项目权限已保存");}}),
           documents&&h("section",{className:"wb-section"},
             h("div",{className:"wb-heading"},h("h2",null,documents.resource.name),button("关闭预览",resetView)),
@@ -527,7 +541,7 @@ window.__ModuleLoader__.load({
                 ),
                 r.relation===businessPolicyRelation ? button("查看资料",()=>openBusiness(r)) : r.currentVersion&&button("查看资料",()=>kind==="corpus"?openCorpus(r):openPreview(r)),
                 button("权限设置", () => setSharing(r), {"aria-label":"权限设置："+r.name}),
-                button("编辑", () => setEdit(r)),
+                button("编辑", () => setEditingResource(r), {"aria-label":"编辑 "+r.name}),
               ),
             ),
             catalog &&
@@ -553,6 +567,8 @@ window.__ModuleLoader__.load({
       .wb-page .wb-primary{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-base);border-color:transparent}
       .wb-work-area{display:flex;height:100%;min-height:0;min-width:0;position:relative;background:var(--dsw-alias-bg-base)}
       .wb-native-conversation{flex:1;min-width:0;height:100%;overflow:hidden}
+      .wb-metadata-form{margin:0;padding:4px 0;gap:14px}
+      .wb-metadata-form .wb-actions{justify-content:flex-end;padding-top:4px}
       :is(dialog,[role=dialog]):has(.wb-permission-page){width:min(520px,calc(100vw - 48px));max-width:calc(100vw - 48px)}
       .wb-permission-page{width:100%;box-sizing:border-box;max-height:68vh}
       .wb-permission-page .wb-form{margin:0;padding:6px 0;gap:12px}
@@ -602,6 +618,35 @@ window.__ModuleLoader__.load({
         h("tbody",null,...rows.map(row=>h("tr",{key:row.id},
           ...columns.map(k=>h("td",{key:k,title:cell(row.fields[k])},cell(row.fields[k]))),
           h("td",null,button("查看",()=>open(row),{"aria-label":"查看记录 "+row.id})))))));
+    }
+    function ResourceMetadataDialog({resource,close,saved}) {
+      const [name,setName]=useState(resource.name);
+      const [description,setDescription]=useState(resource.description||"");
+      const [busy,setBusy]=useState(false),[error,setError]=useState("");
+      const pending=useRef(false);
+      const save=async event=>{
+        event.preventDefault();
+        const title=name.trim();
+        if (!title||pending.current) return;
+        pending.current=true;
+        setBusy(true);
+        setError("");
+        try {
+          const updated=await api("/resource-metadata",{resourceId:resource.id,name:title,description:description.trim()});
+          saved({id:updated.id,name:updated.name,description:updated.description||"",...(updated.kind?{kind:updated.kind}:{})});
+        } catch (error) {
+          setError(error.message);
+        } finally {
+          pending.current=false;
+          setBusy(false);
+        }
+      };
+      return h(UI.Modal,{open:true,title:"编辑资源",closeLabel:"关闭",onClose:()=>{if(!pending.current)close()}},
+        h("form",{className:"wb-page wb-form wb-metadata-form",onSubmit:save},
+          field("名称",h("input",{value:name,onChange:event=>setName(event.target.value),required:true,disabled:busy})),
+          field("描述",h("textarea",{value:description,onChange:event=>setDescription(event.target.value),rows:3,maxLength:500,disabled:busy})),
+          alert(error),
+          h("div",{className:"wb-actions"},h("button",{type:"submit",className:"wb-primary",disabled:busy||!name.trim()},busy?"保存中…":"保存"))));
     }
     function ResourcePermissionsDialog({resource,close,saved}) {
       const [data,setData]=useState(),[choices,setChoices]=useState({}),[search,setSearch]=useState("");
