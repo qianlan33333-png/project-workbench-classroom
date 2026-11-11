@@ -346,12 +346,28 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
     const saved=await pages('admin.listAIAssistantRecipients',{plan_id:plan.id});
     if(!validRecipients(saved)||state.contents!==contentStamp(saved))return finish(plan.id);
     const at=acceptedAt(plan);
+    const failedRecipients=new Map();
     for(const row of saved){
-     const key=itemKey.get(String(row.customer_id));
-     if(['rejected','ineligible'].includes(row.review_state)||row.execution_state==='final_failed')
-      entries[key]=fail('CRM 返回该客户提交或执行失败。');
+     const customer=String(row.customer_id),key=itemKey.get(customer);
+     if(row.review_state==='rejected')entries[key]=fail('CRM 拒绝了该客户的发送申请。');
+     else if(row.review_state==='ineligible')entries[key]=fail('CRM 判定该客户不符合发送资格。');
+     else if(row.execution_state==='final_failed'){
+      entries[key]=fail('CRM 返回该客户执行失败。');
+      failedRecipients.set(customer,String(row.id));
+     }
      else if(row.review_state==='approved'&&row.effect_id)
       entries[key]={state:'accepted',at};
+    }
+    if(failedRecipients.size){
+     try {
+      const receipts=await pages('admin.listAIAssistantExecutionReceipts',{plan_id:plan.id},{live:false,limit:50});
+      for(const row of receipts){
+       const customer=String(row.customer_id);
+       if(failedRecipients.get(customer)!==String(row.recipient_id)||String(row.staff_id)!==String(manifest.staff))continue;
+       const reason=businessReason(row.receipt||{});
+       if(reason)entries[itemKey.get(customer)]=fail(reason);
+      }
+     }catch{/* Keep the known CRM failure when its reason is unavailable. */}
     }
     return finish(plan.id);
    }catch{return finish(state.planId);}

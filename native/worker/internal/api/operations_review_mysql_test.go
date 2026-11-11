@@ -113,10 +113,13 @@ func TestMySQLOperationsReviewLocalAndFrozen(t *testing.T) {
 	must(s.SaveOperationsBatchResult(ctx, confirmation.ID, core.OperationsBatchStatus{Plan: "43", Entries: map[string]core.OperationsBatchReceipt{
 		"one": {State: "accepted"},
 	}}))
+	initial, err := s.OperationsBatchResult(ctx, confirmation.ID)
+	must(err)
 	must(s.SaveOperationsBatchResult(ctx, confirmation.ID, core.OperationsBatchStatus{Entries: map[string]core.OperationsBatchReceipt{"one": {State: "unknown"}}}))
 	_, receipt, err := api.localCRMReceipts(ctx, p, confirmation.ID)
 	must(err)
-	if receipt.Receipt != "43" || receipt.Batch.Entries["one"].State != "accepted" || receipt.Batch.Entries["one"].At == "" {
+	if receipt.Receipt != "43" || receipt.Batch.Entries["one"].State != "accepted" || receipt.Batch.Entries["one"].At == "" ||
+		receipt.Batch.Entries["one"].At != initial.Entries["one"].At {
 		t.Fatal(receipt)
 	}
 	// The server has no Temporal client in this test. Settled rows must not
@@ -131,6 +134,14 @@ func TestMySQLOperationsReviewLocalAndFrozen(t *testing.T) {
 	}
 	if v := get(today + "?history=1"); !strings.Contains(v, parent.ID) {
 		t.Fatal(v)
+	}
+	delivered := core.OperationsBatchReceipt{State: "delivered", At: "2026-11-11T10:05:00+08:00"}
+	must(s.SaveOperationsBatchResult(ctx, confirmation.ID, core.OperationsBatchStatus{Entries: map[string]core.OperationsBatchReceipt{"one": delivered}}))
+	must(s.SaveOperationsBatchResult(ctx, confirmation.ID, core.OperationsBatchStatus{Entries: map[string]core.OperationsBatchReceipt{"one": {State: "accepted"}}}))
+	history, err := s.OperationsBatchResult(ctx, confirmation.ID)
+	must(err)
+	if history.Entries["one"] != delivered {
+		t.Fatal(history)
 	}
 	newDay := parent
 	newDay.ID += "-next"

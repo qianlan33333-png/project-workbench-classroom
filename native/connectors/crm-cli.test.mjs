@@ -160,6 +160,10 @@ function operationsBatchFixture(count,{lostApproval=false,pendingApproval=false,
     return {items:saved.recipients.map((row,i)=>({id:10000+i,customer_id:row.customer_id,staff_id:row.staff_id,version:edited&&i===0?2:1,content_version_id:20000+i,
      review_state:approved?'approved':'pending_review',effect_id:approved?'eer_'+(i+1):undefined,
      execution_state:approved?((lostApproval||reportedFailure)&&i===1?'final_failed':'queued'):'not_accepted'}))};
+   case 'admin.listAIAssistantExecutionReceipts':
+    assert.equal(options.query.live,false);
+    return {items:[{customer_id:saved.recipients[1].customer_id,staff_id:saved.recipients[1].staff_id,recipient_id:10001,
+     receipt:{failure_reason:'客户不在有效关系中',creation_errcode:84061}}]};
    default: throw Error(operation);
   }
  };
@@ -205,10 +209,11 @@ test('batch excludes a missing identity, recovers a lost approval and never crea
  assert.equal(read.plan,'42');
  assert.equal(read.entries['item-0'].state,'accepted');
  assert.equal(read.entries['item-1'].state,'failed');
+ assert.match(read.entries['item-1'].error,/客户不在有效关系中/);
  assert.equal(read.entries['item-2'].state,'accepted');
  assert.equal(f.calls.filter(x=>x.operation==='admin.createAIAssistantPlan').length,1);
  assert.equal(f.calls.filter(x=>x.operation==='admin.approveAIAssistantPlan').length,1);
- assert.equal(f.calls.some(x=>x.operation==='admin.listAIAssistantExecutionReceipts'),false);
+ assert.equal(f.calls.some(x=>x.operation==='admin.listAIAssistantExecutionReceipts'&&x.options.query.live),false);
 });
 
 test('a created plan with an unconfirmed approval response remains unknown',async()=>{
@@ -223,7 +228,8 @@ test('a reported plan failure preserves the affected recipient error',async()=>{
  const {entries}=await f.crm.batch({runId:f.runId},true);
  assert.equal(entries['item-0'].state,'accepted');
  assert.equal(entries['item-1'].state,'failed');
- assert.equal(f.calls.some(x=>x.operation==='admin.listAIAssistantExecutionReceipts'),false);
+ assert.match(entries['item-1'].error,/84061/);
+ assert.equal(f.calls.some(x=>x.operation==='admin.listAIAssistantExecutionReceipts'&&x.options.query.live),false);
 });
 
 test('a batch exceeding the CRM body limit is reported without automatic splitting',async()=>{

@@ -422,12 +422,16 @@ func (s *Store) OperationsBatchManifest(ctx context.Context, id string) (Run, []
 }
 
 func (s *Store) OperationsBatchResult(ctx context.Context, run string) (OperationsBatchStatus, error) {
-	var result OperationsBatchStatus
 	item, err := s.Item(ctx, run, OperationsBatchResultItem)
 	if err != nil {
-		return result, err
+		return OperationsBatchStatus{}, err
 	}
-	if err = json.Unmarshal([]byte(item.Text), &result); err != nil {
+	return decodeOperationsBatchResult(item)
+}
+
+func decodeOperationsBatchResult(item ItemResult) (OperationsBatchStatus, error) {
+	var result OperationsBatchStatus
+	if err := json.Unmarshal([]byte(item.Text), &result); err != nil {
 		return result, err
 	}
 	// Older accepted receipts did not carry a timestamp. The stored receipt
@@ -447,7 +451,11 @@ func (s *Store) SaveOperationsBatchResult(ctx context.Context, run string, resul
 		return err
 	}
 	defer tx.Rollback()
-	previous, err := operationsItem[OperationsBatchStatus](ctx, tx, run, OperationsBatchResultItem, " FOR UPDATE")
+	var previous OperationsBatchStatus
+	item, err := scanJSON[ItemResult](tx.QueryRowContext(ctx, "SELECT body FROM wb_items WHERE run_id=? AND item_id=? FOR UPDATE", run, OperationsBatchResultItem))
+	if err == nil {
+		previous, err = decodeOperationsBatchResult(item)
+	}
 	if err != nil && !IsMissing(err) {
 		return err
 	}
@@ -462,7 +470,7 @@ func (s *Store) SaveOperationsBatchResult(ctx context.Context, run string, resul
 	}
 	for key, old := range previous.Entries {
 		next, found := result.Entries[key]
-		if !found || old.State == "sent" || old.State == "failed" && next.State != "sent" ||
+		if !found || old.State == "sent" || old.State == "delivered" || old.State == "failed" && next.State != "sent" ||
 			old.State == "accepted" && next.State == "accepted" && old.At != "" ||
 			old.State == "pending_confirmation" && next.State == "accepted" ||
 			(old.State == "accepted" || old.State == "pending_confirmation") && (next.State == "unknown" || strings.TrimSpace(next.State) == "") {
