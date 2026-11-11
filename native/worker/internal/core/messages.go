@@ -70,6 +70,7 @@ type Delivery struct {
 	ID                  string            `json:"id"`
 	RunID               string            `json:"runId"`
 	ItemID              string            `json:"itemId"`
+	ReplyPart           int               `json:"replyPart,omitempty"`
 	ConnectionID        string            `json:"connectionId"`
 	Target              map[string]string `json:"target"`
 	Text                string            `json:"text"`
@@ -596,12 +597,16 @@ func (s *Store) FinishDelivery(ctx context.Context, id, state, receipt, reason s
 		return v, ErrConflict
 	}
 	rank := map[string]int{"prepared": 0, "submitting": 0, "unknown": 0, "accepted": 1, "pending_confirmation": 2, "sent": 3, "delivered": 4}
-	if state != "failed" && rank[state] < rank[v.State] {
+	// A multipart sequence may stop after bounded receipt checks even if
+	// the gateway initially queued this part. Preserve its original receipt.
+	partTimedOut := state == "unknown" && v.ReplyPart > 0 && v.ReceiptChecks >= 3
+	if state != "failed" && !partTimedOut && rank[state] < rank[v.State] {
 		return v, nil
 	}
 	if receipt == "" {
 		receipt = v.Receipt
 	}
+	previousState := v.State
 	v.State = state
 	v.Receipt = receipt
 	v.Error = reason
@@ -609,7 +614,7 @@ func (s *Store) FinishDelivery(ctx context.Context, id, state, receipt, reason s
 	if _, e = tx.ExecContext(ctx, `UPDATE wb_deliveries SET state=?,body=? WHERE id=?`, v.State, jsonText(v), id); e != nil {
 		return v, e
 	}
-	if _, e = tx.ExecContext(ctx, `UPDATE wb_messages SET body=JSON_SET(body,'$.state',?) WHERE connection_id=? AND event_id=? AND message_state='reply_submitting' AND EXISTS(SELECT 1 FROM wb_runs WHERE id=? AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.operation'))='reply')`, "reply_"+state, v.ConnectionID, v.Target["replyTo"], v.RunID); e != nil {
+	if e = finishReplyMessage(ctx, tx, v, previousState); e != nil {
 		return v, e
 	}
 	return v, tx.Commit()

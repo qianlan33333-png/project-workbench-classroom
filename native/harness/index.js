@@ -669,7 +669,7 @@ export async function apply(ctx, config) {
       return;
     }
     if(req.method==='POST' && ['/owner-request','/dispatch'].includes(req.url)) {
-      let reservedSid='';
+      let reservedSid='',unusedIncoming='';
       try {
         const input=await body(req);
         if(req.url==='/owner-request'){
@@ -683,22 +683,33 @@ export async function apply(ctx, config) {
         const w=isOwner?personalWorkspace:ctx.workspaceRegistry.list().find(w=>idOf(w.path)===input.principal.projectId&&w.path!==personalPath);
         if(!w||(!isOwner&&input.principal.kind!=='project')||typeof input.goal!=='string')throw requestError('Target project unavailable',403);
         const sid=input.principal.sessionId;
-        if(incoming&&!isOwner){const admission=await call('/messages/admit?runId='+encodeURIComponent(input.id));if(!admission.allowed){if(!admission.terminal)throw requestError('Earlier customer message pending',503);json(res,200,{accepted:true,sessionId:sid});return}}
         if(incoming&&!isOwner&&objectAdmissions.has(sid))throw requestError('Customer admission busy',503);
         if(incoming&&!isOwner&&ctx.agents.get(sid)?.status!=='running'){
           const active=ctx.agents.list().filter(a=>a.id.startsWith('object-')&&a.status==='running').length;
           if(active+objectAdmissions.size>=4)throw requestError('Customer capacity busy',503);
         }
         if(incoming&&!isOwner){objectAdmissions.add(sid);reservedSid=sid}
+        if(incoming&&!isOwner&&!ctx.agents.get(sid))unusedIncoming=sid;
         let agent;{agent=await ensureSession(sid,w.path);if(incoming&&!isOwner){await settleIncoming(agent);const pending=delivery.stateOf(agent.session).pendingIncoming;if(pending&&pending!==input.id)throw requestError('Customer turn busy',503)}}
 
-        if(incoming&&!isOwner&&!(await call('/messages/admit?runId='+encodeURIComponent(input.id))).allowed){json(res,200,{accepted:true,sessionId:agent.id});return}
+        if(incoming&&!isOwner){const admission=await call('/messages/admit?runId='+encodeURIComponent(input.id));if(!admission.allowed){if(!admission.terminal)throw requestError('Earlier customer message pending',503);json(res,200,{accepted:true,sessionId:agent.id});return}}
+        unusedIncoming='';
         if(!delivery.stateOf(agent.session).dispatches.includes(input.id)) {
           agent.followup(createUserMessage({content:[{type:'text',text:(!incoming?'这是一项已经由今日派发到本项目的任务。当前会话就是目标项目会话，派发这一步已完成。请直接执行本人原话中的目标业务，不要重复执行其中针对今日的转交或task_delegate指令。\n\n本人原话：\n':'')+input.goal+'\n\n本次已绑定的资料引用：'+JSON.stringify([...(input.sources||[]),...(input.lineage||[])])}],source:{kind:isOwner?'workbench-owner':incoming?'workbench-incoming':'workbench-delegation',runId:input.id}}));
           if(!await ctx.sessions.flush(agent.session))throw Error('Project task was not persisted');
         }
         json(res,200,{accepted:true,sessionId:agent.id});
-      }catch(e){json(res,e.status||(e instanceof SyntaxError?400:503),{error:e.status?e.message:'Host delivery unavailable'})}finally{if(reservedSid)objectAdmissions.delete(reservedSid)}
+      }catch(e){json(res,e.status||(e instanceof SyntaxError?400:503),{error:e.status?e.message:'Host delivery unavailable'}) }finally{
+        // A denied/queued message must not leave a newly restored idle Agent
+        // resident until the idle timer, especially during an offline backlog.
+        const handle=unusedIncoming&&agentHandles.get(unusedIncoming);
+        if(handle&&handle.agent.status==='idle'&&!delivery.stateOf(handle.agent.session).pendingIncoming&&!sessionLoads.has(unusedIncoming)){
+          const closing=(async()=>{await ctx.sessions.flush(handle.agent.session);agentHandles.delete(unusedIncoming);idleSince.delete(unusedIncoming);await handle.dispose()})();
+          sessionLoads.set(unusedIncoming,closing);
+          try{await closing}catch{}finally{if(sessionLoads.get(unusedIncoming)===closing)sessionLoads.delete(unusedIncoming)}
+        }
+        if(reservedSid)objectAdmissions.delete(reservedSid)
+      }
       return;
     }
     if (req.url !== "/model" || req.method !== "POST") {

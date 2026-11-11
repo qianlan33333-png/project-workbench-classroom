@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	"net/http"
@@ -15,9 +17,10 @@ import (
 )
 
 type Receipt struct {
-	State   string `json:"state"`
-	Receipt string `json:"receipt,omitempty"`
-	Error   string `json:"error,omitempty"`
+	State            string `json:"state"`
+	Receipt          string `json:"receipt,omitempty"`
+	Error            string `json:"error,omitempty"`
+	AwaitPartReceipt bool   `json:"awaitPartReceipt,omitempty"`
 }
 
 func ReceiptOnly(ctx workflow.Context, id string) error {
@@ -136,6 +139,10 @@ func callConnector(ctx context.Context, c core.Transport, name string, input any
 		return Receipt{}, e
 	}
 	defer session.Close()
+	return callConnectorSession(ctx, session, name, input)
+}
+
+func callConnectorSession(ctx context.Context, session *mcp.ClientSession, name string, input any) (Receipt, error) {
 	result, e := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: input})
 	if e != nil {
 		return Receipt{}, e
@@ -171,16 +178,10 @@ func (a *Activities) SendDelivery(ctx context.Context, id string) (Receipt, erro
 	if e != nil {
 		return Receipt{}, failure(e)
 	}
+	if r.Operation == "reply" {
+		return a.sendReplyDelivery(ctx, r, d)
+	}
 	if d.State == "prepared" {
-		if r.Operation == "reply" {
-			expired, err := a.Store.ExpireReplyDraft(ctx, id)
-			if err != nil {
-				return Receipt{}, failure(err)
-			}
-			if expired {
-				return Receipt{State: "failed", Error: "自动回复未提交：配置或会话已失效。"}, nil
-			}
-		}
 		transport, err := a.Store.PreparingTransport(ctx, r, d.ConnectionID)
 		if err != nil {
 			return Receipt{}, failure(err)
@@ -210,6 +211,41 @@ func (a *Activities) SendDelivery(ctx context.Context, id string) (Receipt, erro
 	}
 	return a.recordReceipt(ctx, r, d, receipt)
 }
+
+// Only automatic replies use the combined path. Other delivery types keep their
+// existing approvals and execution behavior.
+func (a *Activities) sendReplyDelivery(ctx context.Context, r core.Run, d core.Delivery) (Receipt, error) {
+	if d.State != "prepared" {
+		return a.ReconcileDelivery(ctx, d.ID)
+	}
+	transport, prepErr := a.Store.PreparingTransport(ctx, r, d.ConnectionID)
+	var session *mcp.ClientSession
+	if prepErr == nil {
+		probe, cancel := context.WithTimeout(ctx, 10*time.Second)
+		session, prepErr = connectConnector(probe, transport)
+		cancel()
+		if session != nil {
+			defer session.Close()
+		}
+	}
+	// Run even after preparation failure, so revoked drafts cannot block FIFO.
+	current, claimed, err := a.Store.PrepareReplyDelivery(ctx, d.ID, transport, prepErr == nil && session != nil)
+	if err != nil {
+		return Receipt{}, failure(err)
+	}
+	if !claimed {
+		if current.State == "prepared" || current.State == "failed" {
+			return Receipt{State: current.State, Error: current.Error}, nil
+		}
+		return a.ReconcileDelivery(ctx, d.ID)
+	}
+	receipt, err := callConnectorSession(ctx, session, "message_send", map[string]any{"connectionId": transport.ID, "idempotencyKey": current.ID, "target": current.Target, "text": current.Text})
+	if err != nil {
+		receipt = Receipt{State: "unknown", Error: "发送结果未明确；已停止重发，只允许核对回执。"}
+	}
+	return a.recordReceipt(ctx, r, current, receipt)
+}
+
 func (a *Activities) ReconcileDelivery(ctx context.Context, id string) (Receipt, error) {
 	if activity.IsActivity(ctx) {
 		stop := keepAlive(ctx)
@@ -220,7 +256,7 @@ func (a *Activities) ReconcileDelivery(ctx context.Context, id string) (Receipt,
 		return Receipt{}, e
 	}
 	if d.State == "sent" || d.State == "delivered" || d.State == "failed" || d.State == "superseded" {
-		return Receipt{d.State, d.Receipt, d.Error}, nil
+		return Receipt{State: d.State, Receipt: d.Receipt, Error: d.Error}, nil
 	}
 	r, e := a.Store.ExecutionRun(ctx, d.RunID)
 	if e != nil {
@@ -235,18 +271,24 @@ func (a *Activities) ReconcileDelivery(ctx context.Context, id string) (Receipt,
 		input["text"] = d.Text
 	}
 	receipt, e := callConnector(ctx, c, "message_receipt", input)
+	if d.ReplyPart > 0 && d.ReplyPart < len(r.ReplyParts) && d.ReceiptChecks >= 3 &&
+		(e != nil || receipt.State == "accepted" || receipt.State == "pending_confirmation" || receipt.State == "unknown") {
+		receipt = Receipt{State: "unknown", Receipt: d.Receipt, Error: "未确认本段已发送，剩余段落已停止，只允许核对原回执。"}
+		e = nil
+	}
 	if e != nil {
 		return Receipt{}, e
 	}
 	return a.recordReceipt(ctx, r, d, receipt)
 }
+
 func (a *Activities) recordReceipt(ctx context.Context, r core.Run, d core.Delivery, receipt Receipt) (Receipt, error) {
 	saved, e := a.Store.FinishDelivery(ctx, d.ID, receipt.State, receipt.Receipt, receipt.Error)
 	if e != nil {
 		return Receipt{}, failure(e)
 	}
 	if r.Operation == "dispatch_batch" || r.Operation == "control_notification" {
-		return Receipt{saved.State, saved.Receipt, saved.Error}, nil
+		return Receipt{State: saved.State, Receipt: saved.Receipt, Error: saved.Error}, nil
 	}
 	labels := map[string]string{"accepted": "渠道已受理，尚无真实送达凭据。", "pending_confirmation": "已创建手机待发送任务，等待手机端确认。", "sent": "渠道回执确认已发送。", "delivered": "渠道回执确认已送达。", "failed": "渠道明确返回失败。", "unknown": "发送结果未明确，已停止重发，需要核对。"}
 	if r.Operation == "owner_message" {
@@ -257,7 +299,35 @@ func (a *Activities) recordReceipt(ctx context.Context, r core.Run, d core.Deliv
 	if e = a.Store.Emit(ctx, core.RunEvent{ID: d.ID + "-" + saved.State, SessionID: r.Principal.SessionID, RunID: r.ID, Kind: "message." + saved.State, Text: labels[saved.State], Details: map[string]any{"deliveryId": saved.ID, "state": saved.State, "receipt": saved.Receipt}}); e != nil {
 		return Receipt{}, e
 	}
-	return Receipt{saved.State, saved.Receipt, saved.Error}, nil
+	if err := StartNextReplyPart(ctx, a.Store, a.Temporal, saved); err != nil && activity.IsActivity(ctx) {
+		activity.GetLogger(ctx).Warn("Reply part left for prepared-delivery recovery", "deliveryId", saved.ID, "error", err)
+	}
+	return Receipt{
+		State: saved.State, Receipt: saved.Receipt, Error: saved.Error,
+		AwaitPartReceipt: saved.ReplyPart > 0 && saved.ReplyPart < len(r.ReplyParts) &&
+			(saved.State == "accepted" || saved.State == "pending_confirmation"),
+	}, nil
+}
+
+// Both callback and reconciliation can prove a part was sent. Only the
+// durable next delivery can be scheduled; the sweep handles startup failures.
+func StartNextReplyPart(ctx context.Context, store *core.Store, temporalClient client.Client, previous core.Delivery) error {
+	if temporalClient == nil || previous.ReplyPart < 1 || (previous.State != "sent" && previous.State != "delivered") {
+		return nil
+	}
+	nextID := core.ReplyPartID(previous.RunID, previous.ReplyPart+1)
+	next, err := store.Delivery(ctx, nextID)
+	if core.IsMissing(err) || (err == nil && next.State != "prepared") {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: nextID, TaskQueue: InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY}, SendMessage, nextID)
+	if temporal.IsWorkflowExecutionAlreadyStartedError(err) {
+		return nil
+	}
+	return err
 }
 
 func WaitAndSend(ctx workflow.Context, in FollowupInput) (err error) {

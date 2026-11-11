@@ -318,10 +318,13 @@ func (a *Server) replyRoutes(mux *http.ServeMux) {
 		rows.Close()
 		if e == nil {
 			for _, id := range ids {
-				_, e = a.Store.FinishDelivery(r.Context(), id, v.State, v.MessageID, "")
+				var delivery core.Delivery
+				delivery, e = a.Store.FinishDelivery(r.Context(), id, v.State, v.MessageID, "")
 				if e != nil {
 					break
 				}
+				// The existing sweep recovers durable drafts if startup fails.
+				_ = engine.StartNextReplyPart(r.Context(), a.Store, a.Temporal, delivery)
 			}
 		}
 		respond(w, map[string]bool{"recorded": e == nil}, e)
