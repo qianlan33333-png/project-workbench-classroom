@@ -12,7 +12,6 @@ import product_service_scope
 import sku68_operations,sku99_operations,sku299_operations,sku299_renewal
 import sku99_ledger,sku299_service_state
 from v3_strategy_drafts import normalize_operating_config
-from decision_contract import short_hash
 
 
 def decide(user, past, policies, inputs, now):
@@ -104,7 +103,6 @@ def decide(user, past, policies, inputs, now):
         result['service_fact_reviews']=reviewed
         route=lifecycle.branch_route(result['branch'],None if result.get('material') else configs.get(result['strategy_key'],{}).get('branch_mapping'))
         result.update(route)
-        result['decision_fingerprint']=short_hash({field:result.get(field)for field in ('strategy_key','branch','action','why_now','outbound_candidate','rights_type','entitlement_state','rights_start','rights_end','evidence_refs','material','policy_version','service_fact_reviews','provisional_purchase','sku_pack_binding','operation_pack_scope')})
         if result.get('existing_copy',{}).get('reuse_required'):
             result.update(outbound_candidate=False,preparation_reason='original_copy_reuse_required')
         if result.get('outbound_candidate'):

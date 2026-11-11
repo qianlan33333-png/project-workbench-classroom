@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
-	"time"
 	"workbench-native/internal/core"
 	"workbench-native/internal/engine"
 )
@@ -115,57 +117,59 @@ func (a *Server) prepareLocalOperations(ctx context.Context, p core.Principal, i
 	if e != nil || selected.Operation != "strategy_select" || selected.Operations == nil || len(selected.Operations.StrategyKeys) != 1 || selected.Destination != in.Review.Selection.ResourceID {
 		return nil, RunRef{}, core.ErrInvalid
 	}
-	if len(selected.Sources) != 3 {
-		return nil, RunRef{}, core.ErrInvalid
-	}
-	clean, e := a.Store.Run(ctx, p, selected.Sources[0].Version)
-	if e != nil || clean.Operation != "data_refresh" || clean.Operations == nil || len(clean.Operations.Refresh) == 0 || (cfg.Cycle == nil || len(cfg.Cycle.Sources) != 1 || clean.Operations.Refresh[0].ResourceID != cfg.Cycle.Sources[0].ResourceID) {
+	cycle := cfg.Cycle
+	if cycle == nil {
 		return nil, RunRef{}, core.ErrDenied
 	}
-	cycle := cfg.Cycle
 	strategy := selected.Operations.StrategyKeys[0]
 	batch, allowed := cycle.Batch(strategy)
-	if !allowed || selected.Destination != batch.SelectedDestination || clean.Destination != cycle.CleanDestination || cycle.MethodSource == nil {
+	if !allowed || in.Review.Selection.ResourceID != batch.SelectedDestination || in.Review.Selection.Section != cycle.Section ||
+		selected.Operations.Limit != 0 || len(selected.Sources) != 3 || len(cycle.Sources) != 1 ||
+		cycle.StrategySource == nil || cycle.HistorySource == nil || cycle.MethodSource == nil {
 		return nil, RunRef{}, core.ErrDenied
 	}
-	if cycle.HistorySource == nil || cycle.StrategySource == nil || in.Review.Selection.Section != cycle.Section {
+	// Bind the scheduled inputs once when the draft enters the review queue.
+	// Later confirmation and delivery use the saved draft alone.
+	clean, e := a.Store.Run(ctx, p, selected.Sources[0].Version)
+	if e != nil || clean.Operation != "data_refresh" || clean.Operations == nil || clean.Destination != cycle.CleanDestination ||
+		!slices.EqualFunc(clean.Operations.Refresh, []core.ResourceSelection{cycle.Sources[0], *cycle.HistorySource, *cycle.StrategySource, *cycle.MethodSource},
+			func(a, b core.ResourceSelection) bool {
+				return a.ResourceID == b.ResourceID && a.Refresh && slices.Equal(a.Sections, b.Sections)
+			}) {
 		return nil, RunRef{}, core.ErrDenied
 	}
-	frozen, e := a.Store.Checkpoint(ctx, clean, "operations-input")
-	if e != nil {
-		return nil, RunRef{}, e
+	cycleRef := func(resource string) core.Ref {
+		return core.Ref{ResourceID: resource, Version: uuid.NewSHA1(uuid.NameSpaceURL, []byte(clean.ID+"/sync/"+resource)).String(), Section: cycle.Section}
 	}
-	stamp, _ := frozen.Input["asOf"].(string)
-	sourceTime, sourceErr := time.Parse(time.RFC3339Nano, stamp)
-	selectedTime, selectedErr := time.Parse(time.RFC3339Nano, selected.Operations.AsOf)
-	if sourceErr != nil || selectedErr != nil || selectedTime.Unix() != sourceTime.Unix() {
+	if !slices.Equal(selected.Sources, []core.Ref{{ResourceID: cycle.CleanDestination, Version: clean.ID, Section: cycle.Section},
+		cycleRef(cycle.StrategySource.ResourceID), cycleRef(cycle.HistorySource.ResourceID)}) {
 		return nil, RunRef{}, core.ErrDenied
-	}
-	expectedSources := []core.Ref{{ResourceID: cycle.CleanDestination, Version: clean.ID, Section: cycle.Section}}
-	for _, source := range []*core.ResourceSelection{cycle.StrategySource, cycle.HistorySource} {
-		expectedSources = append(expectedSources, core.Ref{ResourceID: source.ResourceID, Version: uuid.NewSHA1(uuid.NameSpaceURL, []byte(clean.ID+"/sync/"+source.ResourceID)).String(), Section: cycle.Section})
-	}
-	for i, expected := range expectedSources {
-		if selected.Sources[i] != expected {
-			return nil, RunRef{}, core.ErrDenied
-		}
-	}
-	methodVersion := uuid.NewSHA1(uuid.NameSpaceURL, []byte(clean.ID+"/sync/"+cycle.MethodSource.ResourceID)).String()
-	for _, ref := range in.Review.Drafts {
-		generated, err := a.Store.Run(ctx, p, ref.Version)
-		if err != nil || generated.Destination != batch.DraftDestination || generated.MethodPointer != "/actions/0/generation/skill_key" || len(generated.MethodRefs) != len(cycle.MethodRefs) {
-			return nil, RunRef{}, core.ErrDenied
-		}
-		for key, expected := range cycle.MethodRefs {
-			actual, exists := generated.MethodRefs[key]
-			if !exists || actual.ID != expected.ID || actual.Ref.ResourceID != expected.Ref.ResourceID || actual.Ref.Section != expected.Ref.Section || actual.Ref.Version != methodVersion {
-				return nil, RunRef{}, core.ErrDenied
-			}
-		}
 	}
 	at, e := time.Parse(time.RFC3339, selected.Operations.AsOf)
 	if e != nil {
 		return nil, RunRef{}, e
+	}
+	checkpoint, e := a.Store.Checkpoint(ctx, clean, "operations-input")
+	if e != nil {
+		return nil, RunRef{}, e
+	}
+	stamp, _ := checkpoint.Input["asOf"].(string)
+	collectedAt, e := time.Parse(time.RFC3339Nano, stamp)
+	if e != nil || !collectedAt.Truncate(time.Second).Equal(at) {
+		return nil, RunRef{}, core.ErrDenied
+	}
+	methodSource := cycleRef(cycle.MethodSource.ResourceID)
+	for _, ref := range in.Review.Drafts {
+		generated, e := a.Store.Run(ctx, p, ref.Version)
+		if e != nil || ref.ResourceID != batch.DraftDestination || ref.Section != cycle.Section ||
+			generated.MethodPointer != "/actions/0/generation/skill_key" || len(generated.MethodRefs) != len(cycle.MethodRefs) {
+			return nil, RunRef{}, core.ErrDenied
+		}
+		for key, method := range cycle.MethodRefs {
+			if generated.MethodRefs[key] != (core.RecordRef{ID: method.ID, Ref: methodSource}) {
+				return nil, RunRef{}, core.ErrDenied
+			}
+		}
 	}
 	zone, _ := time.LoadLocation("Asia/Shanghai")
 	at = at.In(zone)

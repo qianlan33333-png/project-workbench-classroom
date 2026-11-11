@@ -124,8 +124,7 @@ func (a *Server) editOperationsPackage(w http.ResponseWriter, r *http.Request) {
 	}
 	in.Text = strings.TrimSpace(in.Text)
 	size := utf8.RuneCountInString(in.Text)
-	if !validOperationsPackage(in.Package, in.Week) || !operationsCopyRun.MatchString(in.Run) ||
-		!core.ValidID(in.Item) || !operationsDigest.MatchString(in.Digest) ||
+	if !core.ValidID(in.Item) ||
 		in.Revision < 0 || in.Revision > 999999999 || size < 2 || size > 5000 {
 		respond(w, nil, core.ErrInvalid)
 		return
@@ -133,6 +132,7 @@ func (a *Server) editOperationsPackage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 130*time.Second)
 	defer cancel()
 	var day, strategy, currentPackage, currentWeek any
+	local := false
 	if in.Daily != "" {
 		parent, roster, err := a.dailyOperationsRoster(ctx, p, in.Daily)
 		if err != nil || roster.Run != in.Run ||
@@ -140,14 +140,15 @@ func (a *Server) editOperationsPackage(w http.ResponseWriter, r *http.Request) {
 			respond(w, nil, core.ErrConflict)
 			return
 		}
+		local = core.IsLocalOperations(parent)
 		packID, week := roster.originalBinding(parent)
-		if packID != in.Package || week != in.Week {
+		if packID != in.Package || week != in.Week || (local && parent.Shared["day"] != operationsDay(time.Now())) {
 			respond(w, nil, core.ErrConflict)
 			return
 		}
 		allowed := false
 		for _, member := range roster.Scope {
-			if member.Key == in.Item && (member.ExpiresAt == nil || time.Now().Before(*member.ExpiresAt)) {
+			if member.Key == in.Item && (local || member.ExpiresAt == nil || time.Now().Before(*member.ExpiresAt)) {
 				allowed = true
 				break
 			}
@@ -158,6 +159,10 @@ func (a *Server) editOperationsPackage(w http.ResponseWriter, r *http.Request) {
 		}
 		day, strategy = parent.Shared["day"], parent.Shared["strategy"]
 		currentPackage, currentWeek = parent.Shared["package"], parent.Shared["week"]
+	}
+	if !local && (!validOperationsPackage(in.Package, in.Week) || !operationsCopyRun.MatchString(in.Run) || !operationsDigest.MatchString(in.Digest)) {
+		respond(w, nil, core.ErrInvalid)
+		return
 	}
 	run := core.Run{ID: uuid.NewString(), Principal: p, Operation: "operations_package_edit", Destination: cfg.Input.ResourceID,
 		Title: "保存原工作包最终稿", ExplicitInputs: true, Quiet: true}

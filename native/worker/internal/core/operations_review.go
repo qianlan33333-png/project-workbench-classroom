@@ -131,7 +131,7 @@ func (s *Store) PublishLocalOperationsReview(ctx context.Context, run string, ne
 	return s.publishOperationsReview(ctx, run, next, rows, &roster)
 }
 func (s *Store) publishOperationsReview(ctx context.Context, run string, next OperationsReview, rows []OperationsReviewRow, roster *ItemResult) error {
-	if !operationsActionKey.MatchString(next.Digest) || len(rows) > 5000 {
+	if len(rows) > 5000 || (roster == nil && !operationsActionKey.MatchString(next.Digest)) {
 		return ErrInvalid
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -174,7 +174,12 @@ func (s *Store) publishOperationsReview(ctx context.Context, run string, next Op
 	}
 	next.Edit = ""
 	next.Count = len(published)
-	next.Version = Digest([]string{next.Digest, Digest(published)})
+	if roster == nil {
+		next.Version = Digest([]string{next.Digest, Digest(published)})
+	} else {
+		next.Digest = Digest(published)
+		next.Version = next.Digest
+	}
 	if err = storeOperationsItem(ctx, tx, run, OperationsReviewItem, next); err != nil {
 		return err
 	}
@@ -312,31 +317,6 @@ func (s *Store) ConfirmOperationsReview(ctx context.Context, parent Run, confirm
 		if parent.Operations == nil || parent.Operations.Review == nil {
 			return ErrInvalid
 		}
-		pending := []Ref{parent.Operations.Review.Selection}
-		seen := map[Ref]bool{}
-		for len(pending) > 0 {
-			ref := pending[len(pending)-1]
-			pending = pending[:len(pending)-1]
-			if seen[ref] {
-				continue
-			}
-			seen[ref] = true
-			if len(seen) > MaxSourceRefs {
-				return ErrInvalid
-			}
-			resource, e := (transactionGate{tx}).Resource(ctx, ref.ResourceID)
-			if e != nil {
-				return e
-			}
-			if resource.CurrentVersion != ref.Version {
-				return ErrConflict
-			}
-			snap, e := (transactionGate{tx}).Snapshot(ctx, ref.ResourceID, ref.Version)
-			if e != nil {
-				return e
-			}
-			pending = append(pending, snap.Dependencies...)
-		}
 	}
 	rows, err := operationsReviewRows(ctx, tx, parent.ID, "", 5001, false)
 	if err != nil {
@@ -353,7 +333,7 @@ func (s *Store) ConfirmOperationsReview(ctx context.Context, parent Run, confirm
 		if row.Blocked != "" {
 			continue
 		}
-		if !active[row.Key] || (row.ExpiresAt != nil && !time.Now().Before(*row.ExpiresAt)) {
+		if !IsLocalOperations(parent) && (!active[row.Key] || (row.ExpiresAt != nil && !time.Now().Before(*row.ExpiresAt))) {
 			row.Blocked = "原服务动作已经失效。"
 			if err = storeOperationsItem(ctx, tx, parent.ID, operationsRowPrefix+row.Key, row); err != nil {
 				return err
@@ -429,6 +409,51 @@ func (s *Store) OperationsBatchResult(ctx context.Context, run string) (Operatio
 	return decodeOperationsBatchResult(item)
 }
 
+// Restore only the failure emitted by the retired pre-submit gate. The
+// confirmation and action claims stay in place and the same CRM key is reused.
+func (s *Store) RestoreUnsubmittedOperationsBatch(ctx context.Context, run Run) error {
+	parent, err := s.Run(ctx, run.Principal, run.ParentRunID)
+	if err != nil || run.Operation != "operations_batch_confirm" || !IsLocalOperations(parent) {
+		return ErrDenied
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	head, err := operationsItem[OperationsReview](ctx, tx, parent.ID, OperationsReviewItem, " FOR UPDATE")
+	if err != nil || head.Confirm != run.ID || head.Count == 0 {
+		return ErrConflict
+	}
+	result, err := operationsItem[OperationsBatchStatus](ctx, tx, run.ID, OperationsBatchResultItem, " FOR UPDATE")
+	if err != nil || result.Plan != "" || len(result.Entries) != head.Count {
+		return ErrConflict
+	}
+	for _, receipt := range result.Entries {
+		if receipt.State != "failed" || receipt.Error != "发送账号、原稿或来源授权已变化，未提交。" {
+			return ErrConflict
+		}
+	}
+	transport, _ := run.Shared["transport"].(string)
+	if transport == "" {
+		return ErrDenied
+	}
+	connector := "crm-batch-" + Digest([]string{transport, run.ID})[:48]
+	var started bool
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM wb_connector_state WHERE id=?)
+		OR EXISTS(SELECT 1 FROM wb_items WHERE run_id=? AND item_id=?)`, connector, run.ID, OperationsBatchCancelItem).Scan(&started)
+	if err != nil {
+		return err
+	}
+	if started {
+		return ErrConflict
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM wb_items WHERE run_id=? AND item_id=?", run.ID, OperationsBatchResultItem); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func decodeOperationsBatchResult(item ItemResult) (OperationsBatchStatus, error) {
 	var result OperationsBatchStatus
 	if err := json.Unmarshal([]byte(item.Text), &result); err != nil {
@@ -486,7 +511,7 @@ func (s *Store) SaveOperationsBatchResult(ctx context.Context, run string, resul
 // Local edits share the review row/head transaction. The original source and
 // frozen generated snapshot are never rewritten, and an old confirmation
 // cannot approve the edited body.
-func (s *Store) EditLocalOperationsReview(ctx context.Context, p Principal, run, key, digest, text string, revision int) (OperationsReview, OperationsReviewRow, error) {
+func (s *Store) EditLocalOperationsReview(ctx context.Context, p Principal, run, key, text string, revision int) (OperationsReview, OperationsReviewRow, error) {
 	var head OperationsReview
 	var row OperationsReviewRow
 	parent, e := s.Run(ctx, p, run)
@@ -502,7 +527,7 @@ func (s *Store) EditLocalOperationsReview(ctx context.Context, p Principal, run,
 	if e != nil {
 		return head, row, e
 	}
-	if head.Confirm != "" || head.Edit != "" || head.Digest != digest {
+	if head.Confirm != "" || head.Edit != "" {
 		return head, row, ErrConflict
 	}
 	if e = AuthorizeAll(ctx, transactionGate{tx}, p, UnionRefs(parent.Sources, parent.Lineage)); e != nil {
@@ -512,7 +537,7 @@ func (s *Store) EditLocalOperationsReview(ctx context.Context, p Principal, run,
 	if e != nil {
 		return head, row, e
 	}
-	if row.Revision != revision || !row.Editable || (row.ExpiresAt != nil && !time.Now().Before(*row.ExpiresAt)) {
+	if row.Revision != revision || !row.Editable {
 		return head, row, ErrConflict
 	}
 	if row.Message == text {
@@ -529,7 +554,7 @@ func (s *Store) EditLocalOperationsReview(ctx context.Context, p Principal, run,
 		return head, row, e
 	}
 	head.Digest = Digest(rows)
-	head.Version = Digest([]string{head.Digest, Digest(rows)})
+	head.Version = head.Digest
 	if e = storeOperationsItem(ctx, tx, run, OperationsReviewItem, head); e != nil {
 		return head, row, e
 	}

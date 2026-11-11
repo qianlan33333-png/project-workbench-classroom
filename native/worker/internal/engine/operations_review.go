@@ -71,13 +71,12 @@ func (a *Activities) publishOperationsReview(ctx context.Context, run core.Run, 
 		}
 		offset = page.Next
 	}
-	a.bindOperationsMaterialVersions(ctx, run, rows)
+	a.bindOperationsMaterials(ctx, run, rows)
 	return a.Store.PublishOperationsReview(ctx, run.ID, head, rows)
 }
 
-// Reading the CRM card catalog is optional for opening drafts. Only an
-// exact catalog version fixed here can later be submitted for delivery.
-func (a *Activities) bindOperationsMaterialVersions(ctx context.Context, run core.Run, rows []core.OperationsReviewRow) error {
+// Resolve the selected card to its CRM material ID before showing the draft.
+func (a *Activities) bindOperationsMaterials(ctx context.Context, run core.Run, rows []core.OperationsReviewRow) error {
 	ids := []string{}
 	drafts := []map[string]string{}
 	seen := map[string]bool{}
@@ -185,8 +184,8 @@ func (a *Activities) bindOperationsMaterialVersions(ctx context.Context, run cor
 			if card.ID == "" {
 				known = byID[core.Digest([]string{card.AppID, card.Title, card.Page})]
 			}
-			if known.Title == card.Title && known.AppID == card.AppID && known.Page == card.Page && known.Version > 0 && known.Cover != "" {
-				card.ID, card.Version, card.Cover = known.ID, known.Version, known.Cover
+			if known.Title == card.Title && known.AppID == card.AppID && known.Page == card.Page {
+				*card = known
 			} else if core.IsLocalOperations(run) {
 				return core.ErrConflict
 			}
@@ -246,32 +245,24 @@ func (a *Activities) FreezeOperationsBatch(ctx context.Context, id string) error
 	}
 	staff, transport, version := sharedString(run, "staff"), sharedString(run, "transport"), sharedString(run, "version")
 	name := strings.TrimSpace(os.Getenv("WORKBENCH_OPERATIONS_STAFF_NAME"))
+	c, err := a.Store.Transport(ctx, run.Principal, transport)
+	if err != nil || c.Kind != "crm-cli" {
+		return failure(errors.Join(err, core.ErrDenied))
+	}
+	if core.IsLocalOperations(parent) {
+		if e := a.Store.ConfirmOperationsReview(ctx, parent, id, version, staff, transport, name, nil); errors.Is(e, core.ErrConflict) {
+			return a.operationsBatchSourceChanged(ctx, id, version)
+		} else if e != nil {
+			return failure(e)
+		}
+		return a.StartOperationsBatchDelivery(ctx, id)
+	}
 	if sharedString(parent, "day") != originalOperationsDay(time.Now()) ||
 		!OperationsBatchEnabled(sharedString(parent, "strategy"), staff) ||
 		head.Edit != "" || head.Confirm != "" || version != core.OperationsReviewVersion(head, transport, staff, name) {
 		return a.operationsBatchSourceChanged(ctx, id, version)
 	}
-	if core.IsLocalOperations(parent) {
-		stale, e := a.Store.IsStale(ctx, parent.Operations.Review.Selection)
-		if e != nil {
-			return e
-		}
-		if stale {
-			return a.operationsBatchSourceChanged(ctx, id, version)
-		}
-		rows, e := a.Store.OperationsReviewRows(ctx, parent.ID, "", 5001)
-		if e != nil {
-			return e
-		}
-		keys := make([]string, 0, len(rows))
-		for _, row := range rows {
-			keys = append(keys, row.Key)
-		}
-		if e = a.Store.ConfirmOperationsReview(ctx, parent, id, version, staff, transport, name, keys); e != nil {
-			return failure(e)
-		}
-		return a.StartOperationsBatchDelivery(ctx, id)
-	}
+
 	params := map[string]string{"package": head.Package, "week": head.Week, "run": head.Run, "version": "1",
 		"day": sharedString(parent, "day"), "strategy": sharedString(parent, "strategy"),
 		"currentPackage": sharedString(parent, "package"), "currentWeek": sharedString(parent, "week")}
@@ -299,10 +290,6 @@ func (a *Activities) FreezeOperationsBatch(ctx context.Context, id string) error
 			head.Digest != checked.Digest || head.IdentityVersion != checked.IdentityVersion {
 			return a.operationsBatchSourceChanged(ctx, id, version)
 		}
-	}
-	c, err := a.Store.Transport(ctx, run.Principal, transport)
-	if err != nil || c.Kind != "crm-cli" {
-		return failure(errors.Join(err, core.ErrDenied))
 	}
 	if err = a.Store.ConfirmOperationsReview(ctx, parent, id, version, staff, transport, name, checked.ActiveKeys); errors.Is(err, core.ErrConflict) {
 		return a.operationsBatchSourceChanged(ctx, id, version)
@@ -363,7 +350,7 @@ func (a *Activities) readOrSubmitOperationsBatch(ctx context.Context, id string,
 	if e != nil {
 		return e
 	}
-	send := maySend && !stopped && OperationsBatchEnabled(sharedString(run, "strategy"), sharedString(run, "staff"))
+	send := maySend && !stopped
 	session, err := connectConnectorWithTimeout(ctx, transport, 11*time.Minute)
 	if err != nil {
 		return err

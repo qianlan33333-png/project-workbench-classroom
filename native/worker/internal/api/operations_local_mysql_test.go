@@ -25,7 +25,7 @@ func TestMySQLLocalOperationsSecondCycleConfirmAndCancel(t *testing.T) {
 	if dsn == "" {
 		t.Skip("isolated MySQL required")
 	}
-	if !strings.Contains(dsn, "/workbench_native_acceptance") {
+	if !strings.Contains(dsn, "/workbench_native_acceptance") && !strings.Contains(dsn, "/wbop_") {
 		t.Fatal("isolated database required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -107,7 +107,7 @@ func TestMySQLLocalOperationsSecondCycleConfirmAndCancel(t *testing.T) {
 		if receipt.State != "awaiting_confirmation" || receipt.ReviewRunID != parent.ID || receipt.Target == nil || receipt.Receipt != "" {
 			t.Fatalf("pending batch receipt violated MCP contract: %#v", receipt)
 		}
-		confirmation := core.Run{ID: id + "-confirm-" + version, Principal: p, ParentRunID: parent.ID, Operation: "operations_batch_confirm", ExplicitInputs: true, Title: "confirm"}
+		confirmation := core.Run{ID: id + "-confirm-" + version, Principal: p, ParentRunID: parent.ID, Operation: "operations_batch_confirm", ExplicitInputs: true, Title: "confirm", Shared: map[string]any{"transport": "crm-test"}}
 		must(s.SaveRun(ctx, confirmation))
 		token := core.OperationsReviewVersion(head, "crm-test", "20", "fixture")
 		if version == "v1" {
@@ -117,6 +117,27 @@ func TestMySQLLocalOperationsSecondCycleConfirmAndCancel(t *testing.T) {
 			must(e)
 			if len(manifest) != 1 || manifest[0].Message != row.Message {
 				t.Fatal(manifest)
+			}
+			fail := core.OperationsBatchStatus{Entries: map[string]core.OperationsBatchReceipt{
+				row.Key: {State: "failed", Error: "发送账号、原稿或来源授权已变化，未提交。"},
+			}}
+			must(s.SaveOperationsBatchResult(ctx, confirmation.ID, fail))
+			connector := "crm-batch-" + core.Digest([]string{"crm-test", confirmation.ID})[:48]
+			_, e = s.DB.ExecContext(ctx, "INSERT INTO wb_connector_state VALUES(?,JSON_OBJECT())", connector)
+			must(e)
+			if err := s.RestoreUnsubmittedOperationsBatch(ctx, confirmation); !errors.Is(err, core.ErrConflict) {
+				t.Fatal("a CRM attempt cannot be reopened", err)
+			}
+			_, e = s.DB.ExecContext(ctx, "DELETE FROM wb_connector_state WHERE id=?", connector)
+			must(e)
+			must(s.RestoreUnsubmittedOperationsBatch(ctx, confirmation))
+			if _, e := s.OperationsBatchResult(ctx, confirmation.ID); !core.IsMissing(e) {
+				t.Fatal("the obsolete result still prevents the original batch from running", e)
+			}
+			_, after, e := s.OperationsBatchManifest(ctx, confirmation.ID)
+			must(e)
+			if len(after) != len(manifest) || after[0].Message != manifest[0].Message {
+				t.Fatal("resuming changed the original confirmation", after)
 			}
 		} else {
 			must(s.StopOperationsBatch(ctx, p, confirmation.ID))
@@ -132,7 +153,7 @@ func TestMySQLNewcomerConfirmationUsesLocalBatch(t *testing.T) {
 	if dsn == "" {
 		t.Skip("isolated MySQL required")
 	}
-	if !strings.Contains(dsn, "/workbench_native_acceptance") {
+	if !strings.Contains(dsn, "/workbench_native_acceptance") && !strings.Contains(dsn, "/wbop_") {
 		t.Fatal("isolated database required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -194,13 +215,15 @@ func TestMySQLNewcomerConfirmationUsesLocalBatch(t *testing.T) {
 	tc.On("ExecuteWorkflow", mock.Anything, mock.MatchedBy(func(o client.StartWorkflowOptions) bool { return o.ID == confirm }), mock.Anything,
 		engine.WriteInput{RunID: confirm, ProjectID: id, Operation: "operations_batch_confirm"}).Return(&mocks.WorkflowRun{}, nil).Once()
 	body, _ := json.Marshal(map[string]string{"daily": parent.ID, "reviewVersion": draft.ReviewVersion})
+	cycle.AdditionalBatch = nil
+	must(api.saveOperations(ctx, cfg))
 	if response := call(http.MethodPost, "/operations/source-confirm", body); response.Code != 200 || !strings.Contains(response.Body.String(), confirm) {
 		t.Fatalf("confirmation entry failed: %d %s", response.Code, response.Body.String())
 	}
 	tc.AssertExpectations(t)
-	cycle.AdditionalBatch = nil
+	cfg.ReadSource = false
 	must(api.saveOperations(ctx, cfg))
 	if response := call(http.MethodPost, "/operations/source-confirm", body); response.Code != 403 {
-		t.Fatalf("withdrawn strategy could confirm: %d %s", response.Code, response.Body.String())
+		t.Fatalf("withdrawn project access could confirm: %d %s", response.Code, response.Body.String())
 	}
 }

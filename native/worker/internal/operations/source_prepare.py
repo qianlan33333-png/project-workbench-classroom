@@ -9,7 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-from source_common import load, write_json, original_aliases, original_reviews, alias_execution_requires_review, original_pack_redlines, generation_profile, generation_method, RIGHTS_COLUMNS, rights_fingerprint, fact_reviews_fingerprint
+from source_common import load, write_json, original_aliases, original_reviews, alias_execution_requires_review, original_pack_redlines, generation_profile, generation_method
 
 root, settings = load()
 original = root / 'original'
@@ -64,8 +64,6 @@ if not source_link.exists():
 static = routine._static_sources(original)
 if static['complete'] is not True:
     raise ValueError('full_hxc_activity_coverage_required')
-rights_by_account=defaultdict(lambda:defaultdict(list))
-select_source(raw/'hxc-latest.json', {name:(lambda row,name=name:rights_by_account[str(row.get('user_id'))][name].append(row))for name in RIGHTS_COLUMNS})
 
 def active(resource):
     with (raw / 'unified' / (resource + '.jsonl')).open() as stream:
@@ -85,7 +83,6 @@ catalog_by_key = {str(x.get('content_type')) + ':' + str(x.get('content_id')): x
 reviews = {k: list(v) for k, v in static['reviews'].items()}
 unified_reviews = defaultdict(list)
 growth = {}
-service_bindings = {}
 content_history = defaultdict(set)
 
 def exact_account(source):
@@ -103,9 +100,6 @@ for item in active('weekly-reviews'):
             created_at=item.get('generated_at'), source_ref=item.get('resource_key'), unified_published=True))
 reviews.update(unified_reviews)
 from hxc_growth_report import validate_handoff
-from hxc_profile_archive_merge import approved_hxc_archive_fields
-from hxc_unified_snapshot import _approved_merge, _brief_context
-from hxc_service_binding import capture as capture_service_binding
 contexts_by_ref=defaultdict(list)
 for item in active('context-all'):
     ref,uid=exact_account(item.get('safe_user_ref'))
@@ -114,10 +108,6 @@ ambiguous_contexts={ref for ref,items in contexts_by_ref.items()if len(items)!=1
 for ref,items in contexts_by_ref.items():
     if ref in ambiguous_contexts:continue
     item=items[0];ref,uid=exact_account(item.get('safe_user_ref'))
-    if ref:
-        fields=approved_hxc_archive_fields({'mapped':True,'merge_approved':_approved_merge(ref),
-            'context':_brief_context(item)})
-        service_bindings[ref]=capture_service_binding({'safe_user_ref':ref,'profile_context':{'archive_fields':fields}})
     reports = item.get('growth_reports') or []
     if not ref or len(reports) != 1:
         continue
@@ -237,9 +227,6 @@ def profiles():
                    crm_send_coverage='partial_archive' if ref in correspondence else 'unavailable')
         # Keep rule inputs intact; only the downstream model profile is compact.
         user['generation_profile']=generation_profile(user,compact)
-        user['generation_profile']['original_fact_reviews']=fact_reviews_fingerprint(history['fact_reviews'],aliases_by_ref[ref])
-        user['generation_profile']['hxc_service_binding']=service_bindings.get(ref)
-        user['generation_profile']['hxc_rights_fingerprint']={uid:rights_fingerprint(rights_by_account[uid])for uid in ids}
         if (generation.get(ref)or{}).get('salutation'):
             user['generation_profile']['salutation']=generation[ref]['salutation']
         contexts[ref]={'complete':True,'snapshot_id':snapshot,'sources':per,

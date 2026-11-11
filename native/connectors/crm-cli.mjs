@@ -6,7 +6,7 @@ const digest=value=>crypto.createHash('sha256').update(JSON.stringify(canonical(
 const uncertain=(receipt,reason='')=>({state:'unknown',receipt:receipt||'',error:'CRM结果未明确；只查询原计划，不重复提交。'+reason});
 const businessReason=proof=>[...['failure_reason','query_failure'].map(k=>typeof proof[k]==='string'?proof[k].replace(/[\x00-\x1f\x7f]/g,'').slice(0,200):''),...['creation_errcode','query_errcode'].map(k=>Number.isSafeInteger(proof[k])&&proof[k]!==0?`${k}=${proof[k]}`:'')].filter(Boolean).join('；');
 const positive=value=>/^[1-9][0-9]*$/.test(String(value))&&Number.isSafeInteger(Number(value));
-const operations=new Set(['admin.createAIAssistantPlan','admin.getAIAssistantPlan','admin.getAIAssistantRecipient','admin.listAIAssistantPlans','admin.listAIAssistantRecipients','admin.reviewAIAssistantRecipient','admin.previewAIAssistantPlanApproval','admin.approveAIAssistantPlan','admin.listAIAssistantExecutionReceipts','admin.getMediaMiniProgram','admin.getCustomerDirectoryDetail','admin.getMediaImage']);
+const operations=new Set(['admin.createAIAssistantPlan','admin.getAIAssistantPlan','admin.getAIAssistantRecipient','admin.listAIAssistantPlans','admin.listAIAssistantRecipients','admin.reviewAIAssistantRecipient','admin.previewAIAssistantPlanApproval','admin.approveAIAssistantPlan','admin.listAIAssistantExecutionReceipts','admin.getMediaMiniProgram','admin.getMediaImage']);
 
 // Only host configuration chooses the executable and credentials. Request
 // content travels on stdin; no shell, model-controlled argv or token logging.
@@ -188,26 +188,40 @@ export function createCRM(config,workerCall,invoke=cliCaller(config)){
   }
   // An ambiguous create is reconciled by the same exact name/body. Never
   // mint another key or re-create when the response was lost.
-  if(!matching(item))throw Error('CRM material outcome requires original readback');
+  if(!matching(item)||!item.enabled)throw Error('CRM material outcome requires original readback');
   if(!state.id)await compare(stateID,state,{body,phase:'ready',id:String(item.id)});
-  const current=await readMiniProgram(invoke,String(item.id),signal);
-  if(!matching(current)||!positive(current.version))throw Error('CRM material not ready');
-  return {id:String(current.id),title:current.title,appId:current.app_id,page:current.page_path,version:current.version,cover:current.cover};
+  return item;
  }
  async function materialVersions({ids,drafts=[]},{signal}={}){
+  const covers=new Map();
+  // The previous release needs these stored fields to read an existing plan.
+  // The current submission uses only the reviewed card destination.
+  const describe=async item=>{
+   if(!item?.enabled||!positive(item.id)||!positive(item.version)||!positive(item.thumb_image_id))return null;
+   const imageId=item.thumb_image_id;
+   if(!covers.has(imageId))covers.set(imageId,invoke('admin.getMediaImage',{params:{id:imageId},signal}).then(response=>{
+    const image=response.item||response.image;
+    return image?.id===imageId&&image.enabled&&image.updated_at?digest([image.id,image.updated_at]):'';
+   }));
+   const cover=await covers.get(imageId);
+   return cover?{id:String(item.id),title:item.title,appId:item.app_id,page:item.page_path,version:item.version,cover}:null;
+  };
   const cards=[];
   for(let i=0;i<ids.length;i+=8){
    const page=await Promise.all(ids.slice(i,i+8).map(async id=>{
     try{
      const item=await readMiniProgram(invoke,id,signal);
-     if(item?.enabled&&String(item.id)===id&&positive(item.version))
-      return {id,title:item.title,appId:item.app_id,page:item.page_path,version:item.version,cover:item.cover};
-    }catch{/* A missing version leaves the card visible but not authorized for sending. */}
+     if(String(item?.id)===id)return await describe(item);
+    }catch{/* Missing or unusable card. */}
     return null;
    }));
    cards.push(...page.filter(Boolean));
   }
-  for(const draft of drafts)cards.push(await prepareMaterial(draft,signal));
+  for(const draft of drafts){
+   const card=await describe(await prepareMaterial(draft,signal));
+   if(!card)throw Error('CRM material not ready');
+   cards.push(card);
+  }
   return {cards};
  }
  return{send,receipt,materialVersions,batch:createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,compare,pages)};
@@ -217,10 +231,7 @@ async function readMiniProgram(invoke,id,signal){
  const result=await invoke('admin.getMediaMiniProgram',{params:{id},signal});
  const card=result.item||result.miniprogram;
  if(!card?.enabled||card.thumbnail_status!=='ready'||!positive(card.thumb_image_id))return null;
- const coverResult=await invoke('admin.getMediaImage',{params:{id:card.thumb_image_id},signal});
- const cover=coverResult.item||coverResult.image;
- if(!cover?.enabled||cover.id!==card.thumb_image_id||!cover.updated_at)return null;
- return {...card,cover:digest([cover.id,cover.updated_at])};
+ return card;
 }
 
 const batchKind='workbench_operations_batch';
@@ -248,65 +259,28 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
    if(keysByCustomer.has(row.customer))duplicateCustomers.add(row.customer);
    keysByCustomer.set(row.customer,row.key);
   }
-  const activeCustomers=new Set();
-  if(!previous&&send&&manifest.sendEnabled){
-   // Read only the frozen, explicitly allowed targets. A customer can have
-   // merged after source publication, but the CRM create is all-or-nothing.
-   const ids=[...keysByCustomer.keys()].filter(id=>positive(id)&&allowed.has(id)&&!duplicateCustomers.has(id));
-   for(let i=0;i<ids.length;i+=12){
-    await Promise.all(ids.slice(i,i+12).map(async id=>{
-     try{
-      const found=await invoke('admin.getCustomerDirectoryDetail',{params:{customer_id:id},signal});
-      if(String(found.canonical_customer_id)===id&&String(found.customer?.customer_id)===id&&found.customer?.status==='active')
-       activeCustomers.add(id);
-     }catch(error){
-      if(error.status!==404)throw error;
-     }
-    }));
-   }
-  }
   const recipients=[];
-  const itemKey=new Map(),deadlines=[],materials=new Map(),versions={};
-  const validCard=card=>card&&positive(card.id)&&positive(card.version)&&/^[a-f0-9]{64}$/.test(card.cover||"")&&card.title&&card.appId&&card.page;
-  const readMaterial=async id=>{
-   try{
-    return await readMiniProgram(invoke,id,signal);
-   }catch(error){
-    if(error.status===404)return null;
-    throw error;
-   }
-  };
+  const itemKey=new Map();
+  const cards=new Map();
   for(const row of manifest.rows){
    if(!/^[a-zA-Z0-9_-]{1,96}$/.test(row.key)||entries[row.key])throw Error('Invalid batch item');
    if(row.blocked)entries[row.key]=fail(row.blocked);
-   else if(!previous&&row.expiresAt&&!(Date.parse(row.expiresAt)>Date.now()))
-    entries[row.key]=fail('原服务动作已过期。');
    else if(!positive(row.customer)||!allowed.has(row.customer)||duplicateCustomers.has(row.customer))
     entries[row.key]=fail('CRM 客户身份缺失、重复或超出发送授权。');
-   else if(!previous&&send&&manifest.sendEnabled&&!activeCustomers.has(row.customer))
-    entries[row.key]=fail('CRM 客户身份已失效或已合并。');
    else if(typeof row.message!=='string'||!row.message.trim()||Buffer.byteLength(row.message)>8000)
     entries[row.key]=fail('正文不符合 CRM 内容合同。');
-   else if(!Array.isArray(row.materials)||row.materials.length>19||row.materials.some(card=>!validCard(card)))
+   else if(!Array.isArray(row.materials)||row.materials.length>19||
+           row.materials.some(card=>!positive(card?.id)||!card.title||!card.appId||!card.page))
     entries[row.key]=fail('随附卡片缺少已验证的 CRM 素材。');
    else {
-    if(!previous&&send&&manifest.sendEnabled){
-     for(const card of row.materials){
-      if(!materials.has(card.id))materials.set(card.id,await readMaterial(card.id));
-      const current=materials.get(card.id);
-      if(!current?.enabled||String(current.id)!==card.id||current.title!==card.title||
-         current.app_id!==card.appId||current.page_path!==card.page||current.version!==card.version||current.cover!==card.cover){
-       entries[row.key]=fail('CRM 小程序素材已变化或不可用。');
-       break;
-      }
-      versions[card.id]=[current.version,current.cover];
-     }
-     if(entries[row.key])continue;
+    for(const card of row.materials){
+     const expected=cards.get(card.id)||[];
+     expected.push(card);
+     cards.set(card.id,expected);
     }
     recipients.push({customer_id:Number(row.customer),staff_id:Number(manifest.staff),
      content:[{kind:'text',text:row.message},...row.materials.map(card=>({kind:'mini_program',material_id:Number(card.id)}))]});
     itemKey.set(row.customer,row.key);
-    if(row.expiresAt)deadlines.push(Date.parse(row.expiresAt));
     entries[row.key]=ambiguous();
    }
   }
@@ -397,12 +371,11 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
   signal?.throwIfAborted();
   if(!previous){
    if(!await writeAllowed()){
-    setAll(fail('发送账号、原稿或来源授权已变化，未提交。'));
+    setAll(fail('CRM 提交权限已关闭或任务已取消。'));
     return finish();
    }
    signal?.throwIfAborted();
-   const used=new Set(recipients.flatMap(row=>row.content.filter(block=>block.kind==='mini_program').map(block=>String(block.material_id))));
-   const cardVersions=Object.fromEntries(Object.entries(versions).filter(([id])=>used.has(id)));
+   const cardVersions=Object.fromEntries([...cards].map(([id,[card]])=>[id,[card.version,card.cover]]));
    state={digest:sourceDigest,admitted:recipients.map(row=>String(row.customer_id)),cardVersions:digest(cardVersions),
     attempt:crypto.randomUUID(),phase:'creating'};
    if(!await reserve(stateID,state))return finish();
@@ -429,10 +402,7 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
     if(previous&&(plan.version!==1||plan.state!=='pending_review'))return read();
     await remember({planId:plan.id,planVersion:plan.version,phase:'created'});
    }
-   const current=previous?plan:await readPlan(plan.id);
-   if(!validPlan(current)||current.version!==state.planVersion||current.state!=='pending_review')return read();
-   if(deadlines.some(deadline=>!(deadline>Date.now())))
-    return recordFailure('计划中的原服务动作已经过期，未批准发送。');
+   if(plan.version!==state.planVersion||plan.state!=='pending_review')return read();
    const params={plan_id:plan.id};
    const preview=await invoke('admin.previewAIAssistantPlanApproval',{params,body:{expected_version:plan.version},signal,timeout:120000});
    if(preview.eligible_count!==recipients.length||preview.plan_version!==plan.version||!preview.preview_digest)
@@ -444,21 +414,16 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
    if(!validRecipients(saved)||saved.some(row=>row.version!==1||!positive(row.content_version_id)||
      row.review_state!=='pending_review'||row.execution_state!=='not_accepted'))
     return recordFailure('CRM 计划的收件人或稿件版本已经改变，未批准发送。');
-   if(deadlines.some(deadline=>!(deadline>Date.now())))
-    return recordFailure('计划中的原服务动作已经过期，未批准发送。');
-   const currentVersions={};
-   for(const id of new Set(recipients.flatMap(row=>row.content.filter(block=>block.kind==='mini_program').map(block=>String(block.material_id))))){
-    const material=await readMaterial(id);
-    if(!material?.enabled||String(material.id)!==id||!positive(material.version))
-     return recordFailure('CRM 小程序素材已经失效，未批准发送。');
-    currentVersions[id]=[material.version,material.cover];
+   // An editable card can change away from the reviewed page and back again.
+   // Its revision binds this single read to the card the user saw.
+   for(const [id,expected] of cards){
+    const response=await invoke('admin.getMediaMiniProgram',{params:{id},signal});
+    const current=response.item||response.miniprogram;
+    if(String(current?.id)!==id||!expected.every(card=>current.version===card.version&&current.title===card.title&&current.app_id===card.appId&&current.page_path===card.page))
+     return recordFailure('CRM 卡片已被修改，请核对原稿件与卡片。');
    }
-   if(state.cardVersions!==digest(currentVersions))
-    return recordFailure('CRM 小程序素材版本已经改变，未批准发送。');
    if(!await writeAllowed())
-    return recordFailure('发送账号、原稿或来源授权已变化，未批准发送。');
-   if(deadlines.some(deadline=>!(deadline>Date.now())))
-    return recordFailure('计划中的原服务动作已经过期，未批准发送。');
+    return recordFailure('CRM 提交权限已关闭或任务已取消。');
    signal?.throwIfAborted();
    const beforeApproval=state;
    await remember({phase:'approving',approvalAttempt:crypto.randomUUID(),contents:contentStamp(saved)});

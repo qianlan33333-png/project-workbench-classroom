@@ -115,7 +115,7 @@ func (a *Activities) PrepareLocalOperationsReview(ctx context.Context, id string
 		}
 		after = page.Next
 	}
-	if err = a.bindOperationsMaterialVersions(ctx, run, rows); err != nil {
+	if err = a.bindOperationsMaterials(ctx, run, rows); err != nil {
 		return err
 	}
 	if len(rows) > 0 {
@@ -124,7 +124,7 @@ func (a *Activities) PrepareLocalOperationsReview(ctx context.Context, id string
 	roster.Total = len(rows)
 	raw, _ := json.Marshal(roster)
 	item := core.ItemResult{ID: OriginalOperationsRoster, State: "succeeded", Text: string(raw), InputHash: core.Digest(spec)}
-	if err = a.Store.PublishLocalOperationsReview(ctx, id, core.OperationsReview{Package: roster.Package, Week: roster.Week, Run: roster.Run, Digest: core.Digest(rows), IdentityVersion: core.Digest(spec.Selection), Exclusive: true}, rows, item); err != nil {
+	if err = a.Store.PublishLocalOperationsReview(ctx, id, core.OperationsReview{Package: roster.Package, Week: roster.Week, Run: roster.Run}, rows, item); err != nil {
 		return err
 	}
 	return a.Store.Emit(ctx, core.RunEvent{ID: id + "-prepared", RunID: id, SessionID: run.Principal.SessionID, Kind: "operations.prepared", Text: "本轮稿件已保存，等待一次整批确认。尚未创建 CRM 计划。", Details: map[string]any{"selected": snapshot.Count, "drafts": len(rows), "blocked": blocked}})
@@ -144,19 +144,11 @@ func localOperationsRow(record core.Record, text, strategy string) (core.Operati
 	if out.Status == "blocked" && out.Text == "" && out.BlockedReason != "" {
 		return core.OperationsReviewRow{}, out.BlockedReason, nil
 	}
-	if out.Status != "draft" || strings.TrimSpace(out.Text) == "" || len(out.Evidence) == 0 || record.Fields["selected"] != true {
+	if out.Status != "draft" || strings.TrimSpace(out.Text) == "" || record.Fields["selected"] != true {
 		return core.OperationsReviewRow{}, "", core.ErrInvalid
 	}
 	if reason, _ := record.Fields["deliveryBlocked"].(string); reason != "" {
 		return core.OperationsReviewRow{}, reason, nil
-	}
-	allowed := map[string]bool{}
-	collectEvidence(record.Fields["profile"], allowed)
-	collectEvidence(record.Fields["actions"], allowed)
-	for _, ref := range out.Evidence {
-		if !allowed[ref] {
-			return core.OperationsReviewRow{}, "unsupported_evidence_reference", nil
-		}
 	}
 	profile, _ := record.Fields["profile"].(map[string]any)
 	actions, _ := record.Fields["actions"].([]any)
@@ -194,27 +186,13 @@ func localOperationsRow(record core.Record, text, strategy string) (core.Operati
 		}
 		identity = []any{"newcomer-window", record.ID, strategy, binding["window_start"], binding["window_end"]}
 	}
-	expires := (*time.Time)(nil)
-	if value, _ := record.Fields["actionExpiresAt"].(string); value != "" {
-		at, e := time.Parse(time.RFC3339, value)
-		if e != nil {
-			return core.OperationsReviewRow{}, "expiry_unverified", nil
-		}
-		expires = &at
-	}
-	for _, field := range []string{"window_end", "entitlement_end"} {
-		if value, ok := binding[field].(string); ok && value != "" {
-			at, e := time.Parse(time.RFC3339, value)
-			if e != nil {
-				return core.OperationsReviewRow{}, "expiry_unverified", nil
-			}
-			if expires == nil || at.Before(*expires) {
+	var expires *time.Time
+	for _, value := range []any{record.Fields["actionExpiresAt"], binding["window_end"], binding["entitlement_end"]} {
+		if text, ok := value.(string); ok {
+			if at, err := time.Parse(time.RFC3339, text); err == nil && (expires == nil || at.Before(*expires)) {
 				expires = &at
 			}
 		}
-	}
-	if strategy == "hxc:onboarding" && (expires == nil || record.Fields["actionExpiresAt"] == nil) {
-		return core.OperationsReviewRow{}, "newcomer_window_unverified", nil
 	}
 	key := core.Digest(identity)
 	judgment, _ := json.Marshal(map[string]any{"strategy": strategy, "action": action, "crmSlot": slot, "evidence_refs": out.Evidence})
@@ -292,31 +270,4 @@ func (a *Activities) recoverLocalOperationsPreparation(ctx context.Context) erro
 		}
 	}
 	return nil
-}
-
-func collectEvidence(value any, allowed map[string]bool) {
-	switch v := value.(type) {
-	case []any:
-		for _, item := range v {
-			collectEvidence(item, allowed)
-		}
-	case map[string]any:
-		for key, item := range v {
-			switch key {
-			case "evidence_refs", "source_refs":
-				if refs, ok := item.([]any); ok {
-					for _, ref := range refs {
-						if text, ok := ref.(string); ok && text != "" {
-							allowed[text] = true
-						}
-					}
-				}
-			case "source_ref", "source_snapshot_id":
-				if text, ok := item.(string); ok && text != "" {
-					allowed[text] = true
-				}
-			}
-			collectEvidence(item, allowed)
-		}
-	}
 }

@@ -34,11 +34,7 @@ func Collect(ctx context.Context, config, id string) (SourceResult, error) {
 }
 
 func invokeSource(ctx context.Context, script, config, id string, result any) error {
-	return invokeSourceInput(ctx, script, config, id, nil, result)
-}
-
-func invokeSourceInput(ctx context.Context, script, config, id string, input, result any) error {
-	if !filepath.IsAbs(config) {
+		if !filepath.IsAbs(config) {
 		return errors.New("original source connection not configured")
 	}
 	folder, e := os.MkdirTemp("", "workbench-source-")
@@ -67,17 +63,6 @@ func invokeSourceInput(ctx context.Context, script, config, id string, input, re
 		return e
 	}
 	args := []string{filepath.Join(folder, script), config, id}
-	if input != nil {
-		wire, err := json.Marshal(input)
-		if err != nil {
-			return err
-		}
-		path := filepath.Join(folder, "request.json")
-		if err = os.WriteFile(path, wire, 0600); err != nil {
-			return err
-		}
-		args = append(args, path)
-	}
 	command := exec.Command("python3", args...)
 	command.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -117,14 +102,6 @@ func invokeSourceInput(ctx context.Context, script, config, id string, input, re
 		return errors.New("original source returned an incomplete result")
 	}
 	return nil
-}
-
-func OriginalReady(ctx context.Context, config string, items []map[string]any) (bool, error) {
-	var out struct {
-		Ready bool `json:"ready"`
-	}
-	err := invokeSourceInput(ctx, "source_check.py", config, "readiness", items, &out)
-	return out.Ready, err
 }
 
 func CleanupCollected(ctx context.Context, config, id string) error {

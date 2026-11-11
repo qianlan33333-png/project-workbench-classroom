@@ -218,10 +218,9 @@ func (a *Server) operationsReviewView(ctx context.Context, p core.Principal, cfg
 		}
 	}
 	name := operationsStaffName(cfg)
-	strategy, _ := run.Shared["strategy"].(string)
 	local := core.IsLocalOperations(run)
 	editable := operationsReviewRouteAllowed(cfg, run) && head.Confirm == "" && head.Edit == "" && run.Shared["day"] == operationsDay(time.Now())
-	canSend := editable && head.Count > 0 && name != "" && cfg.Transport != "" && engine.OperationsBatchEnabled(strategy, cfg.Staff)
+	canSend := editable && head.Count > 0 && operationsBatchSendEnabled(cfg, run)
 	view := map[string]any{"state": "ready", "run": head.Run, "digest": head.Digest,
 		"reviewVersion": core.OperationsReviewVersion(head, cfg.Transport, cfg.Staff, name), "sendEnabled": canSend,
 		"sendAccount": name, "pending": head.Count, "reviewed": head.Confirm != "", "syncing": head.Edit != "", "plan": receipts.Plan}
@@ -273,17 +272,21 @@ func (a *Server) operationsReviewView(ctx context.Context, p core.Principal, cfg
 }
 
 func operationsReviewRouteAllowed(cfg operationsConfig, run core.Run) bool {
-	if cfg.Cycle == nil {
-		return !core.IsLocalOperations(run)
+	if core.IsLocalOperations(run) {
+		return run.Operations != nil && run.Operations.Review != nil
 	}
-	if !core.IsLocalOperations(run) || run.Operations == nil || run.Operations.Review == nil {
+	return cfg.Cycle == nil
+}
+
+func operationsBatchSendEnabled(cfg operationsConfig, run core.Run) bool {
+	if cfg.Transport == "" || operationsStaffName(cfg) == "" || os.Getenv("WORKBENCH_OPERATIONS_ORIGINAL_SEND") == "1" {
 		return false
 	}
+	if core.IsLocalOperations(run) {
+		return true
+	}
 	strategy, _ := run.Shared["strategy"].(string)
-	batch, ok := cfg.Cycle.Batch(strategy)
-	review := run.Operations.Review
-	return ok && review.Selection.ResourceID == batch.SelectedDestination && len(review.Drafts) > 0 &&
-		!slices.ContainsFunc(review.Drafts, func(ref core.Ref) bool { return ref.ResourceID != batch.DraftDestination })
+	return engine.OperationsBatchEnabled(strategy, cfg.Staff)
 }
 
 func operationsReviewJudgment(row core.OperationsReviewRow, local bool) any {
@@ -469,7 +472,7 @@ func (a *Server) confirmDailyOperations(w http.ResponseWriter, r *http.Request) 
 	}
 	strategy, _ := parent.Shared["strategy"].(string)
 	name := operationsStaffName(cfg)
-	if !engine.OperationsBatchEnabled(strategy, cfg.Staff) || name == "" || cfg.Transport == "" {
+	if !operationsBatchSendEnabled(cfg, parent) {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
@@ -509,19 +512,12 @@ func (a *Server) operationsBatchManifest(w http.ResponseWriter, r *http.Request)
 		respond(w, nil, core.ErrDenied)
 		return
 	}
-	strategy, _ := run.Shared["strategy"].(string)
 	staff, _ := run.Shared["staff"].(string)
-	respond(w, map[string]any{"staff": staff, "rows": rows, "sendEnabled": engine.OperationsBatchEnabled(strategy, staff)}, nil)
+	respond(w, map[string]any{"staff": staff, "rows": rows, "sendEnabled": true}, nil)
 }
 
 func (a *Server) operationsBatchWriteAllowed(ctx context.Context, id, connection string) (bool, error) {
-	ready, err := a.operationsBatchWriteCheck(ctx, id, connection, true)
-	if err != nil || !ready {
-		return false, err
-	}
-	// Source reads may take time. Withdrawal and cancellation still win before
-	// the connector receives permission for its exact external write.
-	return a.operationsBatchWriteCheck(ctx, id, connection, false)
+	return a.operationsBatchWriteCheck(ctx, id, connection, true)
 }
 
 func (a *Server) operationsBatchWriteCheck(ctx context.Context, id, connection string, checkSource bool) (bool, error) {
@@ -533,7 +529,7 @@ func (a *Server) operationsBatchWriteCheck(ctx context.Context, id, connection s
 		return false, core.ErrDenied
 	}
 	parent, err := a.Store.Run(ctx, run.Principal, run.ParentRunID)
-	if err != nil || parent.Shared["day"] != operationsDay(time.Now()) {
+	if err != nil || (!core.IsLocalOperations(parent) && parent.Shared["day"] != operationsDay(time.Now())) {
 		return false, err
 	}
 	head, err := a.Store.OperationsReview(ctx, parent.ID)
@@ -547,26 +543,15 @@ func (a *Server) operationsBatchWriteCheck(ctx context.Context, id, connection s
 	if !operationsReviewRouteAllowed(cfg, parent) {
 		return false, nil
 	}
-	strategy, _ := run.Shared["strategy"].(string)
 	if !cfg.ReadSource || cfg.Input.ResourceID != parent.Destination || cfg.Transport != connection ||
-		run.Shared["staff"] != cfg.Staff || !engine.OperationsBatchEnabled(strategy, cfg.Staff) {
+		run.Shared["staff"] != cfg.Staff || !operationsBatchSendEnabled(cfg, parent) {
 		return false, nil
 	}
 	transport, err := a.Store.Transport(ctx, run.Principal, connection)
 	if err != nil || transport.Kind != "crm-cli" {
 		return false, err
 	}
-	if core.IsLocalOperations(parent) {
-		stale, e := a.Store.IsStale(ctx, parent.Operations.Review.Selection)
-		if e != nil || stale {
-			return false, e
-		}
-		if !checkSource {
-			return true, nil
-		}
-		return a.Store.OriginalOperationsReady(ctx, parent, nil)
-	}
-	if !checkSource {
+	if !checkSource || core.IsLocalOperations(parent) {
 		return true, nil
 	}
 	raw, err := a.Store.ReadOperationsDirectory(ctx, run.Principal, parent.Destination, "package_review",
@@ -581,6 +566,8 @@ func (a *Server) operationsBatchWriteCheck(ctx context.Context, id, connection s
 	if err = json.Unmarshal(raw, &check); err != nil {
 		return false, err
 	}
-	return check.State == "ready" && check.Exclusive && check.Digest == head.Digest &&
-		check.IdentityVersion == head.IdentityVersion, nil
+	if check.State != "ready" || !check.Exclusive || check.Digest != head.Digest || check.IdentityVersion != head.IdentityVersion {
+		return false, nil
+	}
+	return a.operationsBatchWriteCheck(ctx, id, connection, false)
 }

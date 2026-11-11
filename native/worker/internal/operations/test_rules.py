@@ -238,7 +238,6 @@ class FinalHXCAdmissionTests(unittest.TestCase):
         a=out['actions'][0];self.assertEqual(a['sku_pack_binding']['primary_identity'],'299')
         self.assertEqual(a['generation']['material']['kind'],'followup')
         self.assertEqual(a['generation']['skill_key'],a['skill_key'])
-        self.assertTrue(a['generation']['decision_fingerprint'])
     def test_original_copy_slot_and_manual_defer_stop_new_copy(self):
         u,p,h=self.fixture();out=self.select(u,p,h);binding=out['actions'][0]['sku_pack_binding']
         h['fields']['copy_index']={u['safe_user_ref']:[{'run_id':'original-run','item_key':u['safe_user_ref'],'slot_key':binding['slot_key']}]}

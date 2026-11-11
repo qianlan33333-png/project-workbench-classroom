@@ -2,27 +2,7 @@
 import json
 import os
 import sys
-import hashlib
 from pathlib import Path
-
-# These are the original collector's entitlement inputs, without usage counters
-# or update timestamps. Compare facts; do not calculate another rights policy.
-RIGHTS_COLUMNS = {
-    'subscriptions': ('user_id','tier','status','expires_at','created_at'),
-    'memberships': ('user_id','member_type','status','end_date','created_by','note','created_at'),
-    'subscription_activations': ('id','user_id','sku_code','order_id','previous_tier','new_tier','previous_expires_at','new_expires_at','source','created_at','paid_at'),
-}
-
-def rights_fingerprint(groups):
-    projected={}
-    for name,columns in RIGHTS_COLUMNS.items():
-        values=[]
-        for row in groups.get(name,[]):
-            item={key:(row.get(key).isoformat() if hasattr(row.get(key),'isoformat') else str(row[key]) if key in ('id','user_id','order_id') and row.get(key)is not None else row.get(key))for key in columns}
-            values.append(json.dumps(item,ensure_ascii=False,sort_keys=True,separators=(',',':')))
-        projected[name]=sorted(values)
-    return hashlib.sha256(json.dumps(projected,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-
 
 def load():
     root, path = Path(sys.argv[1]), Path(sys.argv[2])
@@ -64,18 +44,6 @@ def original_reviews(records, aliases):
                 result[kind]={'decision':'defer','reason':'merged_original_reviews_require_verification'}
             else:result[kind]=value
     return result
-
-
-def fact_reviews_fingerprint(records, aliases):
-    return hashlib.sha256(json.dumps(original_reviews(records,aliases),ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-
-
-def contact_prohibited(user):
-    safety=(user.get('safety')or{},user.get('allocation_safety')or{},(user.get('archive')or{}).get('safety')or{})
-    return (user.get('operational_excluded')is True or user.get('do_not_contact')is True
-        or user.get('contact_preference')=='do_not_contact' or user.get('high_risk')is True
-        or any(s.get('do_not_contact')is True or s.get('is_do_not_contact')is True or s.get('contact_preference')=='do_not_contact'
-            or s.get('contact_policy')in ('blocked','do_not_contact','opt_out') or s.get('high_risk')is True for s in safety))
 
 
 def alias_execution_requires_review(history, ref, aliases):

@@ -209,7 +209,7 @@ func (a *Activities) EditOriginalOperationsItem(ctx context.Context, id string) 
 			if e != nil {
 				return nil, failure(core.ErrInvalid)
 			}
-			head, row, e := a.Store.EditLocalOperationsReview(ctx, run.Principal, daily, sharedString(run, "item"), sharedString(run, "digest"), sharedString(run, "text"), revision)
+			head, row, e := a.Store.EditLocalOperationsReview(ctx, run.Principal, daily, sharedString(run, "item"), sharedString(run, "text"), revision)
 			if errors.Is(e, core.ErrConflict) {
 				return json.RawMessage(`{"state":"source_changed"}`), nil
 			}

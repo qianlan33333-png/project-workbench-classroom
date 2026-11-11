@@ -20,16 +20,16 @@ flowchart LR
 | `data_refresh` | `{operationKey,sources,destination}`。来源按原始资料、联系历史、策略、方法排列，均为已登记的 `operations-original` 资源；同轮复用一份真实采集与清洗结果。返回 `runId` 和四份 `inputRefs`。 |
 | `strategy_select` | `{operationKey,data,strategies,history,destination,asOf,strategyKeys,limit}`。三个输入固定版本；`asOf` 使用本轮清洗结果的 `archive.generated_at`。`limit:0` 保留全部合格成员，排除原因从 `run_items` 读取。 |
 | `batch_generate` | 沿用现有 `{operationKey,sources,destination,methodPointer,methodRefs}`。`methodPointer` 为 `/actions/0/generation/skill_key`，方法引用来自本轮采集；大批使用原 `selection` 分页，每段至多 2,000 人。 |
-| `crm_push` | `{operationKey,review:{selection,drafts}}`。固定名单和全部生成段，返回已有整批待确认任务；准备期间可创建并读回 CRM 素材，不创建发送计划。 |
+| `crm_push` | `{operationKey,review:{selection,drafts}}`。收齐同轮原选单和生成段，返回整批待确认任务；准备期间可创建并读回 CRM 素材，发送计划在本人确认后创建。 |
 | `crm_receipts` | `{runId}` 查询原整批任务，或 `{planId}` 查询已绑定原计划。返回已保存的逐人结果，提交结果未知时查回原计划。已受理在工作台显示为「已发送」，接口保留 CRM 受理与历史实际发送的原始状态。 |
 
-长任务都使用已有 `run_get`、`run_items`、`run_steps` 和 `run_resume`。续办保留原任务与成功结果；来源、正文或身份变更不得混入已经确认的批次。没有合格成员就结束备稿，不生成占位稿。
+长任务都使用已有 `run_get`、`run_items`、`run_steps` 和 `run_resume`。本人可用 `run_resume` 续办因已移除的校验而明确未提交的原确认任务。工作台先核对无 CRM 计划、无建单记录、无取消，再使用原任务和稿件继续。已有计划或提交结果未知时，查询原回执。没有合格成员时直接结束备稿。
 
 固定定时入口为现有本人接口 `POST /operations/original-schedule` 的 `cycle` 配置，保存四份来源、三个目标资源和六份原方法引用；不使用通用 `program_run` 方案。先在同项目登记资源、原 CRM transport 和员工，再安装定时。原有新工作台分开的资料/策略任务由该入口暂停；原服务器的任务与配置保持只读。
 
-常态服务与新人承接可配置在同一条日程。`cycle.additionalBatch` 指定第二条原策略及独立的名单、稿件资源。两包复用同轮清洗、策略、历史和方法快照，并按相同时间逐人判断；每包独立备稿与确认。迁入策略的旧包归入历史。原发送范围继续由 `WORKBENCH_OPERATIONS_BATCH_STRATEGY` 控制，第二条策略按同样方式由 `WORKBENCH_OPERATIONS_ADDITIONAL_BATCH_STRATEGY` 单独开放。
+常态服务与新人承接可配置在同一条日程。`cycle.additionalBatch` 指定第二条原策略及独立的名单、稿件资源。两包复用同轮清洗、策略、历史和方法快照，并按相同时间逐人判断，每包独立备稿与确认。未确认的往日稿归入历史。已确认批次可跨日继续执行或查询回执。新流程的发送权限使用项目已配置的 CRM 通道与员工，原直接发送模式启用时整批入口关闭。
 
-确认入口继续使用 `/operations/source-confirm`，确认版本固定名单、正文、素材及员工。连接器执行 CRM 原审核合同，批准成功即以 CRM 受理结算。明确返回错误的条目记为失败。若批准结果未知，或 CRM 返回计划有异常，沿原请求及原计划读取结果。工作台以受理时点继续原服务冷却规则，企微员工操作及实际送达由平台记录。创建或审核前仍检查当前业务事实。
+确认入口继续使用 `/operations/source-confirm`，一次确认固定名单、正文、素材及员工。策略、权益、报告及来源数据的更新在下一轮备稿生效。连接器按原任务建单，自动调用 CRM 原预览与批准。批准前核对 CRM 保存的收件人和稿件，每张可编辑的 CRM 卡片只查一次，确保还是本人确认的内容。CRM 受理在工作台记为「已发送」，明确返回的错误逐条记录，未知结果沿原请求和原计划读取。原服务冷却从受理时点起算。
 
 该口径复用 CRM 批准接口的整批原子受理，以及已有原计划查询。参考 [异步请求与处理状态](https://learn.microsoft.com/en-us/azure/architecture/patterns/async-request-reply)，这里的完成点是工作台向 CRM 交付。
 

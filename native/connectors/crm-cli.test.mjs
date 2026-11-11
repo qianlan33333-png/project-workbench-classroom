@@ -126,21 +126,17 @@ test('a lost reservation response reads back only the caller’s own attempt',as
  }
 });
 
-function operationsBatchFixture(count,{lostApproval=false,pendingApproval=false,reportedFailure=false,missingFailureDetail=false,invalid=false,merged=false,edited=false,materialDrift=false,lostCreate=false,onCheck,onClaim,onApproving}={}){
+function operationsBatchFixture(count,{lostApproval=false,pendingApproval=false,reportedFailure=false,missingFailureDetail=false,invalid=false,merged=false,edited=false,materialDrift=false,materialRouteDrift=false,materialVersionDrift=false,lostCreate=false,onCheck,onClaim,onApproving}={}){
  const states=new Map(),calls=[];
  const runId='12345678-1234-4abc-8123-123456789abc';
- const cover=crypto.createHash('sha256').update(JSON.stringify([303,'cover-version'])).digest('hex');
- const rows=Array.from({length:count},(_,i)=>({key:'item-'+i,customer:String(i+1),message:'逐人正文 '+i,materials:i===0?[{id:'1070',title:'小程序',appId:'wx-demo',page:'pages/main',version:1,cover}]:[]}));
+ const rows=Array.from({length:count},(_,i)=>({key:'item-'+i,customer:String(i+1),message:'逐人正文 '+i,materials:i===0?[{id:'1070',title:'小程序',appId:'wx-demo',page:'pages/main',version:1,cover:'a'.repeat(64)}]:[]}));
  if(invalid)rows.push({key:'missing',customer:'',message:'需要精确客户身份',materials:[]});
- let saved,plan,approved=false,materialReads=0;
+ let saved,plan,approved=false;
  const invoke=async(operation,options={})=>{
   calls.push({operation,options});
   switch(operation){
-   case 'admin.getCustomerDirectoryDetail': return {canonical_customer_id:merged&&options.params.customer_id==='2'?'20':options.params.customer_id,
-    customer:{customer_id:options.params.customer_id,status:'active'}};
-   case 'admin.getMediaImage': return {item:{id:303,enabled:true,updated_at:'cover-version'}};
-   case 'admin.getMediaMiniProgram': return {item:{id:1070,title:'小程序',app_id:'wx-demo',page_path:'pages/main',version:materialDrift?++materialReads:1,enabled:true,thumbnail_status:'ready',thumb_image_id:303}};
    case 'admin.createAIAssistantPlan':
+    if(merged)throw Object.assign(Error('CRM rejects a merged recipient'),{status:409,crmRejected:true});
     saved=options.body;
     plan={id:42,source_kind:saved.source_kind,source_digest:saved.source_digest,target_count:saved.recipients.length,version:1,state:'pending_review'};
     if(lostCreate)throw Error('lost create response');
@@ -149,7 +145,10 @@ function operationsBatchFixture(count,{lostApproval=false,pendingApproval=false,
    case 'admin.getAIAssistantPlan': return {plan};
    case 'admin.previewAIAssistantPlanApproval':
     assert.equal(options.body.expected_version,1);
+    if(materialDrift)throw Object.assign(Error('CRM rejected changed material'),{status:409,crmRejected:true});
     return {eligible_count:saved.recipients.length,plan_version:1,preview_digest:'preview'};
+   case 'admin.getMediaMiniProgram':
+    return {item:{id:1070,title:'小程序',app_id:'wx-demo',page_path:materialRouteDrift?'pages/other':'pages/main',version:materialVersionDrift?3:1}};
    case 'admin.approveAIAssistantPlan':
     if(pendingApproval)return {plan};
     approved=true;plan={...plan,state:reportedFailure?'completed_with_failures':'dispatching',version:2,
@@ -195,13 +194,16 @@ function operationsBatchFixture(count,{lostApproval=false,pendingApproval=false,
 
 test('one confirmed work package creates and approves one CRM plan of 5000 personalized recipients',async()=>{
  const f=operationsBatchFixture(5000);
+ f.rows[0].expiresAt='2020-01-01T00:00:00Z';
  const out=await f.crm.batch({runId:f.runId},true);
  const created=f.calls.filter(x=>x.operation==='admin.createAIAssistantPlan');
  assert.equal(created.length,1);
+ assert.deepEqual(f.calls.slice(0,2).map(x=>x.operation),['admin.createAIAssistantPlan','admin.previewAIAssistantPlanApproval']);
  assert.equal(created[0].options.body.recipients.length,5000);
  assert.deepEqual(created[0].options.body.recipients[0].content,[{kind:'text',text:'逐人正文 0'},{kind:'mini_program',material_id:1070}]);
  assert.equal(f.calls.filter(x=>x.operation==='admin.approveAIAssistantPlan').length,1);
  assert.equal(f.calls.filter(x=>x.operation==='admin.listAIAssistantRecipients').length,100);
+ assert.equal(f.calls.filter(x=>x.operation==='admin.getMediaMiniProgram').length,1);
  assert.deepEqual(out.entries['item-4999'],{state:'accepted',at:'2026-11-11T00:00:00Z'});
  assert.equal(Object.keys(out.entries).length,5000);
  const callsAfterApproval=f.calls.length;
@@ -258,17 +260,18 @@ test('a batch exceeding the CRM body limit is reported without automatic splitti
  assert.equal(f.calls.filter(x=>x.operation==='admin.createAIAssistantPlan').length,0);
 });
 
-test('a merged CRM customer does not poison the one submitted plan',async()=>{
+test('CRM rejects a merged recipient without a separate directory check or repeat plan',async()=>{
  const f=operationsBatchFixture(3,{merged:true});
  const result=await f.crm.batch({runId:f.runId},true);
- assert.equal(result.entries['item-1'].state,'failed');
- const writes=f.calls.filter(c=>c.operation==='admin.createAIAssistantPlan');
- assert.equal(writes.length,1);
- assert.deepEqual(writes[0].options.body.recipients.map(row=>row.customer_id),[1,3]);
+ assert.equal(result.plan,undefined);
+ assert.ok(Object.values(result.entries).every(entry=>entry.state==='failed'));
+ assert.deepEqual(f.calls.map(c=>c.operation),['admin.createAIAssistantPlan']);
+ assert.deepEqual((await f.crm.batch({runId:f.runId},true)).entries,result.entries);
+ assert.equal(f.calls.length,1);
 });
 
-test('plan approval stops if CRM content or a card changes after create',async()=>{
- for(const options of [{edited:true},{materialDrift:true}]){
+test('approval protects human-confirmed text and the reviewed card destination',async()=>{
+ for(const options of [{edited:true},{materialDrift:true},{materialRouteDrift:true},{materialVersionDrift:true}]){
   const f=operationsBatchFixture(2,options);
   const result=await f.crm.batch({runId:f.runId},true);
   assert.equal(result.entries['item-0'].state,'failed');
@@ -310,6 +313,7 @@ test('source-owned report card uses only CRM CLI and recovers a lost material re
  visible=true;
  const first=await crm.materialVersions(request),again=await crm.materialVersions(request);
  assert.equal(first.cards[0].id,'21');assert.deepEqual(first,again);
+ assert.equal(first.cards[0].version,1);assert.match(first.cards[0].cover,/^[a-f0-9]{64}$/);
  assert.equal(calls.filter(x=>x==='admin.createMediaMiniProgram').length,1);
  assert.ok(calls.every(x=>/Media/.test(x)));
  await assert.rejects(crm.materialVersions({ids:[],drafts:[{...request.drafts[0],appId:'unregistered'}]}),/template missing/);
@@ -350,7 +354,7 @@ test('material preparation uses one concurrent claim and releases only proven pr
 });
 
 
-test('one confirmed batch survives temporary source failure without another confirmation or plan',async()=>{
+test('one confirmed batch survives a temporary permission endpoint failure without another confirmation or plan',async()=>{
  for(const phase of [1,2]){
   let checks=0;
   const f=operationsBatchFixture(2,{onCheck:()=>{if(++checks===phase)throw Error('temporary read failure');return true}});
@@ -364,7 +368,7 @@ test('one confirmed batch survives temporary source failure without another conf
  }
 });
 
-test('cancellation during live source read or reservation leaves no false unknown CRM plan',async()=>{
+test('cancellation during the permission check or reservation leaves no false unknown CRM plan',async()=>{
  for(const phase of ['source','claim']){
   const controller=new AbortController();let first=true;
   const stop=()=>{if(first){first=false;controller.abort()}return true};
@@ -387,7 +391,7 @@ test('cancellation before approval invocation preserves the original created pla
  assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,1);
 });
 
-test('an explicit source change stops the original pending plan permanently',async()=>{
+test('a permission withdrawal stops the original pending plan permanently',async()=>{
  let checks=0;const f=operationsBatchFixture(2,{onCheck:()=>++checks!==2});
  assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'failed');
  assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'failed');

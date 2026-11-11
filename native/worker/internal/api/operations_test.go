@@ -70,23 +70,15 @@ func TestOperationsReviewJudgmentSupportsPublishedLocalDrafts(t *testing.T) {
 	}
 }
 
-func TestOperationsReviewRouteChecksCurrentStrategyAndDestinations(t *testing.T) {
-	cfg := operationsConfig{Cycle: &engine.OperationsCycleInput{
-		StrategyKeys: []string{"hxc:ongoing"}, SelectedDestination: "ongoing-selected", DraftDestination: "ongoing-drafts",
-		AdditionalBatch: &engine.OperationsCycleBatch{Strategy: "hxc:onboarding", SelectedDestination: "newcomer-selected", DraftDestination: "newcomer-drafts"},
-	}}
+func TestSavedOperationsReviewSurvivesStrategyConfigurationChanges(t *testing.T) {
+	cfg := operationsConfig{Cycle: &engine.OperationsCycleInput{}}
 	parent := core.Run{Operation: "operations_package", Shared: map[string]any{"local": true, "strategy": "hxc:onboarding"},
-		Operations: &core.OperationsSpec{Review: &core.OperationsDrafts{Selection: core.Ref{ResourceID: "newcomer-selected"}, Drafts: []core.Ref{{ResourceID: "newcomer-drafts"}}}}}
+		Operations: &core.OperationsSpec{Review: &core.OperationsDrafts{Selection: core.Ref{ResourceID: "previous-selected"}}}}
 	if !operationsReviewRouteAllowed(cfg, parent) {
-		t.Fatal("the configured newcomer batch should be reviewable")
+		t.Fatal("already prepared local batches are independent of the current strategy config")
 	}
-	parent.Operations.Review.Drafts[0].ResourceID = "ongoing-drafts"
+	parent.Shared["local"] = false
 	if operationsReviewRouteAllowed(cfg, parent) {
-		t.Fatal("a batch with another strategy's drafts should not confirm")
-	}
-	parent.Operations.Review.Drafts[0].ResourceID = "newcomer-drafts"
-	cfg.Cycle.AdditionalBatch = nil
-	if operationsReviewRouteAllowed(cfg, parent) {
-		t.Fatal("removing the strategy must close its confirmation route")
+		t.Fatal("the migrated project must not send legacy drafts")
 	}
 }

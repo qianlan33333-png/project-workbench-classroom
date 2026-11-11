@@ -244,6 +244,22 @@ func (a *Server) moreTools(s *mcp.Server, bound core.Principal) {
 		if e != nil {
 			return nil, RunRef{}, e
 		}
+		if r.Operation == "operations_batch_confirm" {
+			if !bound.IsOwner() {
+				return nil, RunRef{}, core.ErrDenied
+			}
+			transport, _ := r.Shared["transport"].(string)
+			allowed, err := a.operationsBatchWriteAllowed(ctx, r.ID, transport)
+			if err != nil || !allowed {
+				return nil, RunRef{}, errors.Join(err, core.ErrDenied)
+			}
+			if err = a.Store.RestoreUnsubmittedOperationsBatch(ctx, r); err != nil {
+				return nil, RunRef{}, err
+			}
+			_, err = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID + "-delivery", TaskQueue: engine.InteractiveQueue,
+				WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.OperationsBatchDelivery, r.ID)
+			return nil, RunRef{RunID: r.ID}, accepted(err)
+		}
 		if r.Operation == "dispatch_batch" {
 			_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.DispatchBatch, engine.DispatchBatchInput{RunID: r.ID})
 			return nil, RunRef{RunID: r.ID}, accepted(e)

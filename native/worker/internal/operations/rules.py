@@ -232,8 +232,7 @@ def select(records, releases, histories, as_of, strategy_keys=()):
         for candidate in proposals:by_key.setdefault(candidate_key(candidate),candidate)
         actions = [{**by_key.get(candidate_key(action), {}), **action} for action in actions]
         for action in actions:
-            action['generation'] = {**action.get('generation', {}), **{k: action[k] for k in ('scene','skill_key','material','sku_pack_binding','material_requirement','execution_action','operation_pack_scope','decision_fingerprint') if k in action}}
-            action['generation']['original_aliases']=(past.get('contact_history_scope')or{}).get('original_aliases')or[record['id']]
+            action['generation'] = {**action.get('generation', {}), **{k: action[k] for k in ('scene','skill_key','material','sku_pack_binding','material_requirement','execution_action','operation_pack_scope') if k in action}}
         internal=[a for a in actions if a['action']=='manual_handoff']
         actions=[a for a in actions if a['action']!='manual_handoff']
         if internal:fields['internal_actions']=internal
@@ -254,9 +253,6 @@ def select(records, releases, histories, as_of, strategy_keys=()):
             if writing.get('action_expires_at'):fields['actionExpiresAt']=writing['action_expires_at']
             if writing.get('delivery_blocked'):fields['deliveryBlocked']=writing['delivery_blocked']
             fields['profile'].update(writing.get('profile_context')or{})
-            actions[0]['generation']['original_fact_reviews']=fields['profile'].get('original_fact_reviews')
-            actions[0]['generation']['hxc_service_binding']=fields['profile'].get('hxc_service_binding')
-            actions[0]['generation']['hxc_rights_fingerprint']=fields['profile'].get('hxc_rights_fingerprint')
         fields['priority'] = max((x.get('priority', 0) for x in actions), default=0)
         fields['reason'] = '' if fields['selected'] else ('strategy_coordination_required' if len(actions)>1 else 'manual_coordination' if internal else 'no_applicable_strategy')
     return results

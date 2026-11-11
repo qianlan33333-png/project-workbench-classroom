@@ -73,11 +73,12 @@ func TestMySQLOperationsMaterialsResumeCompletedPrefix(t *testing.T) {
 	must(s.SaveRun(ctx, run))
 	rows := []core.OperationsReviewRow{{ID: "first", Materials: []core.OperationsMaterial{{AppID: "wx-fixture", Title: "report", Page: "pages/report?id=first"}}}, {ID: "second", Materials: []core.OperationsMaterial{{AppID: "wx-fixture", Title: "report", Page: "pages/report?id=second"}}}}
 	a := Activities{Store: s}
-	if e = a.bindOperationsMaterialVersions(ctx, run, rows); e == nil {
+	if e = a.bindOperationsMaterials(ctx, run, rows); e == nil {
 		t.Fatal("interruption was hidden")
 	}
-	must(a.bindOperationsMaterialVersions(ctx, run, rows))
-	if calls["pages/report?id=first"] != 1 || calls["pages/report?id=second"] != 2 || rows[0].Materials[0].ID != "101" || rows[1].Materials[0].ID != "102" {
+	must(a.bindOperationsMaterials(ctx, run, rows))
+	if calls["pages/report?id=first"] != 1 || calls["pages/report?id=second"] != 2 || rows[0].Materials[0].ID != "101" || rows[1].Materials[0].ID != "102" ||
+		rows[0].Materials[0].Version != 1 || rows[0].Materials[0].Cover != strings.Repeat("a", 64) {
 		t.Fatal("completed card was repeated or paired incorrectly", calls, rows)
 	}
 }

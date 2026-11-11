@@ -2,83 +2,10 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"strings"
 	"workbench-native/internal/operations"
 )
-
-func (s *Store) OriginalOperationsReady(ctx context.Context, parent Run, rows []OperationsReviewRow) (bool, error) {
-	if !IsLocalOperations(parent) || parent.Operations == nil || parent.Operations.Review == nil {
-		return false, ErrInvalid
-	}
-	if rows == nil {
-		var err error
-		rows, err = operationsReviewRows(ctx, s.DB, parent.ID, "", 5001, false)
-		if err != nil {
-			return false, err
-		}
-	}
-	selection, e := s.Run(ctx, parent.Principal, parent.Operations.Review.Selection.Version)
-	if e != nil || len(selection.Sources) != 3 {
-		return false, ErrInvalid
-	}
-	clean, e := s.Run(ctx, parent.Principal, selection.Sources[0].Version)
-	if e != nil || clean.Operations == nil || len(clean.Operations.Refresh) == 0 {
-		return false, ErrInvalid
-	}
-	resource, e := s.Resource(ctx, clean.Operations.Refresh[0].ResourceID)
-	if e != nil {
-		return false, e
-	}
-	c, e := s.sourceConnection(ctx, resource)
-	if e != nil {
-		return false, e
-	}
-	if c.Kind != "operations-original" {
-		return false, ErrDenied
-	}
-	items := []map[string]any{}
-	for _, row := range rows {
-		if row.Blocked != "" {
-			continue
-		}
-		var judgment struct {
-			Action map[string]any `json:"action"`
-			Slot   string         `json:"crmSlot"`
-		}
-		if json.Unmarshal(row.Judgment, &judgment) != nil || judgment.Action == nil {
-			return false, ErrInvalid
-		}
-		action := judgment.Action
-		generation, _ := action["generation"].(map[string]any)
-		binding, _ := generation["sku_pack_binding"].(map[string]any)
-		material, _ := generation["material"].(map[string]any)
-		slot := judgment.Slot
-		if slot == "" {
-			slot, _ = binding["slot_key"].(string)
-		}
-		item := map[string]any{"ref": row.ID, "customer_id": row.Customer, "slot": slot, "product": action["product_service_key"], "matter": action["matter_ref"]}
-		item["service_binding"] = generation["hxc_service_binding"]
-		item["fact_reviews"] = generation["original_fact_reviews"]
-		item["rights"] = generation["hxc_rights_fingerprint"]
-		item["aliases"] = generation["original_aliases"]
-		item["account_optional"] = action["strategy_key"] == "hxc:onboarding" && (binding["primary_identity"] == "6.8" || binding["primary_identity"] == "99")
-		if material["purpose"] == "growth_report" {
-			item["body_sha256"] = material["body_sha256"]
-			item["report"] = material["report_ref"]
-			item["page"] = material["base_target_path"]
-		}
-		items = append(items, item)
-	}
-	if len(items) == 0 {
-		return false, nil
-	}
-	if len(items) > 5000 {
-		return false, ErrInvalid
-	}
-	return operations.OriginalReady(ctx, os.Getenv(c.SecretEnv), items)
-}
 
 func (s *Store) CleanupOperationsSources(ctx context.Context, run Run) error {
 	if run.Operation != "data_refresh" {

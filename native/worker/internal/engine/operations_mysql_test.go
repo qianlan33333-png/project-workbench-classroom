@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/google/uuid"
+	"go.temporal.io/api/operatorservice/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -57,6 +58,13 @@ func TestRealOperationsRefreshSelectAndGenerate(t *testing.T) {
 	defer c.Close()
 	_, e = c.WorkflowService().RegisterNamespace(ctx, &workflowservice.RegisterNamespaceRequest{Namespace: namespace, WorkflowExecutionRetentionPeriod: durationpb.New(24 * time.Hour)})
 	must(e)
+	defer func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 12*time.Second)
+		defer stop()
+		if _, err := c.OperatorService().DeleteNamespace(cleanup, &operatorservice.DeleteNamespaceRequest{Namespace: namespace}); err != nil {
+			t.Errorf("remove isolated Temporal namespace: %v", err)
+		}
+	}()
 	prefix := uuid.NewString()
 	owner := core.Principal{Kind: "owner", SessionID: prefix + "o"}
 	p := core.Principal{Kind: "project", ProjectID: prefix, SessionID: prefix + "s"}
