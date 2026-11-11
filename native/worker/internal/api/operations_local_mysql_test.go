@@ -1,11 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/mocks"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +17,7 @@ import (
 	"testing"
 	"time"
 	"workbench-native/internal/core"
+	"workbench-native/internal/engine"
 )
 
 func TestMySQLLocalOperationsSecondCycleConfirmAndCancel(t *testing.T) {
@@ -119,5 +124,83 @@ func TestMySQLLocalOperationsSecondCycleConfirmAndCancel(t *testing.T) {
 				t.Fatal("cancelled confirmation acquired delivery", e)
 			}
 		}
+	}
+}
+
+func TestMySQLNewcomerConfirmationUsesLocalBatch(t *testing.T) {
+	dsn := os.Getenv("WORKBENCH_TEST_DSN")
+	if dsn == "" {
+		t.Skip("isolated MySQL required")
+	}
+	if !strings.Contains(dsn, "/workbench_native_acceptance") {
+		t.Fatal("isolated database required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := core.Open(ctx, dsn)
+	must(err)
+	defer s.DB.Close()
+	must(s.Migrate(ctx))
+	id := uuid.NewString()
+	p := operationsPrincipal(id)
+	owner := core.Principal{Kind: "owner", SessionID: id + "-owner"}
+	must(s.PutProject(ctx, owner, core.Project{ID: id, Name: "newcomer confirmation fixture"}))
+	input := core.Ref{ResourceID: id + "-input", Section: "main"}
+	must(s.PutResource(ctx, owner, core.Resource{ID: input.ResourceID, Name: "review", OwnerProject: id, Sections: []core.Section{{ID: "main", Fields: []string{"text"}}}}))
+	const strategy = "hxc:onboarding"
+	cycle := &engine.OperationsCycleInput{StrategyKeys: []string{"hxc:ongoing"}, AdditionalBatch: &engine.OperationsCycleBatch{
+		Strategy: strategy, SelectedDestination: "newcomer-selected", DraftDestination: "newcomer-drafts",
+	}}
+	cfg := operationsConfig{ProjectID: id, ReadSource: true, Input: input, Staff: "20", Transport: "crm-test", Cycle: cycle}
+	t.Setenv("WORKBENCH_OPERATIONS_BATCH_STRATEGY", "hxc:ongoing")
+	t.Setenv("WORKBENCH_OPERATIONS_ADDITIONAL_BATCH_STRATEGY", strategy)
+	t.Setenv("WORKBENCH_OPERATIONS_ORIGINAL_STAFF_ID", cfg.Staff)
+	t.Setenv("WORKBENCH_OPERATIONS_STAFF_NAME", "隔离员工")
+	t.Setenv("WORKBENCH_OPERATIONS_ORIGINAL_SEND", "0")
+	tc := &mocks.Client{}
+	api := &Server{Store: s, Temporal: tc, Token: strings.Repeat("z", 40)}
+	must(api.saveOperations(ctx, cfg))
+	parent := core.Run{ID: id + "-review", Principal: p, Operation: "operations_package", ExplicitInputs: true, Title: "原策略整批稿件", Destination: input.ResourceID,
+		Shared:     map[string]any{"local": true, "day": operationsDay(time.Now()), "strategy": strategy},
+		Operations: &core.OperationsSpec{Review: &core.OperationsDrafts{Selection: core.Ref{ResourceID: "newcomer-selected"}, Drafts: []core.Ref{{ResourceID: "newcomer-drafts"}}}}}
+	must(s.SaveRun(ctx, parent))
+	row := core.OperationsReviewRow{Key: "one", ID: "one", Customer: "123", Message: "隔离稿件", Reason: "D2", Revision: 1, Editable: true, Slot: core.Digest(id)}
+	must(s.PublishLocalOperationsReview(ctx, parent.ID, core.OperationsReview{Digest: core.Digest(row), Exclusive: true}, []core.OperationsReviewRow{row}, core.ItemResult{ID: "original-roster", State: "succeeded", InputHash: core.Digest(id), Text: "{}"}))
+	call := func(method, path string, body []byte) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, bytes.NewReader(body)).WithContext(ctx)
+		req.Header.Set("Authorization", "Bearer "+api.Token)
+		req.Header.Set("X-Workbench-Kind", p.Kind)
+		req.Header.Set("X-Workbench-Project", p.ProjectID)
+		req.Header.Set("X-Workbench-Session", p.SessionID)
+		out := httptest.NewRecorder()
+		api.Handler().ServeHTTP(out, req)
+		return out
+	}
+	view := call(http.MethodGet, "/operations/source-today?daily="+parent.ID, nil)
+	var draft struct {
+		SendEnabled   bool
+		ReviewVersion string
+	}
+	if view.Code != 200 || json.Unmarshal(view.Body.Bytes(), &draft) != nil || !draft.SendEnabled || draft.ReviewVersion == "" {
+		t.Fatalf("review unavailable: %d %s", view.Code, view.Body.String())
+	}
+	confirm := uuid.NewSHA1(uuid.NameSpaceURL, []byte(id+"/operations-batch/"+parent.ID+"/"+draft.ReviewVersion)).String()
+	tc.On("ExecuteWorkflow", mock.Anything, mock.MatchedBy(func(o client.StartWorkflowOptions) bool { return o.ID == confirm }), mock.Anything,
+		engine.WriteInput{RunID: confirm, ProjectID: id, Operation: "operations_batch_confirm"}).Return(&mocks.WorkflowRun{}, nil).Once()
+	body, _ := json.Marshal(map[string]string{"daily": parent.ID, "reviewVersion": draft.ReviewVersion})
+	if response := call(http.MethodPost, "/operations/source-confirm", body); response.Code != 200 || !strings.Contains(response.Body.String(), confirm) {
+		t.Fatalf("confirmation entry failed: %d %s", response.Code, response.Body.String())
+	}
+	tc.AssertExpectations(t)
+	cycle.AdditionalBatch = nil
+	must(api.saveOperations(ctx, cfg))
+	if response := call(http.MethodPost, "/operations/source-confirm", body); response.Code != 403 {
+		t.Fatalf("withdrawn strategy could confirm: %d %s", response.Code, response.Body.String())
 	}
 }
