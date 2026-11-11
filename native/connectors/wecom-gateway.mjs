@@ -18,9 +18,9 @@ export function verifyGateway(c,raw,headers,now=Date.now()) {
 export function createGateway(c,workerCall,fetcher=fetch){
   const base=new URL(c.baseUrl);
   if(base.username||base.password||base.search||base.hash||(base.protocol!=='https:'&&!(base.protocol==='http:'&&base.hostname==='127.0.0.1'))||!c.accountId||!c.tenantId||!/^WORKBENCH_GATEWAY_[A-Z0-9_]+$/.test(c.apiKeyEnv||'')||!/^WORKBENCH_GATEWAY_[A-Z0-9_]+$/.test(c.webhookSecretEnv||''))throw Error('Invalid gateway configuration');
-  async function request(method,path,data,key){
+  async function request(method,path,data,key,signal){
     const token=process.env[c.apiKeyEnv];if(!token)throw Error('Gateway credentials unavailable');
-    const response=await fetcher(new URL(base.href.replace(/\/$/,'')+path),{method,redirect:'error',signal:AbortSignal.timeout(15000),headers:{authorization:'Bearer '+token,'content-type':'application/json',...(key?{'Idempotency-Key':key}:{})},body:data===undefined?undefined:JSON.stringify(data)});
+    const response=await fetcher(new URL(base.href.replace(/\/$/,'')+path),{method,redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(15000),...(signal?[signal]:[])]),headers:{authorization:'Bearer '+token,'content-type':'application/json',...(key?{'Idempotency-Key':key}:{})},body:data===undefined?undefined:JSON.stringify(data)});
     if(!response.ok){const error=new Error('Gateway request rejected');error.definite=[400,401,403,404,409,422,429].includes(response.status);let data;try{data=await response.json()}catch{};error.code=/^[A-Z0-9_]{1,64}$/.test(data?.code||'')?data.code:String(response.status);throw error}return response.json();
   }
   function receipt(v){
@@ -42,6 +42,13 @@ export function createGateway(c,workerCall,fetcher=fetch){
       await workerCall('/messages',{connectionId:c.id,eventId:'msg-'+m.messageId,actorId:contactId,conversationId:contactId,externalUserId:m.externalUserId||m.sender?.externalUserId||'',displayName:m.sender?.name||m.contactId,text:m.content?.text||'',occurredAt:m.sentAt||event.occurredAt,...(event.type==='message.self_sent'?{kind:'human'}:{})});
   }
   return{
+    async identity({contactId}, {signal}={}){
+      if(!contactId||(c.allowedContacts?.length&&!c.allowedContacts.includes(contactId)))throw Error('Contact unavailable');
+      const result=await request('GET','/contacts/resolve?'+new URLSearchParams({contactId}),undefined,undefined,signal);
+      const matches=(result.items||[]).filter(x=>x.accountId===c.accountId&&x.contactId===contactId);
+      if(matches.length!==1||matches[0].idMapping?.status!=='ready'||!matches[0].externalUserId)throw Error('Contact identity unavailable');
+      return {externalUserId:matches[0].externalUserId};
+    },
     async describe(){
       let cursor='',found;const seen=new Set();
       for(let page=0;page<100;page++){

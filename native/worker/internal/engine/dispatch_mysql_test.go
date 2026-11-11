@@ -46,10 +46,10 @@ func TestMySQLDispatchBindsEligibilityAndRecipient(t *testing.T) {
 		_, e = s.Publish(ctx, p, resource.ID, version, len(records))
 		must(e)
 	}
-	publish(src, "v1", []core.Record{{ID: "a", Fields: map[string]any{"text": "approved draft", "actor": "wrong-recipient"}}, {ID: "b", Fields: map[string]any{"text": "blocked draft"}}, {ID: "c", Fields: map[string]any{"text": "unknown eligibility"}}})
-	publish(identity, "v1", []core.Record{{ID: "a", Fields: map[string]any{"eligible": true, "actor": "authoritative-recipient"}}, {ID: "b", Fields: map[string]any{"eligible": false, "actor": "blocked"}}})
+	publish(src, "v1", []core.Record{{ID: "a", Fields: map[string]any{"text": "approved draft", "actor": "wrong-recipient"}}, {ID: "b", Fields: map[string]any{"text": "blocked draft"}}, {ID: "c", Fields: map[string]any{"text": "unknown eligibility"}}, {ID: "d", Fields: map[string]any{"text": "outside approved subset"}}})
+	publish(identity, "v1", []core.Record{{ID: "a", Fields: map[string]any{"eligible": true, "actor": "authoritative-recipient"}}, {ID: "b", Fields: map[string]any{"eligible": false, "actor": "blocked"}}, {ID: "d", Fields: map[string]any{"eligible": true, "actor": "outside-subset"}}})
 	must(s.PutTransport(ctx, owner, core.Transport{ID: id, Name: "fixture", Endpoint: "http://127.0.0.1:9999/mcp", TokenEnv: "WORKBENCH_CONNECTOR_TEST", Projects: []string{id}, Enabled: true}))
-	plan := core.DispatchPlan{Source: core.Ref{ResourceID: src.ID, Version: "v1", Section: "content"}, Eligibility: core.Ref{ResourceID: identity.ID, Version: "v1", Section: "identity"}, Check: check, EligibilitySchema: check.Schema, ConnectionID: id, TextPointer: "/text", TargetPointers: check.Bindings}
+	plan := core.DispatchPlan{Source: core.Ref{ResourceID: src.ID, Version: "v1", Section: "content"}, Eligibility: core.Ref{ResourceID: identity.ID, Version: "v1", Section: "identity"}, Check: check, EligibilitySchema: check.Schema, ConnectionID: id, TextPointer: "/text", TargetPointers: check.Bindings, RecordIDs: []string{"a", "b", "c"}}
 	must(plan.Validate())
 	r := core.Run{ID: id + "run", Principal: p, Operation: "dispatch_batch", Title: "fixed review", Dispatch: &plan, Sources: []core.Ref{plan.Source, plan.Eligibility}}
 	must(s.SaveRun(ctx, r))

@@ -46,7 +46,7 @@ async function server(req,signal,refreshCall){
  };
  s.registerTool('qa_search',{description:'按完整客户问题检索原答疑知识和语料，返回真实证据回执。',inputSchema:{question:z.string().min(1).max(4000),queries:z.array(z.string().min(1).max(512)).min(1).max(6),limit:z.number().int().min(1).max(18).default(10)}},a=>run('search',a));
  s.registerTool('qa_read',{description:'读取原检索来源上下文，数字消息ID使用records=true。',inputSchema:{ids:z.array(z.string().min(1).max(160)).min(1).max(4),records:z.boolean().default(false)}},a=>run('read',a));
- s.registerTool('qa_check',{description:'沿用原专家的完整问题覆盖、证据及适用范围检查；answer/ack可回复，human转人工，needs_retrieval继续检索。',inputSchema:{request:z.union([z.object({question:z.string().min(1).max(4000)}).passthrough(),z.string().min(2).max(50000)])}},a=>run('check',a));
+ s.registerTool('qa_check',{description:'沿用原专家的完整问题覆盖、证据及适用范围检查；answer/ack可回复，human转人工，needs_retrieval继续检索。',inputSchema:{request:z.union([z.object({question:z.string().min(1).max(4000),draft:z.string().min(1).max(4000).optional()}).passthrough(),z.string().min(2).max(50000)])}},a=>run('check',a));
  if(refreshCall&&safeID(req.headers['x-workbench-run'])&&req.headers['x-workbench-project']===config.projectId)s.registerTool('qa_refresh',{description:'刷新本人配置的CRM私聊语料，全部采集及索引成功后返回标准资源清单；仅供后台资料维护。',inputSchema:{operationKey:z.string().regex(/^[A-Za-z0-9_-]{1,160}$/)}},async a=>{
   if(!refreshCall||a.operationKey!==req.headers['x-workbench-run']||req.headers['x-workbench-project']!==config.projectId||refreshing)return{content:[{type:'text',text:'资料维护不可用'}],isError:true};
   refreshing=true;try{const result=await python(['/service/refresh.py',a.operationKey],undefined,signal,3*60*60*1000);return{content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result}}

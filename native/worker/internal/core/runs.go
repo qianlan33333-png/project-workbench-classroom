@@ -22,24 +22,26 @@ type Method struct {
 	OutputSchema    map[string]any `json:"outputSchema,omitempty"`
 }
 type Run struct {
-	Quiet         bool          `json:"quiet,omitempty"`
-	Selection     *Selection    `json:"selection,omitempty"`
-	TargetRunIDs  []string      `json:"targetRunIds,omitempty"`
-	WorkflowID    string        `json:"workflowId,omitempty"`
-	Dispatch      *DispatchPlan `json:"dispatch,omitempty"`
-	ParentRunID   string        `json:"parentRunId,omitempty"`
-	Program       *PipelinePlan `json:"program,omitempty"`
-	ID            string        `json:"id"`
-	Principal     Principal     `json:"principal"`
-	Operation     string        `json:"operation"`
-	Sources       []Ref         `json:"sources"`
-	Lineage       []Ref         `json:"lineage,omitempty"`
-	Destination   string        `json:"destination,omitempty"`
-	Method        Method        `json:"method"`
-	Title         string        `json:"title"`
-	Goal          string        `json:"goal,omitempty"`
-	NotifySession string        `json:"notifySession,omitempty"`
-	OriginMessage string        `json:"originMessage,omitempty"`
+	Quiet          bool           `json:"quiet,omitempty"`
+	ExplicitInputs bool           `json:"explicitInputs,omitempty"`
+	Selection      *Selection     `json:"selection,omitempty"`
+	TargetRunIDs   []string       `json:"targetRunIds,omitempty"`
+	WorkflowID     string         `json:"workflowId,omitempty"`
+	Dispatch       *DispatchPlan  `json:"dispatch,omitempty"`
+	ParentRunID    string         `json:"parentRunId,omitempty"`
+	Program        *PipelinePlan  `json:"program,omitempty"`
+	ID             string         `json:"id"`
+	Principal      Principal      `json:"principal"`
+	Operation      string         `json:"operation"`
+	Sources        []Ref          `json:"sources"`
+	Lineage        []Ref          `json:"lineage,omitempty"`
+	Destination    string         `json:"destination,omitempty"`
+	Method         Method         `json:"method"`
+	Shared         map[string]any `json:"shared,omitempty"`
+	Title          string         `json:"title"`
+	Goal           string         `json:"goal,omitempty"`
+	NotifySession  string         `json:"notifySession,omitempty"`
+	OriginMessage  string         `json:"originMessage,omitempty"`
 }
 
 func (r Run) ExecutionID() string {
@@ -56,10 +58,50 @@ type ResourceSelection struct {
 	Version    string   `json:"version,omitempty"`
 	Sections   []string `json:"sections"`
 	Refresh    bool     `json:"refresh"`
+	Optional   bool     `json:"optional,omitempty"`
 }
 type PipelinePlan struct {
-	Sources []ResourceSelection `json:"sources"`
+	Sources      []ResourceSelection `json:"sources"`
+	LatestMethod *RecordRef          `json:"latestMethod,omitempty"`
+	Knowledge    *Ref                `json:"knowledge,omitempty"`
 }
+
+// LoadMethod resolves a published method record and returns the exact source
+// reference for the resulting run. A missing version means the current release.
+func (s *Store) LoadMethod(ctx context.Context, p Principal, ref RecordRef) (Method, Ref, error) {
+	var method Method
+	if ref.Ref.Version == "" {
+		resource, err := s.Resource(ctx, ref.Ref.ResourceID)
+		if err != nil {
+			return method, ref.Ref, err
+		}
+		ref.Ref.Version = resource.CurrentVersion
+	}
+	records, err := s.ReadIDs(ctx, p, ref.Ref, []string{ref.ID})
+	if err != nil {
+		return method, ref.Ref, err
+	}
+	if len(records) != 1 {
+		return method, ref.Ref, ErrInvalid
+	}
+	body, err := json.Marshal(records[0].Fields["method"])
+	if err != nil {
+		return method, ref.Ref, err
+	}
+	if err = json.Unmarshal(body, &method); err != nil {
+		return method, ref.Ref, err
+	}
+	if method.Instructions == "" || len(method.Instructions) > 64000 {
+		return method, ref.Ref, ErrInvalid
+	}
+	if _, err = method.ResolveOutput(); err != nil {
+		return method, ref.Ref, err
+	}
+	method.Digest = ""
+	method.Digest = Digest(method)
+	return method, ref.Ref, nil
+}
+
 type ItemResult struct {
 	CreatedAt time.Time      `json:"createdAt"`
 	ID        string         `json:"id"`
@@ -141,11 +183,15 @@ func (s *Store) SaveRun(ctx context.Context, r Run) error {
 			return e
 		}
 	}
-	lineage, e := s.SessionSources(ctx, r.Principal)
-	if e != nil {
-		return e
+	// Independent programs have a complete input contract and never consume
+	// chat history. Keep their actual dependencies without inheriting earlier reads.
+	if !r.ExplicitInputs {
+		lineage, e := s.SessionSources(ctx, r.Principal)
+		if e != nil {
+			return e
+		}
+		r.Lineage = UnionRefs(r.Lineage, lineage)
 	}
-	r.Lineage = UnionRefs(r.Lineage, lineage)
 	if e := AuthorizeAll(ctx, s, r.Principal, UnionRefs(r.Sources, r.Lineage)); e != nil {
 		return e
 	}
@@ -155,7 +201,7 @@ func (s *Store) SaveRun(ctx context.Context, r Run) error {
 		}
 	}
 	digest := Digest(r)
-	_, e = s.DB.ExecContext(ctx, `INSERT IGNORE INTO wb_runs(id,project_id,session_id,input_digest,body) VALUES(?,?,?,?,?)`, r.ID, r.Principal.ProjectID, r.Principal.SessionID, digest, jsonText(r))
+	_, e := s.DB.ExecContext(ctx, `INSERT IGNORE INTO wb_runs(id,project_id,session_id,input_digest,body) VALUES(?,?,?,?,?)`, r.ID, r.Principal.ProjectID, r.Principal.SessionID, digest, jsonText(r))
 	if e != nil {
 		return e
 	}
@@ -242,7 +288,12 @@ func (s *Store) Items(ctx context.Context, p Principal, run, after string) ([]It
 		}
 		return []ItemResult{}, nil
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT body FROM wb_items WHERE run_id=? AND item_id>? ORDER BY item_id LIMIT 200`, run, after)
+	query := `SELECT body FROM wb_items WHERE run_id=? AND item_id>?`
+	if r.Operation == "operations_package" || r.Operation == "operations_batch_confirm" {
+		// The review projection contains connector-only customer and material IDs.
+		query += ` AND item_id NOT LIKE 'original-review-row-%' AND item_id NOT IN ('original-review','original-batch-result')`
+	}
+	rows, e := s.DB.QueryContext(ctx, query+` ORDER BY item_id LIMIT 200`, run, after)
 	if e != nil {
 		return nil, e
 	}
@@ -621,6 +672,11 @@ func (s *Store) PreparePage(ctx context.Context, r Run, after string) ([]string,
 		}
 		for _, row := range rows {
 			records[row.ID] = append(records[row.ID], row)
+		}
+	}
+	if len(r.Shared) > 0 {
+		for _, id := range ids {
+			records[id] = append(records[id], Record{ID: id, Fields: r.Shared})
 		}
 	}
 	if len(ids) > 0 {

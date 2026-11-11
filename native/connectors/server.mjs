@@ -14,9 +14,20 @@ const outputSchema={state:z.enum(['accepted','pending_confirmation','sent','deli
 app.get('/health',(_req,res)=>res.json({ready:true}));
 app.post('/mcp',async(req,res)=>{
  const server=new McpServer({name:'workbench-message-connectors',version:'0.1.0'});
+ server.registerTool('contact_identity',{inputSchema:{connectionId:z.string(),contactId:z.string()}},async(input,extra)=>{const v=await channels.identity(input,{signal:extra.signal});return{content:[{type:'text',text:JSON.stringify(v)}],structuredContent:v}});
  server.registerTool('connection_describe',{inputSchema:{connectionId:z.string()}},async input=>{const v=await channels.describe(input);return{content:[{type:'text',text:JSON.stringify(v)}],structuredContent:v}});
  for(const [name,handler,inputSchema] of [['message_send',channels.send,{connectionId:z.string(),idempotencyKey:z.string(),target:z.record(z.string(),z.string()),text:z.string().max(16000)}],['message_receipt',channels.receipt,{connectionId:z.string(),idempotencyKey:z.string(),receipt:z.string(),state:z.string(),target:z.record(z.string(),z.string()),text:z.string().max(16000).optional()}]]){
   server.registerTool(name,{inputSchema,outputSchema},async (input,extra)=>{const result=await handler(input,{signal:extra.signal});return{content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result}})
+ }
+ server.registerTool('operations_material_versions',{inputSchema:{connectionId:z.string(),ids:z.array(z.string().regex(/^[1-9][0-9]{0,18}$/)).max(5000)}},async(input,extra)=>{
+  const result=await channels.operationsMaterialVersions(input,{signal:extra.signal});
+  return{content:[{type:'text',text:'CRM material versions'}],structuredContent:result};
+ });
+ for(const [name,send] of [['operations_batch_send',true],['operations_batch_receipt',false]]){
+  server.registerTool(name,{inputSchema:{connectionId:z.string(),runId:z.string().uuid()}},async(input,extra)=>{
+   const result=await channels.operationsBatch(input,send,{signal:extra.signal});
+   return{content:[{type:'text',text:'CRM batch status'}],structuredContent:result};
+  });
  }
  const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});res.on('close',()=>{transport.close();server.close()});
  try{await server.connect(transport);await transport.handleRequest(req,res,req.body)}catch{if(!res.headersSent)res.status(500).json({error:'connector unavailable'})}

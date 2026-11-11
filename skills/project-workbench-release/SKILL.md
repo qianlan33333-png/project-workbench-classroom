@@ -49,3 +49,9 @@ description: 发布、回滚或清理项目专家工作台（个人工作台）�
 控制器仅修改配置中的 RuntimeImage，保留其他业务配置；其他配置变更、不兼容迁移和异常存储修复单独处理。必要迁移的单份恢复点放 `migration-backup`，不要放进会轮转删除的 `rollback-*`。首次安装沿用隔离原则，不自动启用渠道消费者。
 
 2026-11-02 已在生产安装这些入口并清退旧资源，正式程序没有换版；已验证真实 Harness 和渠道状态。不创建清理收据、常驻服务或 timer。
+
+## 项目专家方法随版本恢复
+
+涉及项目 Skill 配置更新时，复用 `release-native.py` 的 `start()` 恢复入口。root 管理的 `/var/lib/project-workbench-native/project-method-releases.json` 按正式版本绝对路径绑定方法包 `source`、项目 `.agents/skills/<name>` 的 `target` 和逐文件 `files` 摘要；仅保留本次 current/previous 的绑定。候选方法放入该生产候选的 `project-methods` 配置目录；尚无版本内配置的上一版只保存一份 `config-previous` 快照。业务专家不因此进入通用发行底座。
+
+所有文件先校验，方法在启动 Host、Worker 和渠道前恢复；标准回滚和崩溃恢复共用此入口。接受钩子只核验，不再额外覆盖方法；失败返回后也不能在消费者已恢复时重复写回。回滚退程序与方法，不回退会话、用户数据或真实发送状态。正常 systemd 服务重启不重装方法。

@@ -62,3 +62,14 @@ test('documented account remark remains the readable label while offline',async(
  const g=createGateway(config,async()=>{},async url=>({ok:true,json:async()=>String(url).includes('/accounts/account')?{accountId:'account',remark:'qianlan',status:'offline',sendEnabled:false,wecomIdentity:{corpId:'corp',userId:'staff'}}:{items:[{accountId:'account',remark:'Old remark',status:'online'}]}}));
  const v=await g.describe();assert.equal(v.name,'qianlan');assert.equal(v.status,'offline');assert.equal(v.sendEnabled,false);
 });
+
+test('contact identity uses the exact account relationship and only ready mappings',async()=>{
+ let items=[{accountId:'other',contactId:'c',externalUserId:'wrong',idMapping:{status:'ready'}},{accountId:'account',contactId:'c',externalUserId:'wm-ok',unionId:'unverified-not-used',idMapping:{status:'ready'}}];
+ // The test connector base path is intentionally independent of the provider.
+ const baseConfig={...config,baseUrl:'https://example.com/api/v1'};
+ const h=createGateway(baseConfig,async()=>{},async(url)=>{assert.equal(new URL(url).searchParams.get('contactId'),'c');return Response.json({items})});
+ assert.deepEqual(await h.identity({contactId:'c'}),{externalUserId:'wm-ok'});
+ items.push({...items[1]});await assert.rejects(h.identity({contactId:'c'}));
+ items=[{...items[1],idMapping:{status:'pending'}}];await assert.rejects(h.identity({contactId:'c'}));
+ items=[];await assert.rejects(h.identity({contactId:'c'}));
+});

@@ -11,7 +11,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 	"workbench-native/internal/core"
 )
 
@@ -102,6 +104,69 @@ func TestMySQLCustomerToolsOnlyReadBoundSubjectAndSelectedKnowledge(t *testing.T
 	if call("resource_search", SearchInput{Ref: public, Query: "grounded"}).IsError {
 		t.Fatal("configured public search denied")
 	}
+	// An optional source timeout must preserve chat and knowledge without handoff.
+	var profileCalls atomic.Int32
+	profileHTTP := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		srv := mcp.NewServer(&mcp.Implementation{Name: "slow-profile", Version: "1"}, nil)
+		mcp.AddTool(srv, &mcp.Tool{Name: "profile_lookup"}, func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+			ExternalUserID string `json:"externalUserId"`
+		}) (*mcp.CallToolResult, map[string]any, error) {
+			profileCalls.Add(1)
+			select {
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			case <-time.After(6 * time.Second):
+				return nil, map[string]any{"externalUserId": in.ExternalUserID, "records": []core.Record{}}, nil
+			}
+		})
+		return srv
+	}, &mcp.StreamableHTTPOptions{Stateless: true}))
+	defer profileHTTP.Close()
+	t.Setenv("WORKBENCH_SOURCE_OPTIONAL_PROFILE", strings.Repeat("s", 40))
+	must(s.PutConnection(ctx, owner, core.Connection{ID: id + "source", Name: "slow", Kind: "mcp", Location: profileHTTP.URL, SecretEnv: "WORKBENCH_SOURCE_OPTIONAL_PROFILE", SourceTool: "profile_lookup"}))
+	profileResource, e := s.Resource(ctx, subjects.ResourceID)
+	must(e)
+	profileResource.ConnectionID = id + "source"
+	must(s.PutResource(ctx, owner, profileResource))
+	must(s.BindReplyIdentity(ctx, route.Principal, route.ID, "wm-one"))
+	oldSubject := cfg.Subject
+	cfg.Subject = &core.SubjectBinding{ResourceID: subjects.ResourceID, Section: subjects.Section, LookupTool: "profile_lookup"}
+	cfg, e = s.PutReplySettings(ctx, owner, cfg)
+	must(e)
+	follow := incoming
+	follow.EventID = "followup"
+	follow.Text = "Continuing the question"
+	_, e = s.AcceptMessage(ctx, follow)
+	must(e)
+	started := time.Now()
+	result = call("message_context", MessageKey{ConnectionID: id, EventID: follow.EventID})
+	raw, _ = json.Marshal(result.StructuredContent)
+	if result.IsError || time.Since(started) > 6*time.Second || !strings.Contains(string(raw), "Question") || !strings.Contains(string(raw), public.ResourceID) || profileCalls.Load() != 1 {
+		t.Fatalf("timeout broke chat context: %s", raw)
+	}
+	var optional struct {
+		Records []core.Record `json:"records"`
+	}
+	must(json.Unmarshal(raw, &optional))
+	if len(optional.Records) != 0 {
+		t.Fatal("timeout returned profile")
+	}
+	storedFollow, e := s.Message(ctx, owner, id, follow.EventID)
+	must(e)
+	if storedFollow.State != "received" {
+		t.Fatal("optional timeout changed message state", storedFollow.State)
+	}
+	off := false
+	cfg.ReadProfile = &off
+	cfg, e = s.PutReplySettings(ctx, owner, cfg)
+	must(e)
+	if call("message_context", MessageKey{ConnectionID: id, EventID: follow.EventID}).IsError || profileCalls.Load() != 1 {
+		t.Fatal("disabled profile queried source")
+	}
+	cfg.ReadProfile = nil
+	cfg.Subject = oldSubject
+	cfg, e = s.PutReplySettings(ctx, owner, cfg)
+	must(e)
 	// The same standard external-MCP guard must record lineage and enforce live grants.
 	apiHTTP := httptest.NewServer((&Server{Store: s, Token: strings.Repeat("t", 40)}).Handler())
 	defer apiHTTP.Close()

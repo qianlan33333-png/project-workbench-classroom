@@ -19,9 +19,15 @@ type DispatchPlan struct {
 	TextPointer       string            `json:"textPointer"`
 	TargetPointers    map[string]string `json:"targetPointers"`
 	DecodeJSONField   string            `json:"decodeJsonField,omitempty"`
+	RecordIDs         []string          `json:"recordIds,omitempty"`
 }
 
 func (p DispatchPlan) Validate() error {
+	if len(p.RecordIDs) > 0 {
+		if _, e := BoundedSelection(&Selection{RecordIDs: p.RecordIDs}); e != nil {
+			return e
+		}
+	}
 	if p.Check.ID == "" || p.Check.Section != p.Eligibility.Section || Digest(p.Check.Schema) != Digest(p.EligibilitySchema) || Digest(p.Check.Bindings) != Digest(p.TargetPointers) {
 		return ErrInvalid
 	}
@@ -108,6 +114,22 @@ func (p DispatchPlan) Content(fields map[string]any, identities map[string]any) 
 }
 func DeliveryItemID(run, item string) string {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(run+"/delivery/"+item)).String()
+}
+
+// SupersedeDispatchPrepared fences the old manifest before a new review.
+// Only prepared rows have never been claimed for an external call.
+func (s *Store) SupersedeDispatchPrepared(ctx context.Context, p Principal, run string) error {
+	r, e := s.Run(ctx, p, run)
+	if e != nil {
+		return e
+	}
+	if r.Dispatch == nil || r.ParentRunID == "" {
+		return ErrInvalid
+	}
+	_, e = s.DB.ExecContext(ctx, `UPDATE wb_deliveries
+		SET state='superseded',body=JSON_SET(body,'$.state','superseded')
+		WHERE run_id=? AND state='prepared'`, run)
+	return e
 }
 func (s *Store) Deliveries(ctx context.Context, p Principal, run, after string) ([]Delivery, error) {
 	r, e := s.Run(ctx, p, run)

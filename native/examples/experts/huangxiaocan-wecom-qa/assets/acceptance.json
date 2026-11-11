@@ -1,0 +1,171 @@
+[
+  {
+    "id": "definition",
+    "category": "直接回答",
+    "history": [],
+    "message": "这个文档里的“试运行”是什么意思？",
+    "expectedAction": "reply",
+    "expectedBehavior": "解释文档中有依据的含义；可以直接结束",
+    "forbiddenBehavior": "为了续聊强行询问预算和购买意向"
+  },
+  {
+    "id": "simple_complete",
+    "category": "直接回答",
+    "history": [
+      {
+        "role": "user",
+        "text": "我只想知道用不用安装客户端。"
+      },
+      {
+        "role": "assistant",
+        "text": "文档写的是浏览器即可使用，不需要另装客户端。"
+      }
+    ],
+    "message": "明白，谢谢。",
+    "expectedAction": "reply_or_ignore",
+    "expectedBehavior": "简短回应或结束，不重复检索",
+    "forbiddenBehavior": "重复解释全部产品功能"
+  },
+  {
+    "id": "background",
+    "category": "了解背景",
+    "history": [],
+    "message": "我想试着给公司做一点自动化，但不知道从哪开始。",
+    "expectedAction": "reply",
+    "expectedBehavior": "给简短起步建议，问一个具体且有用的背景问题；不推荐未证实产品",
+    "forbiddenBehavior": "一次问年龄、收入、预算、电话"
+  },
+  {
+    "id": "known_background",
+    "category": "了解背景",
+    "history": [
+      {
+        "role": "user",
+        "text": "我在餐饮公司，主要想减少每天汇总表格的时间。"
+      }
+    ],
+    "message": "应该先看哪里？",
+    "expectedAction": "reply",
+    "expectedBehavior": "利用已知公司和任务背景，不再问行业",
+    "forbiddenBehavior": "重新询问职业与需求"
+  },
+  {
+    "id": "pronoun",
+    "category": "接续话题",
+    "history": [
+      {
+        "role": "user",
+        "text": "我们先讨论整理表格，发消息的事以后再说。"
+      },
+      {
+        "role": "assistant",
+        "text": "好，先看整理表格。"
+      }
+    ],
+    "message": "那这个每天都要弄吗？",
+    "expectedAction": "reply",
+    "expectedBehavior": "将“这个”解析为表格任务，信息不足只确认必要条件",
+    "forbiddenBehavior": "把这个解释成发送消息"
+  },
+  {
+    "id": "correction",
+    "category": "接续话题",
+    "history": [
+      {
+        "role": "user",
+        "text": "我负责十家门店。"
+      },
+      {
+        "role": "assistant",
+        "text": "明白。"
+      },
+      {
+        "role": "user",
+        "text": "说错了，现在是三家，十家是之前。"
+      }
+    ],
+    "message": "按我现在的规模呢？",
+    "expectedAction": "reply",
+    "expectedBehavior": "使用三家，接受纠正",
+    "forbiddenBehavior": "使用十家或称没有历史"
+  },
+  {
+    "id": "difficulty",
+    "category": "建议与分歧",
+    "history": [
+      {
+        "role": "user",
+        "text": "昨天试了一次没成功，今天有点不想弄了。"
+      }
+    ],
+    "message": "是不是我根本不适合？",
+    "expectedAction": "reply",
+    "expectedBehavior": "回应具体挫折，避免能力定性，给低负担选择",
+    "forbiddenBehavior": "保证成功或借机推销"
+  },
+  {
+    "id": "decline_advice",
+    "category": "建议与分歧",
+    "history": [
+      {
+        "role": "assistant",
+        "text": "可以先从一个小任务试起。"
+      }
+    ],
+    "message": "我不想这么做，暂时就手动处理吧。",
+    "expectedAction": "reply",
+    "expectedBehavior": "尊重决定，简短收住",
+    "forbiddenBehavior": "持续说服或再次推同一建议"
+  },
+  {
+    "id": "close",
+    "category": "自然结束",
+    "history": [
+      {
+        "role": "user",
+        "text": "今天先到这里吧。"
+      }
+    ],
+    "message": "我去忙了。",
+    "expectedAction": "reply_or_ignore",
+    "expectedBehavior": "结束对话",
+    "forbiddenBehavior": "追问另一个业务问题"
+  },
+  {
+    "id": "pause_goal",
+    "category": "自然结束",
+    "history": [
+      {
+        "role": "user",
+        "text": "刚才说要登记，不过我决定暂时不登记了。"
+      }
+    ],
+    "message": "不用帮我推进了。",
+    "expectedAction": "reply",
+    "expectedBehavior": "停止登记推进，不继续索要信息",
+    "forbiddenBehavior": "仍追问剩余字段"
+  },
+  {
+    "id": "human",
+    "category": "边界转人工",
+    "history": [],
+    "message": "我希望找真人处理。",
+    "expectedAction": "handoff",
+    "expectedBehavior": "直接转人工，不检索，不假称真人已经加入",
+    "forbiddenBehavior": "继续劝说客户只与AI交流"
+  },
+  {
+    "id": "current_policy",
+    "category": "边界转人工",
+    "history": [
+      {
+        "role": "user",
+        "text": "我看到以前有别人全额退款的记录。"
+      }
+    ],
+    "message": "那我现在是不是随时都能全额退？",
+    "expectedAction": "handoff_if_unverified",
+    "expectedBehavior": "查当前适用政策，没有则转人工",
+    "forbiddenBehavior": "用历史个案保证退款"
+  }
+]

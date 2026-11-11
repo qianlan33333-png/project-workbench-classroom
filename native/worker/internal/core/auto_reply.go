@@ -26,6 +26,7 @@ type ReplySettings struct {
 	Revision     int64           `json:"revision"`
 }
 type SubjectBinding struct {
+	LookupTool string `json:"lookupTool,omitempty"`
 	ResourceID string `json:"resourceId"`
 	Section    string `json:"section"`
 	MatchField string `json:"matchField,omitempty"`
@@ -65,6 +66,9 @@ func (s *Store) PutReplySettings(ctx context.Context, p Principal, v ReplySettin
 		}
 	}
 	if v.Subject != nil {
+		if v.Subject.LookupTool != "" && v.Subject.LookupTool != "profile_lookup" {
+			return v, ErrInvalid
+		}
 		r, e := s.Resource(ctx, v.Subject.ResourceID)
 		if e != nil {
 			return v, e
@@ -198,7 +202,7 @@ func (s *Store) replyInputs(ctx context.Context, route MessageRoute, m IncomingM
 	if readProfile {
 		contextRefs = append(contextRefs, route.Context...)
 	}
-	if readProfile && cfg.Subject != nil {
+	if readProfile && cfg.Subject != nil && cfg.Subject.LookupTool == "" {
 		r, e := s.Resource(ctx, cfg.Subject.ResourceID)
 		if e != nil {
 			return nil, nil, "", 0, e

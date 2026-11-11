@@ -33,11 +33,15 @@ func (a connectorAuth) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(copy)
 }
 func connectConnector(ctx context.Context, c core.Transport) (*mcp.ClientSession, error) {
+	return connectConnectorWithTimeout(ctx, c, 35*time.Second)
+}
+
+func connectConnectorWithTimeout(ctx context.Context, c core.Transport, timeout time.Duration) (*mcp.ClientSession, error) {
 	token := os.Getenv(c.TokenEnv)
 	if len(token) < 32 {
 		return nil, temporal.NewNonRetryableApplicationError("connector token not configured", "Invalid", nil)
 	}
-	httpClient := &http.Client{Timeout: 35 * time.Second, Transport: connectorAuth{token}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	httpClient := &http.Client{Timeout: timeout, Transport: connectorAuth{token}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	client := mcp.NewClient(&mcp.Implementation{Name: "workbench-worker", Version: "0.1.0"}, nil)
 	return client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: c.Endpoint, HTTPClient: httpClient}, nil)
 }
@@ -75,6 +79,35 @@ func DescribeConnection(ctx context.Context, c core.Transport) (ConnectionAccoun
 		return v, errors.New("account metadata missing")
 	}
 	return v, e
+}
+
+func ResolveContactIdentity(ctx context.Context, c core.Transport, contactID string) (string, error) {
+	session, e := connectConnector(ctx, c)
+	if e != nil {
+		return "", e
+	}
+	defer session.Close()
+	result, e := session.CallTool(ctx, &mcp.CallToolParams{Name: "contact_identity", Arguments: map[string]string{"connectionId": c.ID, "contactId": contactID}})
+	if e != nil {
+		return "", e
+	}
+	if result.IsError {
+		return "", errors.New("contact identity unavailable")
+	}
+	raw, e := json.Marshal(result.StructuredContent)
+	if e != nil {
+		return "", e
+	}
+	var out struct {
+		ExternalUserID string `json:"externalUserId"`
+	}
+	if e = json.Unmarshal(raw, &out); e != nil {
+		return "", e
+	}
+	if !core.ValidID(out.ExternalUserID) {
+		return "", core.ErrInvalid
+	}
+	return out.ExternalUserID, nil
 }
 
 // A read-only MCP initialize is safe to wait for before prepared is claimed.
@@ -186,7 +219,7 @@ func (a *Activities) ReconcileDelivery(ctx context.Context, id string) (Receipt,
 	if e != nil {
 		return Receipt{}, e
 	}
-	if d.State == "sent" || d.State == "delivered" || d.State == "failed" {
+	if d.State == "sent" || d.State == "delivered" || d.State == "failed" || d.State == "superseded" {
 		return Receipt{d.State, d.Receipt, d.Error}, nil
 	}
 	r, e := a.Store.ExecutionRun(ctx, d.RunID)

@@ -24,17 +24,29 @@ type ProgramSchedule struct {
 	Paused  bool           `json:"paused"`
 }
 type scheduleView struct {
-	ID        string      `json:"id"`
-	Title     string      `json:"title"`
-	SessionID string      `json:"sessionId"`
-	Hours     []int       `json:"hours"`
-	Minute    int         `json:"minute"`
-	Paused    bool        `json:"paused"`
-	Next      []time.Time `json:"next"`
-	State     string      `json:"state"`
+	ID             string      `json:"id"`
+	Title          string      `json:"title"`
+	SessionID      string      `json:"sessionId"`
+	Hours          []int       `json:"hours"`
+	Minute         int         `json:"minute"`
+	Paused         bool        `json:"paused"`
+	Next           []time.Time `json:"next"`
+	State          string      `json:"state"`
+	ProjectID      string      `json:"projectId,omitempty"`
+	Strategy       string      `json:"strategy,omitempty"`
+	Last           time.Time   `json:"last,omitzero"`
+	Result         string      `json:"result,omitempty"`
+	Source         string      `json:"source,omitempty"`
+	SourceResource string      `json:"sourceResource,omitempty"`
+	Experts        []string    `json:"experts,omitempty"`
+	Versions       []int       `json:"versions,omitempty"`
 }
 
 func (a *Server) configureProgram(ctx context.Context, p core.Principal, in ProgramSchedule) (string, error) {
+	return a.configureProgramInputs(ctx, p, in, false)
+}
+
+func (a *Server) configureProgramInputs(ctx context.Context, p core.Principal, in ProgramSchedule, explicit bool) (string, error) {
 	if !core.ValidID(in.ID) || len(in.Hours) == 0 || len(in.Hours) > 24 || in.Minute < 0 || in.Minute > 59 {
 		return "", core.ErrInvalid
 	}
@@ -52,12 +64,15 @@ func (a *Server) configureProgram(ctx context.Context, p core.Principal, in Prog
 	if e != nil {
 		return "", e
 	}
-	r.Lineage, e = a.Store.SessionSources(ctx, p)
-	if e != nil {
-		return "", e
-	}
-	if e = core.AuthorizeAll(ctx, a.Store, p, r.Lineage); e != nil {
-		return "", e
+	r.ExplicitInputs = explicit
+	if !explicit {
+		r.Lineage, e = a.Store.SessionSources(ctx, p)
+		if e != nil {
+			return "", e
+		}
+		if e = core.AuthorizeAll(ctx, a.Store, p, r.Lineage); e != nil {
+			return "", e
+		}
 	}
 	id := "program-" + uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.ID)).String()
 	spec := client.ScheduleSpec{TimeZoneName: "Asia/Shanghai", Calendars: []client.ScheduleCalendarSpec{{Hour: hours, Minute: []client.ScheduleRange{{Start: in.Minute}}}}}
@@ -123,6 +138,9 @@ func (a *Server) scheduleRoutes(mux *http.ServeMux) {
 			return
 		}
 		for i, v := range out {
+			if v.Strategy != "" {
+				a.originalScheduleEvidence(r.Context(), &out[i])
+			}
 			d, err := a.Temporal.ScheduleClient().GetHandle(r.Context(), v.ID).Describe(r.Context())
 			if err != nil {
 				out[i].State = "unavailable"
@@ -131,6 +149,20 @@ func (a *Server) scheduleRoutes(mux *http.ServeMux) {
 			out[i].State = "ready"
 			out[i].Paused = d.Schedule.State.Paused
 			out[i].Next = d.Info.NextActionTimes
+			if v.Strategy != "" && len(d.Schedule.Spec.Calendars) == 1 {
+				calendar := d.Schedule.Spec.Calendars[0]
+				if len(calendar.Hour) == 1 && len(calendar.Minute) == 1 {
+					out[i].Hours = []int{calendar.Hour[0].Start}
+					out[i].Minute = calendar.Minute[0].Start
+				}
+			}
+			if len(d.Info.RecentActions) > 0 {
+				last := d.Info.RecentActions[len(d.Info.RecentActions)-1]
+				out[i].Last = last.ActualTime
+				if last.StartWorkflowResult != nil {
+					out[i].Result = a.operationsExecution(r.Context(), last.StartWorkflowResult.WorkflowID)
+				}
+			}
 		}
 		respond(w, out, nil)
 	})

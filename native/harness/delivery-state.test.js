@@ -27,3 +27,14 @@ test('persisted delegation report survives replay and auxiliary messages do not 
   assert.deepEqual(p.stateSchema.parse(JSON.parse(JSON.stringify(state))),state);
   assert.equal(p.apply(state,{type:'user/message',data:{id:'owner-2',source:{kind:'user'},content:[]}}).feedback,false);
 });
+
+
+test('late channel receipts do not turn an active customer reply into read-only feedback', () => {
+  let state=p.apply(p.init(),{type:'user/message',data:{source:{kind:'workbench-incoming',runId:'next'},content:[]}});
+  state=p.apply(state,{type:'agent/inbox/spliced',data:{inserted:[{source:{kind:'workbench-incoming',runId:'next'}}]}});
+  state=p.apply(state,{type:'user/message',data:{source:{kind:'workbench-channel-result',sequence:42},content:[]}});
+  assert.equal(state.feedback,false);assert.equal(state.pendingIncoming,'next');assert.equal(state.through,42);
+  state=p.apply(state,{type:'turn/end',data:{reason:{kind:'completed'}}});assert.equal(state.incomingReport,'next');
+  const feedback={...state,feedback:true};
+  assert.equal(p.apply(feedback,{type:'user/message',data:{source:{kind:'workbench-channel-result',sequence:43},content:[]}}).feedback,true);
+});

@@ -1,0 +1,21 @@
+[Unit]
+Description=Project Workbench scoped operations source
+ConditionPathExists=/opt/project-workbench/current/components/operations-source/server.mjs
+PartOf=project-workbench.service
+Before=project-workbench.service
+
+[Service]
+Type=simple
+User=projectwb
+Group=projectwb
+EnvironmentFile=/etc/project-workbench/operations-source/worker.env
+EnvironmentFile=/etc/project-workbench/operations-source/source.env
+ExecStart=/opt/project-workbench/current/node/bin/node /opt/project-workbench/current/components/operations-source/server.mjs
+Restart=on-failure
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target project-workbench.service

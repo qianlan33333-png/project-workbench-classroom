@@ -3,7 +3,7 @@ import { z } from 'zod';
 const textOf = content => (content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
 const primary = new Set(['user', 'workbench-owner', 'workbench-incoming', 'workbench-delegation', 'workbench-result']);
 export const deliveryProjection = {
-  key: 'workbenchDelivery', stateVersion: 5,
+  key: 'workbenchDelivery', stateVersion: 6,
   stateSchema: z.object({
     pendingIncoming:z.string(),incomingReport:z.string(),through: z.number(), feedback: z.boolean(),
     ownerRequest: z.object({ id: z.string(), text: z.string() }), dispatches: z.array(z.string()),
@@ -18,11 +18,14 @@ export const deliveryProjection = {
       return { ...state,
         pendingIncoming:state.pendingIncoming||inserted.find(m=>m.source?.kind==='workbench-incoming')?.source.runId||'',
         dispatches: [...new Set([...state.dispatches, ...inserted.filter(m => ['workbench-delegation', 'workbench-owner', 'workbench-incoming'].includes(m.source?.kind)).map(m => m.source.runId)])],
-        through: Math.max(state.through, ...inserted.map(m => m.source?.kind === 'workbench-result' ? Number(m.source.sequence) || 0 : 0)),
+        through: Math.max(state.through, ...inserted.map(m => ['workbench-result','workbench-channel-result'].includes(m.source?.kind) ? Number(m.source.sequence) || 0 : 0)),
       };
     }
     if (event.type === 'user/message') {
       const kind = event.data.source?.kind;
+      // A passive channel receipt may arrive during an active customer turn.
+      // It advances durable delivery only, never changes the turn's authority.
+      if (kind === 'workbench-channel-result') return { ...state, through: Math.max(state.through, Number(event.data.source.sequence) || 0) };
       // Time/context injections are auxiliary messages, not a fresh owner request.
       if (!primary.has(kind)) return state;
       return { ...state, feedback: kind === 'workbench-result',through:kind==='workbench-result'?Math.max(state.through,Number(event.data.source.sequence)||0):state.through,

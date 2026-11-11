@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import {createCRM} from './crm-cli.mjs';
 function fixture({lostCreate=false,lostApprove=false,lostReserve='',status=0,queryError=0,abortAfterCreate,abortAfterSlot,state='provider_accepted',failure=''}={}){
  const states=new Map(),calls=[];let plan,row;
@@ -123,4 +124,128 @@ test('a lost reservation response reads back only the caller’s own attempt',as
   assert.equal(results.filter(result=>result.state==='accepted').length,1);
   assert.equal(f.calls.filter(x=>x==='admin.createAIAssistantPlan').length,1);
  }
+});
+
+function operationsBatchFixture(count,{lostApproval=false,invalid=false,merged=false,edited=false,materialDrift=false,lostCreate=false}={}){
+ const states=new Map(),calls=[];
+ const runId='12345678-1234-4abc-8123-123456789abc';
+ const cover=crypto.createHash('sha256').update(JSON.stringify([303,'cover-version'])).digest('hex');
+ const rows=Array.from({length:count},(_,i)=>({key:'item-'+i,customer:String(i+1),message:'逐人正文 '+i,materials:i===0?[{id:'1070',title:'小程序',appId:'wx-demo',page:'pages/main',version:1,cover}]:[]}));
+ if(invalid)rows.push({key:'missing',customer:'',message:'需要精确客户身份',materials:[]});
+ let saved,plan,approved=false,materialReads=0;
+ const invoke=async(operation,options={})=>{
+  calls.push({operation,options});
+  switch(operation){
+   case 'admin.getCustomerDirectoryDetail': return {canonical_customer_id:merged&&options.params.customer_id==='2'?'20':options.params.customer_id,
+    customer:{customer_id:options.params.customer_id,status:'active'}};
+   case 'admin.getMediaImage': return {item:{id:303,enabled:true,updated_at:'cover-version'}};
+   case 'admin.getMediaMiniProgram': return {item:{id:1070,title:'小程序',app_id:'wx-demo',page_path:'pages/main',version:materialDrift?++materialReads:1,enabled:true,thumbnail_status:'ready',thumb_image_id:303}};
+   case 'admin.createAIAssistantPlan':
+    saved=options.body;
+    plan={id:42,source_kind:saved.source_kind,source_digest:saved.source_digest,target_count:saved.recipients.length,version:1,state:'pending_review'};
+    if(lostCreate)throw Error('lost create response');
+    return {plan};
+   case 'admin.listAIAssistantPlans': return {items:plan?[plan]:[]};
+   case 'admin.getAIAssistantPlan': return {plan};
+   case 'admin.previewAIAssistantPlanApproval':
+    assert.equal(options.body.expected_version,1);
+    return {eligible_count:saved.recipients.length,plan_version:1,preview_digest:'preview'};
+   case 'admin.approveAIAssistantPlan':
+    approved=true;plan={...plan,state:'dispatching',version:2};
+    if(lostApproval)throw Error('lost response');
+    return {plan};
+   case 'admin.listAIAssistantRecipients':
+    return {items:saved.recipients.map((row,i)=>({id:10000+i,customer_id:row.customer_id,staff_id:row.staff_id,version:edited&&i===0?2:1,content_version_id:20000+i,
+     review_state:'pending_review',execution_state:'not_accepted'}))};
+   case 'admin.listAIAssistantExecutionReceipts': {
+    assert(approved);
+    const receipts=saved.recipients.map((row,i)=>({recipient_id:10000+i,customer_id:row.customer_id,staff_id:row.staff_id,
+     receipt:{receipt_found:true,msgid:'original-'+i,query_state:'observed',query_errcode:0,provider_delivery_status:i%3===0?1:i%3===1?2:0,provider_sent_at:'2026-11-11T00:01:00Z'}}));
+    const offset=Number(options.query.cursor||0),end=offset+(options.query.limit||200);
+    return {items:receipts.slice(offset,end),next_cursor:end<receipts.length?String(end):''};
+   }
+   default: throw Error(operation);
+  }
+ };
+ const workerCall=async(path,input)=>{
+  if(path.startsWith('/operations/batch-manifest?'))return {staff:'20',rows,sendEnabled:true};
+  if(path.startsWith('/connector-state?'))return states.get(new URL(path,'http://local').searchParams.get('id'))||{};
+  assert.equal(path,'/connector-state/compare');
+  assert.deepEqual(states.get(input.id)||{},input.expected);
+  states.set(input.id,input.value);
+  return {ok:true};
+ };
+ const crm=createCRM({id:'batch-test',allowedCustomerIds:Array.from({length:count},(_,i)=>i+1)},workerCall,invoke);
+ return {crm,runId,calls,rows};
+}
+
+test('one confirmed work package creates and approves one CRM plan of 5000 personalized recipients',async()=>{
+ const f=operationsBatchFixture(5000);
+ const out=await f.crm.batch({runId:f.runId},true);
+ const created=f.calls.filter(x=>x.operation==='admin.createAIAssistantPlan');
+ assert.equal(created.length,1);
+ assert.equal(created[0].options.body.recipients.length,5000);
+ assert.deepEqual(created[0].options.body.recipients[0].content,[{kind:'text',text:'逐人正文 0'},{kind:'mini_program',material_id:1070}]);
+ assert.equal(f.calls.filter(x=>x.operation==='admin.approveAIAssistantPlan').length,1);
+ assert.equal(out.entries['item-4999'].state,'accepted');
+ const receipts=await f.crm.batch({runId:f.runId},false);
+ assert.equal(receipts.entries['item-0'].state,'sent');
+ assert.equal(receipts.entries['item-1'].state,'failed');
+ assert.equal(receipts.entries['item-2'].state,'pending_confirmation');
+ assert.equal(Object.keys(receipts.entries).length,5000);
+ const verified=new Set(Object.entries(receipts.entries).filter(([,r])=>r.state!=='unknown').map(([key])=>key));
+ for(let i=0;i<20;i++){
+  const page=await f.crm.batch({runId:f.runId},false);
+  for(const [key,value] of Object.entries(page.entries))if(value.state!=='unknown')verified.add(key);
+ }
+ assert.equal(verified.size,5000);
+ assert.equal(f.calls.filter(x=>x.operation==='admin.listAIAssistantExecutionReceipts').length,250);
+});
+
+test('batch excludes a missing identity, recovers a lost approval and never creates or approves again',async()=>{
+ const f=operationsBatchFixture(3,{lostApproval:true,invalid:true});
+ const first=await f.crm.batch({runId:f.runId},true);
+ assert.equal(first.entries.missing.state,'failed');
+ assert.equal(first.entries['item-0'].state,'unknown');
+ const read=await f.crm.batch({runId:f.runId},true);
+ assert.equal(read.plan,'42');
+ assert.equal(read.entries['item-0'].state,'sent');
+ assert.equal(read.entries['item-1'].state,'failed');
+ assert.equal(read.entries['item-2'].state,'pending_confirmation');
+ assert.equal(f.calls.filter(x=>x.operation==='admin.createAIAssistantPlan').length,1);
+ assert.equal(f.calls.filter(x=>x.operation==='admin.approveAIAssistantPlan').length,1);
+});
+
+test('a batch exceeding the CRM body limit is reported without automatic splitting',async()=>{
+ const f=operationsBatchFixture(700);
+ for(const row of f.rows)row.message='x'.repeat(6500);
+ const out=await f.crm.batch({runId:f.runId},true);
+ assert.match(out.entries['item-0'].error,/请求大小/);
+ assert.equal(f.calls.filter(x=>x.operation==='admin.createAIAssistantPlan').length,0);
+});
+
+test('a merged CRM customer does not poison the one submitted plan',async()=>{
+ const f=operationsBatchFixture(3,{merged:true});
+ const result=await f.crm.batch({runId:f.runId},true);
+ assert.equal(result.entries['item-1'].state,'failed');
+ const writes=f.calls.filter(c=>c.operation==='admin.createAIAssistantPlan');
+ assert.equal(writes.length,1);
+ assert.deepEqual(writes[0].options.body.recipients.map(row=>row.customer_id),[1,3]);
+});
+
+test('plan approval stops if CRM content or a card changes after create',async()=>{
+ for(const options of [{edited:true},{materialDrift:true}]){
+  const f=operationsBatchFixture(2,options);
+  const result=await f.crm.batch({runId:f.runId},true);
+  assert.equal(result.entries['item-0'].state,'failed');
+  assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,0);
+ }
+});
+
+test('a verified pending original plan can continue after losing the create response',async()=>{
+ const f=operationsBatchFixture(2,{lostCreate:true});
+ assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'unknown');
+ assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'accepted');
+ assert.equal(f.calls.filter(c=>c.operation==='admin.createAIAssistantPlan').length,1);
+ assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,1);
 });

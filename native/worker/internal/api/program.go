@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.temporal.io/api/enums/v1"
@@ -19,10 +18,12 @@ type ProgramRequest struct {
 	Sources      []core.ResourceSelection `json:"sources"`
 	Destination  string                   `json:"destination"`
 	MethodRef    *core.RecordRef          `json:"methodRef,omitempty"`
+	LatestMethod *core.RecordRef          `json:"latestMethod,omitempty"`
+	Knowledge    *core.Ref                `json:"knowledge,omitempty"`
 }
 
 func (a *Server) programRun(ctx context.Context, p core.Principal, in ProgramRequest) (core.Run, error) {
-	r := core.Run{Quiet: in.Quiet, ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.OperationKey)).String(), Principal: p, Operation: "pipeline", Title: in.Title, Destination: in.Destination, Program: &core.PipelinePlan{Sources: in.Sources}}
+	r := core.Run{Quiet: in.Quiet, ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.OperationKey)).String(), Principal: p, Operation: "pipeline", Title: in.Title, Destination: in.Destination, Program: &core.PipelinePlan{Sources: in.Sources, LatestMethod: in.LatestMethod, Knowledge: in.Knowledge}}
 	if p.Kind != "project" || !core.ValidID(in.OperationKey) || len(in.Sources) == 0 || len(in.Sources) > 16 {
 		return r, core.ErrInvalid
 	}
@@ -37,6 +38,9 @@ func (a *Server) programRun(ctx context.Context, p core.Principal, in ProgramReq
 		resource, e := a.Store.Resource(ctx, source.ResourceID)
 		if e != nil {
 			return r, e
+		}
+		if source.Optional && (source.Refresh || source.Version != "" || resource.OwnerProject != p.ProjectID || source.ResourceID == in.Sources[0].ResourceID) {
+			return r, core.ErrDenied
 		}
 		if source.Refresh && resource.OwnerProject != p.ProjectID && resource.MaintainerProject != p.ProjectID {
 			return r, core.ErrDenied
@@ -62,6 +66,9 @@ func (a *Server) programRun(ctx context.Context, p core.Principal, in ProgramReq
 			if version == "" {
 				version = resource.CurrentVersion
 			}
+			if source.Optional && version == "" {
+				continue
+			}
 			for _, section := range source.Sections {
 				if e = core.Authorize(ctx, a.Store, p, core.Ref{ResourceID: source.ResourceID, Version: version, Section: section}); e != nil {
 					return r, e
@@ -76,7 +83,7 @@ func (a *Server) programRun(ctx context.Context, p core.Principal, in ProgramReq
 		if in.Selection != nil {
 			return r, core.ErrInvalid
 		}
-		if in.MethodRef != nil {
+		if in.MethodRef != nil || in.LatestMethod != nil || in.Knowledge != nil {
 			return r, core.ErrInvalid
 		}
 		for _, s := range in.Sources {
@@ -91,32 +98,21 @@ func (a *Server) programRun(ctx context.Context, p core.Principal, in ProgramReq
 		return r, e
 	}
 	r.Selection = selection
-	if in.MethodRef == nil {
+	if (in.MethodRef == nil) == (in.LatestMethod == nil) {
 		return r, core.ErrInvalid
 	}
-	records, e := a.Store.ReadIDs(ctx, p, in.MethodRef.Ref, []string{in.MethodRef.ID})
-	if e != nil {
+	if in.LatestMethod != nil {
+		if in.LatestMethod.Ref.Version != "" {
+			return r, core.ErrInvalid
+		}
+		_, _, e = a.Store.LoadMethod(ctx, p, *in.LatestMethod)
 		return r, e
 	}
-	if len(records) != 1 {
+	if in.MethodRef.Ref.Version == "" {
 		return r, core.ErrInvalid
 	}
-	bytes, e := json.Marshal(records[0].Fields["method"])
-	if e != nil {
-		return r, e
-	}
-	if e = json.Unmarshal(bytes, &r.Method); e != nil {
-		return r, core.ErrInvalid
-	}
-	if r.Method.Instructions == "" || len(r.Method.Instructions) > 64000 {
-		return r, core.ErrInvalid
-	}
-	if _, e = r.Method.ResolveOutput(); e != nil {
-		return r, e
-	}
-	r.Method.Digest = ""
-	r.Method.Digest = core.Digest(r.Method)
-	return r, nil
+	r.Method, _, e = a.Store.LoadMethod(ctx, p, *in.MethodRef)
+	return r, e
 }
 func (a *Server) programTools(s *mcp.Server, p core.Principal) {
 	mcp.AddTool(s, &mcp.Tool{Name: "run_steps", Description: "Read the steps of one grouped program with real execution states. It never reruns work."}, func(ctx context.Context, _ *mcp.CallToolRequest, in RunRef) (*mcp.CallToolResult, struct {
