@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"workbench-native/internal/core"
+	"workbench-native/internal/engine"
 )
 
 func TestOperationsDraftRequiresEvidenceAndContent(t *testing.T) {
@@ -66,5 +67,26 @@ func TestOperationsReviewJudgmentSupportsPublishedLocalDrafts(t *testing.T) {
 	row.Judgment = legacy
 	if body, err := json.Marshal(operationsReviewJudgment(row, false)); err != nil || string(body) != string(legacy) {
 		t.Fatalf("legacy review judgment changed: %s, %v", body, err)
+	}
+}
+
+func TestOperationsReviewRouteChecksCurrentStrategyAndDestinations(t *testing.T) {
+	cfg := operationsConfig{Cycle: &engine.OperationsCycleInput{
+		StrategyKeys: []string{"hxc:ongoing"}, SelectedDestination: "ongoing-selected", DraftDestination: "ongoing-drafts",
+		AdditionalBatch: &engine.OperationsCycleBatch{Strategy: "hxc:onboarding", SelectedDestination: "newcomer-selected", DraftDestination: "newcomer-drafts"},
+	}}
+	parent := core.Run{Operation: "operations_package", Shared: map[string]any{"local": true, "strategy": "hxc:onboarding"},
+		Operations: &core.OperationsSpec{Review: &core.OperationsDrafts{Selection: core.Ref{ResourceID: "newcomer-selected"}, Drafts: []core.Ref{{ResourceID: "newcomer-drafts"}}}}}
+	if !operationsReviewRouteAllowed(cfg, parent) {
+		t.Fatal("the configured newcomer batch should be reviewable")
+	}
+	parent.Operations.Review.Drafts[0].ResourceID = "ongoing-drafts"
+	if operationsReviewRouteAllowed(cfg, parent) {
+		t.Fatal("a batch with another strategy's drafts should not confirm")
+	}
+	parent.Operations.Review.Drafts[0].ResourceID = "newcomer-drafts"
+	cfg.Cycle.AdditionalBatch = nil
+	if operationsReviewRouteAllowed(cfg, parent) {
+		t.Fatal("removing the strategy must close its confirmation route")
 	}
 }

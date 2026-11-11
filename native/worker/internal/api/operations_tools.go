@@ -123,7 +123,9 @@ func (a *Server) prepareLocalOperations(ctx context.Context, p core.Principal, i
 		return nil, RunRef{}, core.ErrDenied
 	}
 	cycle := cfg.Cycle
-	if len(cycle.StrategyKeys) != 1 || selected.Operations.StrategyKeys[0] != cycle.StrategyKeys[0] || selected.Destination != cycle.SelectedDestination || clean.Destination != cycle.CleanDestination || cycle.MethodSource == nil {
+	strategy := selected.Operations.StrategyKeys[0]
+	batch, allowed := cycle.Batch(strategy)
+	if !allowed || selected.Destination != batch.SelectedDestination || clean.Destination != cycle.CleanDestination || cycle.MethodSource == nil {
 		return nil, RunRef{}, core.ErrDenied
 	}
 	if cycle.HistorySource == nil || cycle.StrategySource == nil || in.Review.Selection.Section != cycle.Section {
@@ -151,7 +153,7 @@ func (a *Server) prepareLocalOperations(ctx context.Context, p core.Principal, i
 	methodVersion := uuid.NewSHA1(uuid.NameSpaceURL, []byte(clean.ID+"/sync/"+cycle.MethodSource.ResourceID)).String()
 	for _, ref := range in.Review.Drafts {
 		generated, err := a.Store.Run(ctx, p, ref.Version)
-		if err != nil || generated.Destination != cycle.DraftDestination || generated.MethodPointer != "/actions/0/generation/skill_key" || len(generated.MethodRefs) != len(cycle.MethodRefs) {
+		if err != nil || generated.Destination != batch.DraftDestination || generated.MethodPointer != "/actions/0/generation/skill_key" || len(generated.MethodRefs) != len(cycle.MethodRefs) {
 			return nil, RunRef{}, core.ErrDenied
 		}
 		for key, expected := range cycle.MethodRefs {
@@ -173,6 +175,6 @@ func (a *Server) prepareLocalOperations(ctx context.Context, p core.Principal, i
 	if e = core.AuthorizeAll(ctx, a.Store, p, refs); e != nil {
 		return nil, RunRef{}, e
 	}
-	run := core.Run{ID: id, Principal: p, Operation: "operations_package", Title: "原策略整批稿件", Quiet: true, ExplicitInputs: true, Destination: cfg.Input.ResourceID, Sources: refs, Operations: &core.OperationsSpec{Review: in.Review}, Shared: map[string]any{"local": true, "day": at.Format("2006-01-02"), "strategy": selected.Operations.StrategyKeys[0], "scene": "原策略运营", "package": "weekpkg-" + id, "week": fmt.Sprintf("%04d-W%02d", year, week)}}
+	run := core.Run{ID: id, Principal: p, Operation: "operations_package", Title: "原策略整批稿件", Quiet: true, ExplicitInputs: true, Destination: cfg.Input.ResourceID, Sources: refs, Operations: &core.OperationsSpec{Review: in.Review}, Shared: map[string]any{"local": true, "day": at.Format("2006-01-02"), "strategy": strategy, "scene": "原策略运营", "package": "weekpkg-" + id, "week": fmt.Sprintf("%04d-W%02d", year, week)}}
 	return a.submitOperation(ctx, p, run)
 }

@@ -24,6 +24,8 @@ flowchart LR
 
 固定定时入口为现有本人接口 `POST /operations/original-schedule` 的 `cycle` 配置，保存四份来源、三个目标资源和六份原方法引用；不使用通用 `program_run` 方案。先在同项目登记资源、原 CRM transport 和员工，再安装定时。原有新工作台分开的资料/策略任务由该入口暂停；原服务器的任务与配置保持只读。
 
+常态服务与新人承接可配置在同一条日程。`cycle.additionalBatch` 指定第二条原策略及独立的名单、稿件资源。两包复用同轮清洗、策略、历史和方法快照，并按相同时间逐人判断；每包独立备稿与确认。迁入策略的旧包归入历史。原发送范围继续由 `WORKBENCH_OPERATIONS_BATCH_STRATEGY` 控制，第二条策略按同样方式由 `WORKBENCH_OPERATIONS_ADDITIONAL_BATCH_STRATEGY` 单独开放。
+
 确认入口继续使用 `/operations/source-confirm`，确认版本固定名单、正文、素材及员工。连接器执行 CRM 原审核合同；企微必要的员工确认仍由平台处理。创建或审核前集中检查当前业务事实；网络结果未知只查原请求、原计划。
 
 规则验收见 [42 条策略矩阵](OPERATIONS-ACCEPTANCE.md)。旧自动化程序按用户要求保持现状；当前读取其联系和执行历史，不声称跨系统原子互斥。真实客户发送必须在正式任务库留下计划和逐人回执，不能在隔离库发送后丢弃业务记录。

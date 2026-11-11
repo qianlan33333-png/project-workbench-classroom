@@ -20,7 +20,7 @@ import (
 
 func OperationsBatchEnabled(strategy, staff string) bool {
 	return strategy != "" && staff != "" && strings.TrimSpace(os.Getenv("WORKBENCH_OPERATIONS_STAFF_NAME")) != "" &&
-		os.Getenv("WORKBENCH_OPERATIONS_BATCH_STRATEGY") == strategy &&
+		(os.Getenv("WORKBENCH_OPERATIONS_BATCH_STRATEGY") == strategy || os.Getenv("WORKBENCH_OPERATIONS_ADDITIONAL_BATCH_STRATEGY") == strategy) &&
 		os.Getenv("WORKBENCH_OPERATIONS_ORIGINAL_STAFF_ID") == staff &&
 		os.Getenv("WORKBENCH_OPERATIONS_ORIGINAL_SEND") != "1"
 }

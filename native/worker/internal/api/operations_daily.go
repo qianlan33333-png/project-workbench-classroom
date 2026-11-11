@@ -156,19 +156,32 @@ func (a *Server) operationsToday(w http.ResponseWriter, r *http.Request) {
 			attention = true
 			continue
 		}
+		strategy, _ := run.Shared["strategy"].(string)
+		local := core.IsLocalOperations(run)
+		replaced := false
+		if cfg.Cycle != nil && !local {
+			_, replaced = cfg.Cycle.Batch(strategy)
+		}
 		if !history {
+			if replaced {
+				continue
+			}
 			key := core.Digest([]any{run.Shared["strategy"], run.Shared["scene"]})
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 		}
-		processed := review.Confirm != "" || run.Shared["day"] != day
+		processed := replaced || review.Confirm != "" || run.Shared["day"] != day
 		if history != processed || review.Count == 0 {
 			continue
 		}
+		label := run.Title
+		if local && strategy == "hxc:onboarding" {
+			label = "新人前 7 天承接"
+		}
 		packages = append(packages, map[string]any{"daily": run.ID, "run_id": review.Run, "package_id": review.Package,
-			"label": run.Title, "scene_label": run.Shared["scene"], "week": review.Week, "day": run.Shared["day"], "pending": review.Count})
+			"label": label, "scene_label": run.Shared["scene"], "week": review.Week, "day": run.Shared["day"], "pending": review.Count})
 	}
 	if err = rows.Err(); err != nil {
 		respond(w, nil, err)
@@ -207,7 +220,7 @@ func (a *Server) operationsReviewView(ctx context.Context, p core.Principal, cfg
 	name := operationsStaffName(cfg)
 	strategy, _ := run.Shared["strategy"].(string)
 	local := core.IsLocalOperations(run)
-	editable := (cfg.Cycle == nil || local) && head.Confirm == "" && head.Edit == "" && run.Shared["day"] == operationsDay(time.Now())
+	editable := operationsReviewRouteAllowed(cfg, run) && head.Confirm == "" && head.Edit == "" && run.Shared["day"] == operationsDay(time.Now())
 	canSend := editable && head.Count > 0 && name != "" && cfg.Transport != "" && engine.OperationsBatchEnabled(strategy, cfg.Staff)
 	view := map[string]any{"state": "ready", "run": head.Run, "digest": head.Digest,
 		"reviewVersion": core.OperationsReviewVersion(head, cfg.Transport, cfg.Staff, name), "sendEnabled": canSend,
@@ -257,6 +270,20 @@ func (a *Server) operationsReviewView(ctx context.Context, p core.Principal, cfg
 	}
 	view["rows"] = result
 	return view, nil
+}
+
+func operationsReviewRouteAllowed(cfg operationsConfig, run core.Run) bool {
+	if cfg.Cycle == nil {
+		return !core.IsLocalOperations(run)
+	}
+	if !core.IsLocalOperations(run) || run.Operations == nil || run.Operations.Review == nil {
+		return false
+	}
+	strategy, _ := run.Shared["strategy"].(string)
+	batch, ok := cfg.Cycle.Batch(strategy)
+	review := run.Operations.Review
+	return ok && review.Selection.ResourceID == batch.SelectedDestination && len(review.Drafts) > 0 &&
+		!slices.ContainsFunc(review.Drafts, func(ref core.Ref) bool { return ref.ResourceID != batch.DraftDestination })
 }
 
 func operationsReviewJudgment(row core.OperationsReviewRow, local bool) any {
@@ -438,7 +465,7 @@ func (a *Server) confirmDailyOperations(w http.ResponseWriter, r *http.Request) 
 		respond(w, RunRef{RunID: id}, nil)
 		return
 	}
-	if cfg.Cycle != nil && !core.IsLocalOperations(parent) {
+	if !operationsReviewRouteAllowed(cfg, parent) {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
@@ -519,7 +546,7 @@ func (a *Server) operationsBatchWriteCheck(ctx context.Context, id, connection s
 	if err != nil {
 		return false, err
 	}
-	if cfg.Cycle != nil && !core.IsLocalOperations(parent) {
+	if !operationsReviewRouteAllowed(cfg, parent) {
 		return false, nil
 	}
 	strategy, _ := run.Shared["strategy"].(string)

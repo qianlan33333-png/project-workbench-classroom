@@ -32,11 +32,28 @@ type OperationsCycleInput struct {
 	Limit               int                       `json:"limit,omitempty"`
 	SelectedDestination string                    `json:"selectedDestination"`
 	DraftDestination    string                    `json:"draftDestination"`
+	AdditionalBatch     *OperationsCycleBatch     `json:"additionalBatch,omitempty"`
 	MethodRef           core.RecordRef            `json:"methodRef"`
 	MethodRefs          map[string]core.RecordRef `json:"methodRefs,omitempty"`
 	Section             string                    `json:"section"`
 	Resume              bool                      `json:"resume,omitempty"`
 }
+type OperationsCycleBatch struct {
+	Strategy            string `json:"strategy"`
+	SelectedDestination string `json:"selectedDestination"`
+	DraftDestination    string `json:"draftDestination"`
+}
+
+func (in OperationsCycleInput) Batch(strategy string) (OperationsCycleBatch, bool) {
+	if len(in.StrategyKeys) == 1 && in.StrategyKeys[0] == strategy {
+		return OperationsCycleBatch{strategy, in.SelectedDestination, in.DraftDestination}, true
+	}
+	if in.AdditionalBatch != nil && in.AdditionalBatch.Strategy == strategy {
+		return *in.AdditionalBatch, true
+	}
+	return OperationsCycleBatch{}, false
+}
+
 type OperationCall struct {
 	Principal core.Principal
 	Name      string
@@ -248,75 +265,89 @@ func OperationsCycle(ctx workflow.Context, in OperationsCycleInput) (err error) 
 		strategies = ref(in.StrategySource.ResourceID, stepID(clean, "sync/"+in.StrategySource.ResourceID))
 		strategies.Section = in.StrategySource.Sections[0]
 	}
-	selectArgs := map[string]any{"operationKey": id + "-select", "data": ref(in.CleanDestination, clean), "strategies": strategies, "history": history, "strategyKeys": in.StrategyKeys, "destination": in.SelectedDestination, "asOf": stamp}
-	if in.Limit > 0 {
-		selectArgs["limit"] = in.Limit
+	prepare := func(key string, strategyKeys []string, selectedDestination, draftDestination string) (string, error) {
+		selectArgs := map[string]any{"operationKey": key + "-select", "data": ref(in.CleanDestination, clean), "strategies": strategies, "history": history, "strategyKeys": strategyKeys, "destination": selectedDestination, "asOf": stamp}
+		if in.Limit > 0 {
+			selectArgs["limit"] = in.Limit
+		}
+		selected, e := step("strategy_select", selectArgs)
+		if e != nil {
+			return "", e
+		}
+		var count int
+		if e = workflow.ExecuteActivity(ctx, "OperationsSelectedCount", in.Principal, ref(selectedDestination, selected)).Get(ctx, &count); e != nil {
+			return "", e
+		}
+		if count > 5000 {
+			return "", failure(core.ErrInvalid)
+		}
+		if count == 0 {
+			return "", nil
+		}
+		generateArgs := map[string]any{"operationKey": key + "-generate", "title": "按原策略生成话术", "sources": []core.Ref{ref(selectedDestination, selected)}, "destination": draftDestination}
+		methodRefInput := in.MethodRef
+		methodRefsInput := in.MethodRefs
+		if in.MethodSource != nil {
+			methodRef := ref(in.MethodSource.ResourceID, stepID(clean, "sync/"+in.MethodSource.ResourceID))
+			methodRef.Section = in.MethodSource.Sections[0]
+			methodRefInput.Ref = methodRef
+			methods := map[string]core.RecordRef{}
+			for key, item := range in.MethodRefs {
+				item.Ref = methodRef
+				methods[key] = item
+			}
+			methodRefsInput = methods
+		}
+		if len(methodRefsInput) > 0 {
+			generateArgs["methodRefs"] = methodRefsInput
+			generateArgs["methodPointer"] = "/actions/0/generation/skill_key"
+		} else {
+			generateArgs["methodRef"] = methodRefInput
+		}
+
+		drafts := []core.Ref{}
+		after := ""
+		total := 0
+		for part := 0; ; part++ {
+			var page core.SelectionInfo
+			if e = workflow.ExecuteActivity(ctx, "OperationsGenerationPage", in.Principal, ref(selectedDestination, selected), after).Get(ctx, &page); e != nil {
+				return "", e
+			}
+			if page.SelectedCount == 0 {
+				return "", failure(core.ErrConflict)
+			}
+			generateArgs["operationKey"] = key + "-generate-" + strconv.Itoa(part)
+			generateArgs["selection"] = core.Selection{After: after, Limit: 2000}
+			generated, err := step("batch_generate", generateArgs)
+			if err != nil {
+				return "", err
+			}
+			drafts = append(drafts, ref(draftDestination, generated))
+			total += page.SelectedCount
+			if page.NextAfter == "" {
+				break
+			}
+			after = page.NextAfter
+		}
+		if total != count {
+			return "", failure(core.ErrConflict)
+		}
+		pushed, e := step("crm_push", map[string]any{"operationKey": key + "-crm", "title": "原策略整批稿件", "review": core.OperationsDrafts{Selection: ref(selectedDestination, selected), Drafts: drafts}})
+		if e != nil {
+			return "", e
+		}
+		return pushed, nil
 	}
-	selected, e := step("strategy_select", selectArgs)
+	pushed, e := prepare(id, in.StrategyKeys, in.SelectedDestination, in.DraftDestination)
 	if e != nil {
 		return e
 	}
-	var count int
-	if e = workflow.ExecuteActivity(ctx, "OperationsSelectedCount", in.Principal, ref(in.SelectedDestination, selected)).Get(ctx, &count); e != nil {
-		return e
-	}
-	if count > 5000 {
-		return failure(core.ErrInvalid)
-	}
-	if count == 0 {
-		return workflow.ExecuteActivity(ctx, "OperationsCycleSubmitted", id, "").Get(ctx, nil)
-	}
-	generateArgs := map[string]any{"operationKey": id + "-generate", "title": "按原策略生成话术", "sources": []core.Ref{ref(in.SelectedDestination, selected)}, "destination": in.DraftDestination}
-	methodRefInput := in.MethodRef
-	methodRefsInput := in.MethodRefs
-	if in.MethodSource != nil {
-		methodRef := ref(in.MethodSource.ResourceID, stepID(clean, "sync/"+in.MethodSource.ResourceID))
-		methodRef.Section = in.MethodSource.Sections[0]
-		methodRefInput.Ref = methodRef
-		methods := map[string]core.RecordRef{}
-		for key, item := range in.MethodRefs {
-			item.Ref = methodRef
-			methods[key] = item
-		}
-		methodRefsInput = methods
-	}
-	if len(methodRefsInput) > 0 {
-		generateArgs["methodRefs"] = methodRefsInput
-		generateArgs["methodPointer"] = "/actions/0/generation/skill_key"
-	} else {
-		generateArgs["methodRef"] = methodRefInput
-	}
-
-	drafts := []core.Ref{}
-	after := ""
-	total := 0
-	for part := 0; ; part++ {
-		var page core.SelectionInfo
-		if e = workflow.ExecuteActivity(ctx, "OperationsGenerationPage", in.Principal, ref(in.SelectedDestination, selected), after).Get(ctx, &page); e != nil {
+	if batch := in.AdditionalBatch; batch != nil {
+		additional, e := prepare(id+"-additional", []string{batch.Strategy}, batch.SelectedDestination, batch.DraftDestination)
+		if e != nil {
 			return e
 		}
-		if page.SelectedCount == 0 {
-			return failure(core.ErrConflict)
-		}
-		generateArgs["operationKey"] = id + "-generate-" + strconv.Itoa(part)
-		generateArgs["selection"] = core.Selection{After: after, Limit: 2000}
-		generated, err := step("batch_generate", generateArgs)
-		if err != nil {
-			return err
-		}
-		drafts = append(drafts, ref(in.DraftDestination, generated))
-		total += page.SelectedCount
-		if page.NextAfter == "" {
-			break
-		}
-		after = page.NextAfter
-	}
-	if total != count {
-		return failure(core.ErrConflict)
-	}
-	pushed, e := step("crm_push", map[string]any{"operationKey": id + "-crm", "title": "原策略整批稿件", "review": core.OperationsDrafts{Selection: ref(in.SelectedDestination, selected), Drafts: drafts}})
-	if e != nil {
-		return e
+		return workflow.ExecuteActivity(ctx, "OperationsCycleBatchesSubmitted", id, []string{pushed, additional}).Get(ctx, nil)
 	}
 	return workflow.ExecuteActivity(ctx, "OperationsCycleSubmitted", id, pushed).Get(ctx, nil)
 }
@@ -369,13 +400,26 @@ func (a *Activities) OperationsCancelStep(ctx context.Context, p core.Principal,
 	return ctx.Err()
 }
 func (a *Activities) OperationsCycleSubmitted(ctx context.Context, id, batch string) error {
+	return a.OperationsCycleBatchesSubmitted(ctx, id, []string{batch})
+}
+
+func (a *Activities) OperationsCycleBatchesSubmitted(ctx context.Context, id string, batches []string) error {
 	r, e := a.Store.ExecutionRun(ctx, id)
 	if e != nil {
 		return failure(e)
 	}
-	text := "本轮备稿完成，等待一次整批确认；实际发送以 CRM 逐人回执为准。"
-	if batch == "" {
-		text = "本轮没有满足原策略的可执行名单，未生成或外发。"
+	ready := []string{}
+	for _, batch := range batches {
+		if batch != "" {
+			ready = append(ready, batch)
+		}
 	}
-	return a.Store.Emit(ctx, core.RunEvent{ID: id + "-submitted", SessionID: r.Principal.SessionID, RunID: id, Kind: "operations.submitted", Text: text, Details: map[string]any{"crmRunId": batch}})
+	text := "本轮备稿完成，请核对各工作包。"
+	first := ""
+	if len(ready) == 0 {
+		text = "本轮没有满足原策略的可执行名单，未生成或外发。"
+	} else {
+		first = ready[0]
+	}
+	return a.Store.Emit(ctx, core.RunEvent{ID: id + "-submitted", SessionID: r.Principal.SessionID, RunID: id, Kind: "operations.submitted", Text: text, Details: map[string]any{"crmRunId": first, "crmRunIds": ready}})
 }

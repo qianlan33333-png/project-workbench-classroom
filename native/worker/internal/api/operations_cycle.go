@@ -42,7 +42,14 @@ func (a *Server) configureLocalOperationsSchedule(ctx context.Context, cfg opera
 			return view, e
 		}
 	}
-	for _, id := range []string{in.CleanDestination, in.SelectedDestination, in.DraftDestination} {
+	destinations := []string{in.CleanDestination, in.SelectedDestination, in.DraftDestination}
+	if batch := in.AdditionalBatch; batch != nil {
+		if batch.Strategy == strategy || !originalOperationsStrategy.MatchString(batch.Strategy) {
+			return view, core.ErrInvalid
+		}
+		destinations = append(destinations, batch.SelectedDestination, batch.DraftDestination)
+	}
+	for _, id := range destinations {
 		if seen[id] {
 			return view, core.ErrInvalid
 		}
