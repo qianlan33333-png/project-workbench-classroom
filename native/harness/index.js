@@ -15,6 +15,7 @@ import { toolNamespace, namespaceOfTool } from './tool-namespace.js';
 import { installPersonalMemory } from './personal-memory.js';
 import { replyEvidenceProjection } from './reply-evidence.js';
 import { resourceDocuments } from './resource-documents.js';
+import {directoryVault, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
 import { createSuperAgent } from './superagent.js';
@@ -396,6 +397,12 @@ export async function apply(ctx, config) {
           try {
             const u = new URL(req.url, "http://localhost");
             const path = u.pathname.slice("/workbench-api".length);
+            if (req.method === "GET" && path === "/vault-editor.js") {
+              const script = await readFile(new URL("./vault-editor.bundle.js", import.meta.url));
+              res.writeHead(200, {"content-type":"text/javascript; charset=utf-8"});
+              res.end(script);
+              return;
+            }
             if (path.startsWith("/operations/")) {
               const projectId = u.searchParams.get("projectId");
               const project = (await syncProjects()).find(item => item.id === projectId);
@@ -450,6 +457,36 @@ export async function apply(ctx, config) {
               const projectId=u.searchParams.get('projectId'),resourceId=u.searchParams.get('resourceId');
               if(!(await syncProjects()).some(p=>p.id===projectId))throw requestError('项目不存在',404);
               json(res,200,await resourceDocuments(config,call,projectId,resourceId,u.searchParams.get('uri')||undefined));return;
+            }
+            if (req.method === "GET" && path === "/vault-view") {
+              const resourceId = u.searchParams.get("resourceId");
+              const resource = (await call("/resources")).find(r => r.id === resourceId);
+              if (!resource?.currentVersion) throw requestError("语料库不存在或尚未发布", 404);
+              const version = u.searchParams.get("version") || resource.currentVersion;
+              const projectId = u.searchParams.get("projectId") || resource.ownerProject;
+              const section = resource.sections.find(s => s.fields.includes("name") &&
+                (s.fields.includes("text") || s.fields.includes("markdown")));
+              const connection = resource.connectionId
+                ? (await call("/connections")).find(c => c.id === resource.connectionId)
+                : undefined;
+              const editable = resource.relation === "obsidian-vault" && !resource.connectionId;
+              let notes;
+              if (editable || connection?.kind === "directory") {
+                if (!section) throw requestError("语料库缺少文档板块", 409);
+                notes = await directoryVault(call, {...resource,currentVersion:version}, section.id);
+              } else if (projectId && (await syncProjects()).some(p => p.id === projectId)) {
+                const external = await resourceDocuments(config, call, projectId, resourceId, undefined, {all:true,version});
+                if (external.external) notes = external.notes;
+              }
+              if (!notes) {
+                json(res, 200, {supported:false});
+                return;
+              }
+              const requested = u.searchParams.get("note") ?? undefined;
+              const view = vaultView(notes, requested, (u.searchParams.get("search") || "").slice(0, 200));
+              if (requested && !view.document) throw requestError("笔记不存在", 404);
+              json(res, 200, {supported:true, editable, version, ...view});
+              return;
             }
             if(req.method==='GET'&&path==='/reply-experts'){
               const project=(await syncProjects()).find(p=>p.id===u.searchParams.get('projectId'));
@@ -575,6 +612,8 @@ export async function apply(ctx, config) {
               "/notifications",
             ]);
             const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause","/business-policies",
+              "/vault-create",
+              "/vault-save",
               "/resources",
               "/connections",
               "/grants",

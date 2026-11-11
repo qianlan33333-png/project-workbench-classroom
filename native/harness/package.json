@@ -3,8 +3,15 @@
   "version": "0.1.1",
   "private": true,
   "dependencies": {
+    "@quartz-community/remark-obsidian": "2.2.1",
     "p-queue": "10.0.0",
-    "@modelcontextprotocol/sdk": "1.32.2"
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "rehype-sanitize": "6.0.0",
+    "rehype-stringify": "10.0.1",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "remark-rehype": "11.1.2",
+    "unified": "11.0.5"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-mcp-client": "0.2.2-rc.1",
@@ -38,7 +45,10 @@
     "owner-catalog.js",
     "reply-evidence.js",
     "channel-context.js",
-    "resource-documents.js"
+    "resource-documents.js",
+    "vault-markdown.js",
+    "vault-editor.bundle.js",
+    "vault-editor.LICENSES.txt"
   ],
   "dsh": {
     "bundle": {

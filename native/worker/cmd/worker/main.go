@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -177,7 +178,18 @@ func run() error {
 		return errors.New("worker HTTP must bind loopback")
 	}
 	var backgroundReady atomic.Bool
-	apiServer := &api.Server{Store: s, Temporal: c, Token: os.Getenv("WORKBENCH_HOST_TOKEN"), CustomerClients: customerClients, CustomerStore: customerStore, Host: bridge, BackgroundReady: backgroundReady.Load}
+	vaultRoot := os.Getenv("WORKBENCH_VAULT_ROOT")
+	if vaultRoot == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		vaultRoot = filepath.Join(home, ".local", "share", "project-workbench", "vaults")
+	}
+	if !filepath.IsAbs(vaultRoot) {
+		return errors.New("WORKBENCH_VAULT_ROOT must be an absolute path")
+	}
+	apiServer := &api.Server{Store: s, Temporal: c, Token: os.Getenv("WORKBENCH_HOST_TOKEN"), CustomerClients: customerClients, CustomerStore: customerStore, Host: bridge, VaultRoot: vaultRoot, BackgroundReady: backgroundReady.Load}
 	server := &http.Server{Addr: address, Handler: apiServer.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	errCh := make(chan error, 1)
 	listener, e := net.Listen("tcp", address)

@@ -33,6 +33,7 @@ type Server struct {
 	personalMu      sync.Mutex
 	operationsMu    sync.Mutex
 	Host            engine.AgentHost
+	VaultRoot       string
 	BackgroundReady func() bool
 }
 type principalKey struct{}
@@ -50,6 +51,7 @@ func (a *Server) Handler() http.Handler {
 	a.replyRoutes(mux)
 	a.scheduleRoutes(mux)
 	a.resourceRoutes(mux)
+	a.vaultRoutes(mux)
 	a.operationsRoutes(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)

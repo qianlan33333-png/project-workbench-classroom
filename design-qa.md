@@ -97,3 +97,12 @@ final result: passed
 Product Design 对照用户附图。保留工作台现有样式，将同名工作包按场景分开，核对页同时展示目录候选、可处理与实际名单。档案页增加全量计数和原中心搜索，逐人明细按来源分组。当前事实、待核线索、历史补充在字段旁说明。隔离 Harness 的桌面与 390px 截图已查看，浏览器验证名单、搜索、来源标记与返回。截图 `.var/operations/parity-package.png`、`parity-profile.png`、`parity-mobile.png` 均使用合成界面数据。真实同人来源和人数见验收记录。
 
 final result: passed
+## 2026-11-12 语料库 · Obsidian 阅读与编辑
+
+**final result: passed**
+
+用户选定的第 1 张视觉稿，见 `.var/vault-browser/reference.png`。同尺寸阅读状态对照见 `.var/vault-browser/comparison.png`，左侧为稿件，右侧为隔离 Harness 的真实页面。两个桌面内容视口均为 1487 × 1058，DPR 1。移动端浏览器视口为 390 × 844，内容截图为 `.var/vault-browser/mobile.png`。
+
+初版阅读字号和标题间距偏紧，已调整标题、正文、目录搜索和段间留白。复验为白底、细线分隔、左侧目录、正文链接蓝色和底部反链折叠。系统字体和导航控件沿用 Harness。文件名按目录顺序呈现，隔离库标题与稿件不同，并显示实际的「新增笔记」操作。移动端目录折叠后正文完整可读，边缘命中语料页面，未出现横向溢出。
+
+浏览器旅程覆盖名称创建、目录展开、中文双链、标题跳转、反向链接、CodeMirror 编辑、保存后读取和正文搜索。资料及新增内容均为隔离数据。

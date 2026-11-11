@@ -12,3 +12,5 @@ artifacts/
 __pycache__/
 *.pyc
 runtime/.local/
+native/harness/vault-editor.bundle.js
+native/harness/vault-editor.LICENSES.txt

@@ -4,7 +4,7 @@ window.__ModuleLoader__.load({
     const React = require("react"),
       h = React.createElement;
     const { useState, useEffect, useRef, useSyncExternalStore } = React;
-    const {IconClockOutlineRegular, IconDatabaseOutlineRegular}=require("@deepseek-ai/dsh-client-ui-primitives");
+    const {IconClockOutlineRegular, IconDatabaseOutlineRegular, IconFolderOpenOutlineRegular}=require("@deepseek-ai/dsh-client-ui-primitives");
     let resourceProject="";
     let requestedBusinessPolicy=new URLSearchParams(window.location.search).get("businessPolicy");
     const css = `.wb-page{height:100%;overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:14px;line-height:1.6}.wb-content{max-width:960px;margin:auto;padding:28px clamp(20px,4vw,48px) 48px}.wb-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}.wb-heading h1{font-size:20px;font-weight:500;margin:0}.wb-page button,.wb-inline{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:6px 12px;cursor:pointer}.wb-short-label{display:none}@media(max-width:600px){.wb-full-label{display:none}.wb-short-label{display:inline}.wb-inline{font-size:12px;padding:4px 6px}}.wb-page button:disabled{opacity:.5;cursor:wait}.wb-page textarea{font:inherit;width:100%;box-sizing:border-box;min-height:88px;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:10px}.wb-page input,.wb-page select{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:7px 10px;min-width:0;max-width:100%;box-sizing:border-box}.wb-muted{color:var(--dsw-alias-label-secondary)}.wb-list{border-top:1px solid var(--dsw-alias-border-l3)}.wb-row{display:flex;gap:16px;align-items:center;padding:18px 0;border-bottom:1px solid var(--dsw-alias-border-l3);flex-wrap:wrap}.wb-row-main{flex:1;min-width:180px}.wb-row strong{font-weight:500}.wb-tag{font-size:12px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l3);border-radius:6px}.wb-form{padding:20px 0;display:grid;gap:16px}.wb-field{display:grid;gap:6px;min-width:0}.wb-columns{display:grid;grid-template-columns:1fr 1fr;gap:16px}.wb-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start}.wb-form>h2{font-size:16px;font-weight:500;margin:0}.wb-note{padding:12px 0;overflow-wrap:anywhere}.wb-check{display:flex;gap:8px;align-items:center;padding:6px 0}.wb-section{border:1px solid var(--dsw-alias-border-l3);border-radius:10px;padding:16px;margin-top:12px}.wb-section h2{font-size:16px;font-weight:500;margin:0 0 8px}@media(max-width:600px){.wb-columns{grid-template-columns:1fr}.wb-heading{align-items:flex-start}.wb-row-main{min-width:140px}}`;
@@ -94,9 +94,185 @@ window.__ModuleLoader__.load({
           !rows.length && h("p",{className:"wb-muted"},"还没有口径。")));
     }
 
+    const vaultCss = `
+      .wb-vault{display:flex;flex-direction:column;overflow:hidden}
+      .wb-vault-toolbar{display:flex;align-items:center;gap:20px;flex-wrap:wrap;padding:14px 24px;font-size:18px;border-bottom:1px solid var(--dsw-alias-border-l3)}
+      .wb-vault-toolbar button{padding:8px 16px}
+      .wb-vault-toolbar strong{flex:1;min-width:0;overflow-wrap:anywhere}
+      .wb-vault-layout{display:grid;grid-template-columns:minmax(180px,24%) minmax(0,1fr);flex:1;min-height:0}
+      .wb-vault-tree{padding:25px 26px;font-size:19px;border-right:1px solid var(--dsw-alias-border-l3);overflow:auto}
+      .wb-vault-tree input{width:100%;margin-bottom:26px;padding:12px}
+      .wb-vault-tree details>div{padding-inline-start:12px}
+      .wb-vault-tree summary,.wb-vault-backlinks summary{cursor:pointer;padding:7px 0;overflow-wrap:anywhere}
+      .wb-vault-tree summary svg{width:18px;height:18px;vertical-align:-3px;margin-inline:5px 7px}
+      .wb-vault-tree button{background:transparent;border:0;padding:7px 10px;width:100%;text-align:left;overflow-wrap:anywhere}
+      .wb-vault-tree button:hover,.wb-vault-tree button[aria-current=true]{background:var(--dsw-alias-interactive-bg-hover)}
+      .wb-vault-body{padding:60px clamp(26px,4vw,58px) 48px;overflow:auto;min-width:0;overflow-wrap:anywhere;font-size:22px;line-height:1.8}
+      .wb-vault-body h1{font-size:46px;margin:0 0 46px;line-height:1.3}
+      .wb-vault-markdown h2{font-size:32px;margin:40px 0 24px}
+      .wb-vault-markdown li{margin-block:10px}
+      .wb-vault-markdown a{color:var(--dsw-alias-label-link,#1768d8);text-decoration:underline}
+      .wb-vault-markdown pre{max-width:100%;overflow:auto;padding:12px;background:var(--dsw-alias-interactive-bg-hover);border-radius:6px}
+      .wb-vault-markdown blockquote{margin-inline:0;padding-inline-start:12px;border-inline-start:2px solid var(--dsw-alias-border-l3)}
+      .wb-vault-markdown table{border-collapse:collapse}
+      .wb-vault-markdown th,.wb-vault-markdown td{padding:4px 8px;border:1px solid var(--dsw-alias-border-l3)}
+      .wb-vault-backlinks{border-top:1px solid var(--dsw-alias-border-l3);margin-top:44px;padding-top:18px}
+      .wb-vault-backlinks ul{margin:4px 0;padding-inline-start:22px}
+      .wb-vault-backlinks button{border:0;padding:4px}
+      .wb-vault-body form{display:grid;gap:12px}
+      .wb-vault-editor{border:1px solid var(--dsw-alias-border-l3);border-radius:8px;overflow:hidden;min-height:260px}
+      .wb-vault-editor .cm-editor{min-height:260px;max-height:62vh;font-size:14px}
+      .wb-vault-mobile{display:none}
+      .wb-page .wb-vault-open{padding:0;border:0;text-align:left;font-weight:500;background:none}
+      .wb-vault-open:hover{text-decoration:underline}
+      @media(max-width:600px){
+        .wb-vault-toolbar{padding:10px 12px;gap:8px;font-size:14px}
+        .wb-vault-toolbar button{padding:6px 12px}
+        .wb-vault-toolbar strong{flex-basis:55%}
+        .wb-vault-mobile{display:inline-block}
+        .wb-vault-layout{display:flex;flex-direction:column;overflow:auto}
+        .wb-vault-tree{display:none}
+        .wb-vault-tree[data-open=true]{display:block;max-height:38vh;flex:none;padding:12px;font-size:15px;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l3)}
+        .wb-vault-body{overflow:visible;padding:18px 14px;font-size:16px}
+        .wb-vault-body h1{font-size:26px;margin-bottom:16px}
+        .wb-vault-markdown h2{font-size:21px;margin-top:18px}
+        .wb-vault-backlinks{margin-top:24px;padding-top:12px}
+      }
+    `;
+
+    function VaultTree({notes, active, disabled, open}) {
+      const folders = {folders:new Map(), notes:[]};
+      for (const note of notes) {
+        const parts = note.path.split("/");
+        const title = parts.pop();
+        let folder = folders;
+        for (const part of parts) {
+          if (!folder.folders.has(part)) folder.folders.set(part,{folders:new Map(), notes:[]});
+          folder = folder.folders.get(part);
+        }
+        folder.notes.push({title,path:note.path});
+      }
+      const render = folder => h(React.Fragment,null,
+        ...Array.from(folder.folders, ([name, child]) =>
+          h("details",{open:true,key:name},h("summary",null,
+            IconFolderOpenOutlineRegular&&h(IconFolderOpenOutlineRegular,{"aria-hidden":true}),name),
+            h("div",null,render(child)))),
+        ...folder.notes.map(note => button(note.title,()=>open(note.path),{
+          key:note.path, disabled, title:note.path, "aria-current":note.path===active,
+        })));
+      return render(folders);
+    }
+
+    function VaultEditor({text,onChange,onError}) {
+      const element=useRef(null);
+      useEffect(()=>{
+        let disposed=false, close;
+        import("/workbench-api/vault-editor.js").then(({openEditor})=>{
+          if(!disposed)close=openEditor(element.current,text,onChange);
+        }).catch(()=>{if(!disposed)onError("编辑器加载失败，请重试");});
+        return()=>{disposed=true;close?.();};
+      },[]);
+      return h("div",{ref:element,className:"wb-vault-editor"});
+    }
+
+    function VaultPanel({data,load,save,close,error}) {
+      const [search,setSearch]=useState(""),[matches,setMatches]=useState();
+      const [treeOpen,setTreeOpen]=useState(false),[draft,setDraft]=useState(),[saving,setSaving]=useState(false);
+      const [problem,setProblem]=useState(""),[anchor,setAnchor]=useState();
+      const bodyRef=useRef(null);
+      const note=data.document;
+      useEffect(()=>{
+        setMatches(undefined);
+        if(!search.trim())return;
+        const abort=new AbortController();
+        const timer=setTimeout(()=>{
+          const params={resourceId:data.resource.id,version:data.version,search};
+          if(data.projectId)params.projectId=data.projectId;
+          if(note)params.note=note.path;
+          fetch("/workbench-api"+query("/vault-view",params),{signal:abort.signal})
+            .then(response=>{if(!response.ok)throw Error();return response.json();})
+            .then(view=>setMatches(view.notes))
+            .catch(()=>{if(!abort.signal.aborted)setProblem("搜索失败，请重试");});
+        },180);
+        return()=>{clearTimeout(timer);abort.abort();};
+      },[search,data.resource.id,data.version,note?.path]);
+      useEffect(()=>{
+        if(!anchor||anchor.path!==note?.path)return;
+        const slug=value=>value.trim().toLowerCase().replace(/\s+/g,"-");
+        const element=[...(bodyRef.current?.querySelectorAll("h1,h2,h3,h4,h5,h6")||[])]
+          .find(el=>slug(el.textContent)===slug(anchor.heading));
+        element?.scrollIntoView({block:"start"});
+        setAnchor(undefined);
+      },[anchor,note?.path]);
+      const open=(path,heading)=>{
+        if(draft||saving)return;
+        setTreeOpen(false);
+        setProblem("");
+        if(heading)setAnchor({path,heading});
+        if(path!==note?.path)load(path);
+      };
+      const follow=e=>{
+        const href=e.target.closest?.("a")?.getAttribute("href");
+        const target=href?.match(/^#wb-vault\/([^/]+)\/([^/]*)$/);
+        if(!target)return;
+        e.preventDefault();
+        try{open(decodeURIComponent(target[1]),decodeURIComponent(target[2]));}
+        catch{setProblem("笔记链接格式有误");}
+      };
+      const start=existing=>{
+        setProblem("");
+        setDraft(existing?{path:existing.path,text:existing.text,existing:true}:{path:"",text:"",existing:false});
+      };
+      const submit=async e=>{
+        e.preventDefault();
+        let path=draft.path.trim();
+        if(!path)return;
+        if(!/\.md$/i.test(path))path+=".md";
+        if(!draft.existing&&data.notes.some(item=>item.path.normalize("NFC").toLowerCase()===path.normalize("NFC").toLowerCase())){
+          setProblem("这篇笔记已存在");
+          return;
+        }
+        setSaving(true);setProblem("");
+        try{await save(path,draft.text);setDraft(undefined);}
+        catch(e){setProblem(e.status===409?"语料库已更新，保存草稿后请重新打开":e.message);}
+        finally{setSaving(false);}
+      };
+      return h("section",{className:"wb-page wb-vault"},
+        h("style",null,css+vaultCss),
+        h("header",{className:"wb-vault-toolbar"},
+          button("返回语料",close,{disabled:Boolean(draft)}),
+          h("strong",null,data.resource.name),
+          button("目录",()=>setTreeOpen(!treeOpen),{className:"wb-vault-mobile","aria-expanded":treeOpen}),
+          data.editable&&!draft&&h("div",{className:"wb-actions"},
+            button("新增笔记",()=>start()),note&&button("编辑笔记",()=>start(note)))),
+        h("div",{className:"wb-vault-layout"},
+          h("nav",{className:"wb-vault-tree","aria-label":"笔记目录","data-open":treeOpen},
+            h("input",{value:search,placeholder:"搜索笔记","aria-label":"搜索笔记",type:"search",
+              onChange:e=>{setProblem("");setSearch(e.target.value);}}),
+            search&&matches?.length===0?h("p",{className:"wb-muted"},"没有匹配的笔记"):
+              h(VaultTree,{notes:matches??data.notes,active:note?.path,disabled:Boolean(draft),open})),
+          h("article",{className:"wb-vault-body",ref:bodyRef,onClickCapture:follow},
+            alert(problem||error),
+            draft?h("form",{onSubmit:submit},
+              draft.existing?h("strong",null,draft.path):field("笔记名称",h("input",{required:true,value:draft.path,
+                onChange:e=>{const path=e.target.value;setDraft(current=>({...current,path}));}})),
+              h(VaultEditor,{text:draft.text,onError:setProblem,onChange:text=>setDraft(current=>({...current,text}))}),
+              h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:saving},"保存"),
+                button("取消",()=>{setDraft(undefined);setProblem("");},{disabled:saving}))):
+              note?h(React.Fragment,null,
+                !note.hasTitle&&h("h1",null,note.path.split("/").at(-1).replace(/\.(md|txt)$/i,"")),
+                note.properties&&h("details",null,h("summary",null,"属性"),h("pre",null,note.properties)),
+                h("div",{className:"wb-vault-markdown",dangerouslySetInnerHTML:{__html:note.html}}),
+                h("details",{className:"wb-vault-backlinks",key:note.path},
+                  h("summary",null,`反向链接（${data.backlinks.length}）`),
+                  data.backlinks.length?h("ul",null,...data.backlinks.map(path=>h("li",{key:path},
+                    button(path,()=>open(path))))):h("p",{className:"wb-muted"},"暂无反向链接"))):
+                h("p",{className:"wb-muted"},"还没有笔记。"))));
+    }
+
     function ResourcePage() {
       const [projectFilter,setProjectFilter]=useState(resourceProject);
-      const [kind,setKind]=useState("database"),[documents,setDocuments]=useState(),[record,setRecord]=useState();
+      const [kind,setKind]=useState("database"),[vault,setVault]=useState(),[record,setRecord]=useState(),[newVault,setNewVault]=useState();
       const documentRequest=useRef(0),previewRequest=useRef(0);
       useEffect(()=>{const listener=()=>setProjectFilter(resourceProject);window.addEventListener("wb-resource-project",listener);return()=>window.removeEventListener("wb-resource-project",listener)},[]);
       const [catalog, setCatalog] = useState(),
@@ -173,21 +349,31 @@ window.__ModuleLoader__.load({
         finally { setBusy(false); }
       };
       const openPreview=async(r,section=r.sections[0]?.id,after="")=>{
-        const n=++previewRequest.current;setError("");setDocuments(undefined);setBusiness(undefined);documentRequest.current++;
+        const n=++previewRequest.current;setError("");setVault(undefined);setBusiness(undefined);documentRequest.current++;
         try{const page=await api(query("/resource-page",{resourceId:r.id,version:r.currentVersion,section,after}));if(n===previewRequest.current)setPreview({resource:r,section,page})}
         catch(e){if(n===previewRequest.current)setError(e.message)}
       };
-      const openCorpus=async(r,uri)=>{
-        const projectId=projectFilter||r.ownerProject;
+      const openCorpus=async(r,note,version)=>{
+        const projectId=r.ownerProject;
         const n=++documentRequest.current;setError("");setPreview(undefined);previewRequest.current++;
         try{
-          const v=projectId?await api(query("/resource-documents",{projectId,resourceId:r.id,...(uri?{uri}:{})})):{external:false};
+          const v=await api(query("/vault-view",{resourceId:r.id,...(projectId?{projectId}:{}),...(note?{note}:{}),...(version?{version}:{})}));
           if(n!==documentRequest.current)return;
-          if(v.external){setDocuments({resource:r,...v});return}
+          if(v.supported){setVault({resource:r,projectId,...v});return}
           await openPreview(r);
         }catch(e){if(n===documentRequest.current)setError(e.message)}
       };
-      const resetView=()=>{documentRequest.current++;previewRequest.current++;setDocuments(undefined);setPreview(undefined);setRecord(undefined);setBusiness(undefined)};
+      const resetView=()=>{documentRequest.current++;previewRequest.current++;setVault(undefined);setPreview(undefined);setRecord(undefined);setBusiness(undefined)};
+      const createVault=async e=>{
+        e.preventDefault();setBusy(true);setError("");
+        try{
+          const r=await api("/vault-create",newVault);
+          setNewVault(undefined);
+          await load();
+          await openCorpus(r);
+        }catch(e){setError(e.message);}
+        finally{setBusy(false);}
+      };
       const change = (key, value) => setEdit({ ...edit, [key]: value });
       const startShare = (r) => {
         const map = {};
@@ -203,19 +389,24 @@ window.__ModuleLoader__.load({
         setSharing(r);
       };
       const rows = (catalog?.resources ?? []).filter(
-        (r) => ((connections.find(c=>c.id===r.connectionId)?.kind==="directory" ||
+        (r) => ((r.relation==="obsidian-vault" || connections.find(c=>c.id===r.connectionId)?.kind==="directory" ||
           Boolean(catalog?.documentResourceIds?.includes(r.id)) || r.sections.some(s=>s.fields?.includes("markdown"))) === (kind==="corpus")) && (
-          !projectFilter ||
+          kind==="corpus" || !projectFilter ||
           r.ownerProject === projectFilter ||
           r.maintainerProject === projectFilter ||
           grants.some(
             (g) => g.resourceId === r.id && g.projectId === projectFilter,
           )),
       );
+      if(vault)return h(VaultPanel,{key:vault.resource.id,data:vault,error,close:resetView,
+        load:note=>openCorpus(vault.resource,note,vault.version),save:async(path,text)=>{
+          const saved=await api("/vault-save",{resourceId:vault.resource.id,version:vault.version,changes:[{path,text}]});
+          await openCorpus(vault.resource,path,saved.version);
+        }});
       return h(
         "section",
         { className: "wb-page" },
-        h("style", null, css),
+        h("style", null, css+vaultCss),
         h(
           "div",
           { className: "wb-content" },
@@ -223,11 +414,11 @@ window.__ModuleLoader__.load({
             "div",
             { className: "wb-heading" },
             h("h1", null, "知识库"),
-            h("select",{"aria-label":"按项目查看",value:projectFilter,onChange:e=>{resetView();resourceProject=e.target.value;setProjectFilter(resourceProject)}},h("option",{value:""},"全部项目"),...(catalog?.projects??[]).map(p=>h("option",{key:p.id,value:p.id},p.name))),
+            kind==="database"&&h("select",{"aria-label":"按项目查看",value:projectFilter,onChange:e=>{resetView();resourceProject=e.target.value;setProjectFilter(resourceProject)}},h("option",{value:""},"全部项目"),...(catalog?.projects??[]).map(p=>h("option",{key:p.id,value:p.id},p.name))),
             h(
               "div",
               { className: "wb-actions" },
-              button("连接配置", () =>
+              kind==="corpus"?button("新增语料库",()=>setNewVault({id:"vault-"+crypto.randomUUID(),name:""}),{disabled:busy}):button("连接配置", () =>
                 setConnection({
                   id: "c_" + crypto.randomUUID().slice(0, 8),
                   name: "",
@@ -236,13 +427,13 @@ window.__ModuleLoader__.load({
                   location: "",
                 }),
               ),
-              button("注册资源", () => setEdit(emptyResource()), {disabled:!catalog||busy}),
+              kind==="database"&&button("注册资源", () => setEdit(emptyResource()), {disabled:!catalog||busy}),
             ),
           ),
           h("div",{className:"wb-tabs","aria-label":"资料类型"},
             button("语料",()=>{resetView();setKind("corpus")},{"aria-pressed":kind==="corpus"}),
             button("数据库",()=>{resetView();setKind("database")},{"aria-pressed":kind==="database"})),
-          h(
+          kind==="database"&&h(
             "p",
             { className: "wb-muted" },
             "资源注册一次，按项目勾选引用。共享资料只读；SuperAgent 按需读取本人可用的业务资料。",
@@ -250,6 +441,11 @@ window.__ModuleLoader__.load({
           error && h("p", { role: "alert", className: "wb-note" }, error),
           notice && h("p", { role: "status", className: "wb-note" }, notice),
           !catalog && h("p", { role: "status" }, "正在读取资源…"),
+          kind==="corpus"&&newVault&&h("form",{className:"wb-form",onSubmit:createVault},
+            field("名称",h("input",{autoFocus:true,required:true,maxLength:100,value:newVault.name,
+              onChange:e=>setNewVault({...newVault,name:e.target.value})})),
+            h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:busy},"创建"),
+              button("取消",()=>setNewVault(undefined),{disabled:busy}))),
           connection &&
             h(
               "form",
@@ -543,10 +739,6 @@ window.__ModuleLoader__.load({
                 button("取消", () => setSharing(undefined)),
               ),
             ),
-          documents&&h("section",{className:"wb-section"},
-            h("div",{className:"wb-heading"},h("h2",null,documents.resource.name),button("关闭预览",resetView)),
-            documents.content!==undefined?h(React.Fragment,null,button("返回语料目录",()=>setDocuments({...documents,content:undefined})),markdown(documents.content)):
-              h("div",{className:"wb-list"},...(documents.documents||[]).map(d=>h("div",{className:"wb-row",key:d.uri},h("span",{className:"wb-row-main"},d.title||d.name),button("阅读",()=>openCorpus(documents.resource,d.uri)))))),
           business&&h(BusinessPolicyPanel,{key:business.resource.id,resource:business.resource,rows:business.items,close:resetView,save:saveBusiness,busy}),
           preview&&h("section",{className:"wb-section"},h("div",{className:"wb-heading"},h("h2",null,preview.resource.name),button("关闭预览",resetView)),
             h("div",{className:"wb-actions"},field("资料板块",h("select",{value:preview.section,onChange:e=>openPreview(preview.resource,e.target.value)},...preview.resource.sections.map(s=>h("option",{key:s.id,value:s.id},s.name||s.id)))),
@@ -560,7 +752,9 @@ window.__ModuleLoader__.load({
           h(
             "div",
             { className: "wb-list" },
-            ...rows.map((r) =>
+            ...rows.map((r) => kind==="corpus"?
+              h("div",{className:"wb-row",key:r.id},
+                button(r.name,()=>openCorpus(r),{className:"wb-vault-open",disabled:!r.currentVersion})):
               h(
                 "div",
                 { className: "wb-row", key: r.id },
@@ -589,7 +783,7 @@ window.__ModuleLoader__.load({
               h(
                 "p",
                 { className: "wb-muted" },
-                "还没有资源。先配置连接，再注册需要使用的资料。",
+                kind==="corpus"?"还没有语料库。":"还没有资源。先配置连接，再注册需要使用的资料。",
               ),
           ),
         ),
