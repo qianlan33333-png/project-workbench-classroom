@@ -47,6 +47,7 @@ type Run struct {
 	Goal           string               `json:"goal,omitempty"`
 	NotifySession  string               `json:"notifySession,omitempty"`
 	OriginMessage  string               `json:"originMessage,omitempty"`
+	ReplyParts     []string             `json:"replyParts,omitempty"`
 }
 
 func (r Run) ExecutionID() string {

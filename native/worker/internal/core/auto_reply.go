@@ -515,7 +515,10 @@ func pausePending(ctx context.Context, tx *sql.Tx, id string) error {
 			return e
 		}
 	}
-	_, e = tx.ExecContext(ctx, `UPDATE wb_messages SET body=JSON_SET(body,'$.state','paused') WHERE route_id=? AND message_state IN ('received','reply_queued')`, id)
+	// Claimed sends retain their independent Delivery and original receipt.
+	// Remove their inbound message from the queue so a late receipt cannot
+	// resume old reply parts or hold up new messages after AI is restored.
+	_, e = tx.ExecContext(ctx, `UPDATE wb_messages SET body=JSON_SET(body,'$.state','paused') WHERE route_id=? AND message_state IN ('received','reply_queued','reply_submitting')`, id)
 	return e
 }
 func handoffEvent(ctx context.Context, tx *sql.Tx, m StoredMessage) error {

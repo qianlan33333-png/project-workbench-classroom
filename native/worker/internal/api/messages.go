@@ -26,7 +26,9 @@ type ReceiptRequest struct {
 }
 type ReplyInput struct {
 	MessageKey
-	Text string `json:"text"`
+	Text           string `json:"text"`
+	MaxSingleChars int    `json:"maxSingleChars,omitempty"`
+	MaxPartChars   int    `json:"maxPartChars,omitempty"`
 }
 type PrepareMessage struct {
 	OperationKey string            `json:"operationKey"`
@@ -90,29 +92,12 @@ func (a *Server) messageTools(s *mcp.Server, p core.Principal) {
 		_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.WaitAndSend, engine.FollowupInput{RunID: id, DecisionID: decision.ID, Waiting: true})
 		return nil, decision, accepted(e)
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "message_reply", Description: "Reply to one persisted incoming message in this Session, only when its route explicitly enables automatic replies. Recipient is bound by the incoming message, not supplied by the model."}, func(ctx context.Context, _ *mcp.CallToolRequest, in ReplyInput) (*mcp.CallToolResult, RunRef, error) {
-		message, e := a.Store.Message(ctx, p, in.ConnectionID, in.EventID)
+	mcp.AddTool(s, &mcp.Tool{Name: "message_reply", Description: "Submit one fixed reply for a persisted incoming message with automatic replies enabled. The recipient is bound to that message. For WeCom project automatic replies or when maxPartChars is provided, each nonempty line becomes its own message. With maxPartChars, maxSingleChars optionally sets a larger Unicode-character limit for a single line. Submit the entire reply once."}, func(ctx context.Context, _ *mcp.CallToolRequest, in ReplyInput) (*mcp.CallToolResult, RunRef, error) {
+		r, e := a.Store.PrepareReplyWithLimits(ctx, p, in.ConnectionID, in.EventID, in.Text, in.MaxSingleChars, in.MaxPartChars)
 		if e != nil {
 			return nil, RunRef{}, e
 		}
-		route, e := a.Store.Route(ctx, message.RouteID)
-		if e != nil || !route.Enabled || !route.AutoReply || route.Principal != p || max(int64(1), route.Revision) != max(int64(1), message.RouteRevision) {
-			return nil, RunRef{}, core.ErrDenied
-		}
-		if message.State != "received" && message.State != "reply_queued" {
-			return nil, RunRef{}, core.ErrConflict
-		}
-		id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(message.ID+"/reply")).String()
-		r := core.Run{ID: id, Principal: p, Operation: "reply", Title: "回复新消息", Goal: in.Text, OriginMessage: message.ID}
-		if e = a.Store.SaveRun(ctx, r); e != nil {
-			return nil, RunRef{}, e
-		}
-		if e = a.Store.PutDelivery(ctx, r, core.Delivery{ID: id, RunID: id, ItemID: "reply", ConnectionID: in.ConnectionID, Target: map[string]string{"conversationId": message.ConversationID, "actorId": message.ActorID, "replyTo": message.EventID}, Text: in.Text}); e != nil {
-			return nil, RunRef{}, e
-		}
-		if e = a.Store.SetMessageState(ctx, p, in.ConnectionID, in.EventID, "reply_queued"); e != nil {
-			return nil, RunRef{}, e
-		}
+		id := r.ID
 		_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.SendMessage, id)
 		return nil, RunRef{RunID: id}, accepted(e)
 	})

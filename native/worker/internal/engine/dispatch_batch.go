@@ -96,6 +96,17 @@ func SubmitMessage(ctx workflow.Context, id string) error {
 			return err
 		}
 		if receipt.State != "prepared" {
+			// A fast gateway callback can precede persistence of its provider ID.
+			// Check that same ID briefly; the sweep remains the fallback.
+			for delay := 2 * time.Second; receipt.AwaitPartReceipt && delay <= 8*time.Second; delay *= 2 {
+				if err := workflow.Sleep(ctx, delay); err != nil {
+					return err
+				}
+				receipt = Receipt{}
+				if err := workflow.ExecuteActivity(ctx, "ReconcileDelivery", id).Get(ctx, &receipt); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 		// No external call has been claimed. Timer-based waiting preserves the
