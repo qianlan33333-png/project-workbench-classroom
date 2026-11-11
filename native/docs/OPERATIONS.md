@@ -9,7 +9,10 @@ flowchart LR
  C --> D[crm_push 准备整批稿件和素材]
  D --> E[本人一次整批确认]
  E --> F[原 CRM CLI 提交与审核]
- F --> G[crm_receipts 原计划逐人回执]
+ F --> G{CRM 受理结果}
+ G -->|已受理| H[工作台记为已发送]
+ G -->|明确失败| I[记录失败条目及原因]
+ G -->|结果未知| J[按原计划核对受理结果]
 ```
 
 | 工具 | 本轮调用合同 |
@@ -18,7 +21,7 @@ flowchart LR
 | `strategy_select` | `{operationKey,data,strategies,history,destination,asOf,strategyKeys,limit}`。三个输入固定版本；`asOf` 使用本轮清洗结果的 `archive.generated_at`。`limit:0` 保留全部合格成员，排除原因从 `run_items` 读取。 |
 | `batch_generate` | 沿用现有 `{operationKey,sources,destination,methodPointer,methodRefs}`。`methodPointer` 为 `/actions/0/generation/skill_key`，方法引用来自本轮采集；大批使用原 `selection` 分页，每段至多 2,000 人。 |
 | `crm_push` | `{operationKey,review:{selection,drafts}}`。固定名单和全部生成段，返回已有整批待确认任务；准备期间可创建并读回 CRM 素材，不创建发送计划。 |
-| `crm_receipts` | `{runId}` 查询原整批任务，或 `{planId}` 查询已绑定原计划。只查询、不补发；分别返回平台受理、待员工确认、实际发送、失败或未知。 |
+| `crm_receipts` | `{runId}` 查询原整批任务，或 `{planId}` 查询已绑定原计划。返回已保存的逐人结果，提交结果未知时查回原计划。已受理在工作台显示为「已发送」，接口保留 CRM 受理与历史实际发送的原始状态。 |
 
 长任务都使用已有 `run_get`、`run_items`、`run_steps` 和 `run_resume`。续办保留原任务与成功结果；来源、正文或身份变更不得混入已经确认的批次。没有合格成员就结束备稿，不生成占位稿。
 
@@ -26,7 +29,9 @@ flowchart LR
 
 常态服务与新人承接可配置在同一条日程。`cycle.additionalBatch` 指定第二条原策略及独立的名单、稿件资源。两包复用同轮清洗、策略、历史和方法快照，并按相同时间逐人判断；每包独立备稿与确认。迁入策略的旧包归入历史。原发送范围继续由 `WORKBENCH_OPERATIONS_BATCH_STRATEGY` 控制，第二条策略按同样方式由 `WORKBENCH_OPERATIONS_ADDITIONAL_BATCH_STRATEGY` 单独开放。
 
-确认入口继续使用 `/operations/source-confirm`，确认版本固定名单、正文、素材及员工。连接器执行 CRM 原审核合同；企微必要的员工确认仍由平台处理。创建或审核前集中检查当前业务事实；网络结果未知只查原请求、原计划。
+确认入口继续使用 `/operations/source-confirm`，确认版本固定名单、正文、素材及员工。连接器执行 CRM 原审核合同，批准成功即以 CRM 受理结算。明确返回错误的条目记为失败。若批准结果未知，或 CRM 返回计划有异常，沿原请求及原计划读取结果。工作台以受理时点继续原服务冷却规则，企微员工操作及实际送达由平台记录。创建或审核前仍检查当前业务事实。
+
+该口径复用 CRM 批准接口的整批原子受理，以及已有原计划查询。参考 [异步请求与处理状态](https://learn.microsoft.com/en-us/azure/architecture/patterns/async-request-reply)，这里的完成点是工作台向 CRM 交付。
 
 规则验收见 [42 条策略矩阵](OPERATIONS-ACCEPTANCE.md)。旧自动化程序按用户要求保持现状；当前读取其联系和执行历史，不声称跨系统原子互斥。真实客户发送必须在正式任务库留下计划和逐人回执，不能在隔离库发送后丢弃业务记录。
 

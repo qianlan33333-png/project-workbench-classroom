@@ -72,6 +72,27 @@ type OperationsBatchReceipt struct {
 	At    string `json:"at,omitempty"`
 }
 
+func (r OperationsBatchReceipt) Submitted() bool {
+	switch r.State {
+	case "accepted", "pending_confirmation", "sent", "delivered":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s OperationsBatchStatus) Settled(count int) bool {
+	if count <= 0 || len(s.Entries) != count {
+		return false
+	}
+	for _, entry := range s.Entries {
+		if !entry.Submitted() && entry.State != "failed" {
+			return false
+		}
+	}
+	return true
+}
+
 func OperationsReviewVersion(review OperationsReview, transport, staff, name string) string {
 	return Digest([]string{review.Version, transport, staff, name})
 }
@@ -401,7 +422,23 @@ func (s *Store) OperationsBatchManifest(ctx context.Context, id string) (Run, []
 }
 
 func (s *Store) OperationsBatchResult(ctx context.Context, run string) (OperationsBatchStatus, error) {
-	return operationsItem[OperationsBatchStatus](ctx, s.DB, run, OperationsBatchResultItem, "")
+	var result OperationsBatchStatus
+	item, err := s.Item(ctx, run, OperationsBatchResultItem)
+	if err != nil {
+		return result, err
+	}
+	if err = json.Unmarshal([]byte(item.Text), &result); err != nil {
+		return result, err
+	}
+	// Older accepted receipts did not carry a timestamp. The stored receipt
+	// observation is a conservative start for the local contact cooldown.
+	for key, entry := range result.Entries {
+		if (entry.State == "accepted" || entry.State == "pending_confirmation") && entry.At == "" && !item.CreatedAt.IsZero() {
+			entry.At = item.CreatedAt.UTC().Format(time.RFC3339Nano)
+			result.Entries[key] = entry
+		}
+	}
+	return result, nil
 }
 
 func (s *Store) SaveOperationsBatchResult(ctx context.Context, run string, result OperationsBatchStatus) error {
@@ -426,6 +463,7 @@ func (s *Store) SaveOperationsBatchResult(ctx context.Context, run string, resul
 	for key, old := range previous.Entries {
 		next, found := result.Entries[key]
 		if !found || old.State == "sent" || old.State == "failed" && next.State != "sent" ||
+			old.State == "accepted" && next.State == "accepted" && old.At != "" ||
 			old.State == "pending_confirmation" && next.State == "accepted" ||
 			(old.State == "accepted" || old.State == "pending_confirmation") && (next.State == "unknown" || strings.TrimSpace(next.State) == "") {
 			result.Entries[key] = old

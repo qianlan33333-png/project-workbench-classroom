@@ -276,7 +276,7 @@ func TestRealOperationsRefreshSelectAndGenerate(t *testing.T) {
 	// Tomorrow's new source may draft an unconfirmed action again. Confirmed
 	// unknown outcomes still hold; a terminal failed node does not block D4.
 	asOf := time.Date(2026, 11, 12, 12, 0, 0, 0, time.FixedZone("CST", 8*3600))
-	for _, state := range []string{"draft", "unknown", "failed", "sent", "legacy-valid", "legacy-expired"} {
+	for _, state := range []string{"draft", "unknown", "failed", "sent", "accepted", "pending_confirmation", "legacy-valid", "legacy-expired"} {
 		person := "person-" + state
 		parent := core.Run{ID: uuid.NewString(), Principal: p, Operation: "operations_package", Title: "previous day draft", Shared: map[string]any{"local": true, "week": "2026-W46"}}
 		must(store.SaveRun(ctx, parent))
@@ -326,7 +326,7 @@ func TestRealOperationsRefreshSelectAndGenerate(t *testing.T) {
 				t.Fatal(past)
 			}
 			entry := values[0].(map[string]any)
-			expected := map[string]string{"unknown": "pending", "failed": "cancelled", "sent": "sent"}[state]
+			expected := map[string]string{"unknown": "pending", "failed": "cancelled", "sent": "sent", "accepted": "sent", "pending_confirmation": "sent"}[state]
 			if entry["state"] != expected || entry["slot_key"] != "d2" {
 				t.Fatal("original outcome changed", past)
 			}

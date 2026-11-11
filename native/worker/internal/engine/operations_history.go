@@ -175,13 +175,17 @@ func (a *Activities) localOperationsHistory(ctx context.Context, r core.Run, ref
 				return e
 			}
 			receipt := result.Entries[item.row.Key]
-			if receipt.State != "sent" && receipt.State != "delivered" && receipt.State != "failed" {
+			if !receipt.Submitted() && receipt.State != "failed" {
 				past["local_hold_reason"] = "legacy_batch_delivery_pending"
 			}
-			if receipt.State == "sent" || receipt.State == "delivered" {
+			if receipt.Submitted() {
 				at, e := time.Parse(time.RFC3339, receipt.At)
 				if e != nil || asOf.Sub(at) < 24*time.Hour {
-					past["local_hold_reason"] = "actual_send_cooldown_24h"
+					if receipt.State == "accepted" || receipt.State == "pending_confirmation" {
+						past["local_hold_reason"] = "crm_submission_cooldown_24h"
+					} else {
+						past["local_hold_reason"] = "actual_send_cooldown_24h"
+					}
 				}
 			}
 			continue
@@ -195,7 +199,9 @@ func (a *Activities) localOperationsHistory(ctx context.Context, r core.Run, ref
 				return e
 			}
 			receipt := result.Entries[item.row.Key]
-			if (receipt.State == "sent" || receipt.State == "delivered") && receipt.At != "" {
+			if receipt.Submitted() && receipt.At != "" {
+				// The local operations ledger uses CRM acceptance to complete
+				// a slot. The persisted receipt keeps the original channel state.
 				entry["state"] = "sent"
 				entry["sent_at"] = receipt.At
 			} else if receipt.State == "failed" {

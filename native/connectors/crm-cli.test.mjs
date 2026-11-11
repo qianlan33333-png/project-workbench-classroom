@@ -126,7 +126,7 @@ test('a lost reservation response reads back only the caller’s own attempt',as
  }
 });
 
-function operationsBatchFixture(count,{lostApproval=false,invalid=false,merged=false,edited=false,materialDrift=false,lostCreate=false,onCheck,onClaim,onApproving}={}){
+function operationsBatchFixture(count,{lostApproval=false,pendingApproval=false,reportedFailure=false,invalid=false,merged=false,edited=false,materialDrift=false,lostCreate=false,onCheck,onClaim,onApproving}={}){
  const states=new Map(),calls=[];
  const runId='12345678-1234-4abc-8123-123456789abc';
  const cover=crypto.createHash('sha256').update(JSON.stringify([303,'cover-version'])).digest('hex');
@@ -151,19 +151,15 @@ function operationsBatchFixture(count,{lostApproval=false,invalid=false,merged=f
     assert.equal(options.body.expected_version,1);
     return {eligible_count:saved.recipients.length,plan_version:1,preview_digest:'preview'};
    case 'admin.approveAIAssistantPlan':
-    approved=true;plan={...plan,state:'dispatching',version:2};
+    if(pendingApproval)return {plan};
+    approved=true;plan={...plan,state:reportedFailure?'completed_with_failures':'dispatching',version:2,
+     approved_count:saved.recipients.length,updated_at:'2026-11-11T00:00:00Z'};
     if(lostApproval)throw Error('lost response');
     return {plan};
    case 'admin.listAIAssistantRecipients':
     return {items:saved.recipients.map((row,i)=>({id:10000+i,customer_id:row.customer_id,staff_id:row.staff_id,version:edited&&i===0?2:1,content_version_id:20000+i,
-     review_state:'pending_review',execution_state:'not_accepted'}))};
-   case 'admin.listAIAssistantExecutionReceipts': {
-    assert(approved);
-    const receipts=saved.recipients.map((row,i)=>({recipient_id:10000+i,customer_id:row.customer_id,staff_id:row.staff_id,
-     receipt:{receipt_found:true,msgid:'original-'+i,query_state:'observed',query_errcode:0,provider_delivery_status:i%3===0?1:i%3===1?2:0,provider_sent_at:'2026-11-11T00:01:00Z'}}));
-    const offset=Number(options.query.cursor||0),end=offset+(options.query.limit||200);
-    return {items:receipts.slice(offset,end),next_cursor:end<receipts.length?String(end):''};
-   }
+     review_state:approved?'approved':'pending_review',effect_id:approved?'eer_'+(i+1):undefined,
+     execution_state:approved?((lostApproval||reportedFailure)&&i===1?'final_failed':'queued'):'not_accepted'}))};
    default: throw Error(operation);
   }
  };
@@ -192,19 +188,12 @@ test('one confirmed work package creates and approves one CRM plan of 5000 perso
  assert.equal(created[0].options.body.recipients.length,5000);
  assert.deepEqual(created[0].options.body.recipients[0].content,[{kind:'text',text:'逐人正文 0'},{kind:'mini_program',material_id:1070}]);
  assert.equal(f.calls.filter(x=>x.operation==='admin.approveAIAssistantPlan').length,1);
- assert.equal(out.entries['item-4999'].state,'accepted');
+ assert.deepEqual(out.entries['item-4999'],{state:'accepted',at:'2026-11-11T00:00:00Z'});
+ assert.equal(Object.keys(out.entries).length,5000);
+ const callsAfterApproval=f.calls.length;
  const receipts=await f.crm.batch({runId:f.runId},false);
- assert.equal(receipts.entries['item-0'].state,'sent');
- assert.equal(receipts.entries['item-1'].state,'failed');
- assert.equal(receipts.entries['item-2'].state,'pending_confirmation');
- assert.equal(Object.keys(receipts.entries).length,5000);
- const verified=new Set(Object.entries(receipts.entries).filter(([,r])=>r.state!=='unknown').map(([key])=>key));
- for(let i=0;i<20;i++){
-  const page=await f.crm.batch({runId:f.runId},false);
-  for(const [key,value] of Object.entries(page.entries))if(value.state!=='unknown')verified.add(key);
- }
- assert.equal(verified.size,5000);
- assert.equal(f.calls.filter(x=>x.operation==='admin.listAIAssistantExecutionReceipts').length,250);
+ assert.deepEqual(receipts,out);
+ assert.equal(f.calls.length,callsAfterApproval);
 });
 
 test('batch excludes a missing identity, recovers a lost approval and never creates or approves again',async()=>{
@@ -214,11 +203,27 @@ test('batch excludes a missing identity, recovers a lost approval and never crea
  assert.equal(first.entries['item-0'].state,'unknown');
  const read=await f.crm.batch({runId:f.runId},true);
  assert.equal(read.plan,'42');
- assert.equal(read.entries['item-0'].state,'sent');
+ assert.equal(read.entries['item-0'].state,'accepted');
  assert.equal(read.entries['item-1'].state,'failed');
- assert.equal(read.entries['item-2'].state,'pending_confirmation');
+ assert.equal(read.entries['item-2'].state,'accepted');
  assert.equal(f.calls.filter(x=>x.operation==='admin.createAIAssistantPlan').length,1);
  assert.equal(f.calls.filter(x=>x.operation==='admin.approveAIAssistantPlan').length,1);
+ assert.equal(f.calls.some(x=>x.operation==='admin.listAIAssistantExecutionReceipts'),false);
+});
+
+test('a created plan with an unconfirmed approval response remains unknown',async()=>{
+ const f=operationsBatchFixture(2,{pendingApproval:true});
+ assert.equal((await f.crm.batch({runId:f.runId},true)).entries['item-0'].state,'unknown');
+ assert.equal((await f.crm.batch({runId:f.runId},false)).entries['item-0'].state,'unknown');
+ assert.equal(f.calls.filter(c=>c.operation==='admin.approveAIAssistantPlan').length,1);
+});
+
+test('a reported plan failure preserves the affected recipient error',async()=>{
+ const f=operationsBatchFixture(2,{reportedFailure:true});
+ const {entries}=await f.crm.batch({runId:f.runId},true);
+ assert.equal(entries['item-0'].state,'accepted');
+ assert.equal(entries['item-1'].state,'failed');
+ assert.equal(f.calls.some(x=>x.operation==='admin.listAIAssistantExecutionReceipts'),false);
 });
 
 test('a batch exceeding the CRM body limit is reported without automatic splitting',async()=>{

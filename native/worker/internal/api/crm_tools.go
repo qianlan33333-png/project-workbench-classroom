@@ -75,7 +75,7 @@ func (a *Server) crmTools(s *mcp.Server, p core.Principal) {
 		}
 		return nil, RunRef{}, core.ErrInvalid
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "crm_receipts", Description: "Refresh an original CRM plan bound to this workbench's delivery. Returns the stored state while the existing receipt task queries CRM. Never submits or resends."}, func(ctx context.Context, _ *mcp.CallToolRequest, in CRMReceiptInput) (*mcp.CallToolResult, CRMReceiptResult, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "crm_receipts", Description: "Read stored per-recipient results for a bound CRM plan. Reconcile an operations batch only while submission is unresolved. Other deliveries retain their existing receipt refresh. Never submits or resends."}, func(ctx context.Context, _ *mcp.CallToolRequest, in CRMReceiptInput) (*mcp.CallToolResult, CRMReceiptResult, error) {
 		if p.Kind != "project" && !p.IsOwner() {
 			return nil, CRMReceiptResult{}, core.ErrDenied
 		}

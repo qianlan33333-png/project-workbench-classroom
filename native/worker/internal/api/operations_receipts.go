@@ -48,6 +48,9 @@ func (a *Server) localCRMReceipts(ctx context.Context, p core.Principal, id stri
 	}
 	out.Batch = &result
 	out.Receipt = result.Plan
+	if result.Settled(head.Count) {
+		return nil, out, nil
+	}
 	_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: head.Confirm + "-receipt", TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE}, engine.OperationsBatchReceipt, head.Confirm)
 	return nil, out, accepted(e)
 }

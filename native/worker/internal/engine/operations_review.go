@@ -352,14 +352,8 @@ func (a *Activities) readOrSubmitOperationsBatch(ctx context.Context, id string,
 	if err != nil && !core.IsMissing(err) {
 		return err
 	}
-	if len(previous.Entries) == len(manifest) {
-		settled := true
-		for _, v := range previous.Entries {
-			settled = settled && (v.State == "sent" || v.State == "failed")
-		}
-		if settled {
-			return nil
-		}
+	if previous.Settled(len(manifest)) {
+		return nil
 	}
 	transport, err := a.Store.Transport(ctx, run.Principal, sharedString(run, "transport"))
 	if err != nil || transport.Kind != "crm-cli" {
@@ -479,9 +473,9 @@ func (a *Activities) QueueOperationsBatchReceipts(ctx context.Context) error {
 		LEFT JOIN wb_items result ON result.run_id=r.id AND result.item_id=?
 		WHERE JSON_UNQUOTE(JSON_EXTRACT(r.body,'$.operation'))='operations_batch_confirm'
 		  AND JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(i.body,'$.text')),'$.Confirm'))=r.id
-		  AND (result.item_id IS NULL OR JSON_SEARCH(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(result.body,'$.text')),'$.entries.*.state'),'one','unknown') IS NOT NULL
-		  OR JSON_SEARCH(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(result.body,'$.text')),'$.entries.*.state'),'one','accepted') IS NOT NULL
-		  OR JSON_SEARCH(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(result.body,'$.text')),'$.entries.*.state'),'one','pending_confirmation') IS NOT NULL)
+	  AND (COALESCE(JSON_LENGTH(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(result.body,'$.text')),'$.entries')),0)
+	    < CAST(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(i.body,'$.text')),'$.Count') AS UNSIGNED)
+	    OR JSON_SEARCH(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(result.body,'$.text')),'$.entries.*.state'),'one','unknown') IS NOT NULL)
 		ORDER BY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(result.body,'$.createdAt')), '') LIMIT 20`, core.OperationsReviewItem, core.OperationsBatchResultItem)
 	if err != nil {
 		return err

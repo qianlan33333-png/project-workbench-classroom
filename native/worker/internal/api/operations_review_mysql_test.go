@@ -111,10 +111,19 @@ func TestMySQLOperationsReviewLocalAndFrozen(t *testing.T) {
 		t.Fatal(manifest)
 	}
 	must(s.SaveOperationsBatchResult(ctx, confirmation.ID, core.OperationsBatchStatus{Plan: "43", Entries: map[string]core.OperationsBatchReceipt{
-		"one": {State: "sent", At: "2026-11-11T10:05:00+08:00"},
+		"one": {State: "accepted"},
 	}}))
 	must(s.SaveOperationsBatchResult(ctx, confirmation.ID, core.OperationsBatchStatus{Entries: map[string]core.OperationsBatchReceipt{"one": {State: "unknown"}}}))
-	if v := get(today + "?daily=" + parent.ID); !strings.Contains(v, "已发送") || !strings.Contains(v, draft.Message) || strings.Contains(v, draft.Customer) {
+	_, receipt, err := api.localCRMReceipts(ctx, p, confirmation.ID)
+	must(err)
+	if receipt.Receipt != "43" || receipt.Batch.Entries["one"].State != "accepted" || receipt.Batch.Entries["one"].At == "" {
+		t.Fatal(receipt)
+	}
+	// The server has no Temporal client in this test. Settled rows must not
+	// attempt to start a receipt workflow, including during the sweep.
+	must((&engine.Activities{Store: s}).QueueOperationsBatchReceipts(ctx))
+	if v := get(today + "?daily=" + parent.ID); !strings.Contains(v, "已发送") || !strings.Contains(v, "CRM 已受理。") ||
+		!strings.Contains(v, draft.Message) || strings.Contains(v, draft.Customer) {
 		t.Fatal(v)
 	}
 	if v := get(today); strings.Contains(v, parent.ID) {
@@ -227,7 +236,7 @@ func TestRealTemporalOperationsBatchUsesOneConfirmedManifest(t *testing.T) {
 			return nil, core.OperationsBatchStatus{}, errors.New("batch manifest changed or was submitted twice")
 		}
 		return nil, core.OperationsBatchStatus{Plan: "42", Entries: map[string]core.OperationsBatchReceipt{
-			"one": {State: "sent", At: "2026-11-11T10:05:00+08:00"}, "two": {State: "failed", Error: "企微发送失败"},
+			"one": {State: "accepted", At: "2026-11-11T10:05:00+08:00"}, "two": {State: "failed", Error: "CRM 明确拒绝"},
 		}}, nil
 	})
 	crm := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return crmServer }, &mcp.StreamableHTTPOptions{Stateless: true}))
@@ -290,7 +299,7 @@ func TestRealTemporalOperationsBatchUsesOneConfirmedManifest(t *testing.T) {
 	}
 	result, err := s.OperationsBatchResult(ctx, ref)
 	must(err)
-	if result.Plan != "42" || result.Entries["one"].State != "sent" || result.Entries["two"].State != "failed" {
+	if result.Plan != "42" || result.Entries["one"].State != "accepted" || result.Entries["two"].State != "failed" || !result.Settled(2) {
 		t.Fatal(result)
 	}
 	allowed, err := api.operationsBatchWriteAllowed(ctx, ref, transport)

@@ -228,22 +228,7 @@ const fail=error=>({state:'failed',error});
 const ambiguous=()=>({state:'unknown'});
 const rejected=error=>[400,401,403,404,409,413,422].includes(error.status);
 
-function providerResult(row,plan) {
- const proof=row.receipt||{};
- const observed=proof.receipt_found===true&&proof.msgid&&proof.query_state==='observed'&&proof.query_errcode===0;
- if(observed&&proof.provider_delivery_status===1&&proof.provider_sent_at)
-  return {state:'sent',at:proof.provider_sent_at};
- if(observed&&[2,3,4].includes(proof.provider_delivery_status))
-  return fail(businessReason(proof)||'企微返回发送失败。');
- if(['final_failed','terminal_failed','permanent_failed','failed','rejected','ineligible','cancelled','stopped'].includes(row.local_execution_state))
-  return fail(businessReason(proof)||'CRM 执行已终止或失败。');
- if(observed&&proof.provider_delivery_status===0)
-  return {state:'pending_confirmation'};
- if(['submitting','unknown','outcome_unknown','needs_reconcile','attempted','retryable_failed'].includes(row.local_execution_state))
-  return ambiguous();
- return ['accepted','queued','provider_accepted','reconciled'].includes(row.local_execution_state)||
-  ['dispatching','completed','completed_with_failures'].includes(plan.state)?{state:'accepted'}:ambiguous();
-}
+const approvedPlanStates=new Set(['approved','dispatching','needs_attention','completed','completed_with_failures']);
 
 // The connector fetches the frozen manifest from the Worker. The browser
 // cannot supply identities, message bodies, or a new plan key.
@@ -334,17 +319,15 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
    return {entries};
   }
   const validPlan=plan=>positive(plan?.id)&&plan.source_kind===batchKind&&plan.source_digest===sourceDigest&&plan.target_count===recipients.length;
+  const acceptedAt=plan=>plan.updated_at||new Date().toISOString();
   async function readPlan(id) {
    if(id)return (await invoke('admin.getAIAssistantPlan',{params:{plan_id:id}})).plan;
    const found=(await pages('admin.listAIAssistantPlans',{}, {keyword:runId})).filter(validPlan);
    return found.length===1?found[0]:null;
   }
   const finish=plan=>({...(positive(plan)?{plan:String(plan)}:{}),entries});
-  const validRecipients=saved=>{
-   const ids=new Map(saved.map(row=>[String(row.customer_id),String(row.id)]));
-   return saved.length===itemKey.size&&ids.size===saved.length&&
-    saved.every(row=>itemKey.has(String(row.customer_id))&&String(row.staff_id)===String(manifest.staff)&&positive(row.id))?ids:null;
-  };
+  const validRecipients=saved=>saved.length===itemKey.size&&new Set(saved.map(row=>String(row.customer_id))).size===saved.length&&
+   saved.every(row=>itemKey.has(String(row.customer_id))&&String(row.staff_id)===String(manifest.staff)&&positive(row.id));
   const contentStamp=saved=>digest(saved.map(row=>[String(row.customer_id),String(row.id),String(row.content_version_id)]).sort((a,b)=>a[0].localeCompare(b[0])));
   async function read() {
    if(state.digest!==sourceDigest)return finish();
@@ -352,43 +335,23 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
     setAll(fail(state.error));
     return finish(state.planId);
    }
+   if(state.phase==='submitted'&&state.submittedAt){
+    setAll({state:'accepted',at:state.submittedAt});
+    return finish(state.planId);
+   }
    try{
     const plan=await readPlan(state.planId);
     if(!validPlan(plan))return finish();
-    // A pending plan can still be edited in CRM. Only use receipt evidence
-    // once CRM has crossed the same approval boundary for this plan.
-    if(!['approved','dispatching','needs_attention','completed','completed_with_failures'].includes(plan.state))
-     return finish(plan.id);
-    const params={plan_id:plan.id};
-    const saved=await pages('admin.listAIAssistantRecipients',params);
-    const recipientIds=validRecipients(saved);
-    if(!recipientIds||!state.contents||state.contents!==contentStamp(saved))return finish(plan.id);
-    let cursor=state.receiptCursor||'',limit=state.receiptLimit||20;
-    for(let page=0;page<12;page++){
-     let data;
-     try{data=await invoke('admin.listAIAssistantExecutionReceipts',{params,query:{live:true,limit,...(cursor?{cursor}:{})}});}
-     catch{break;}
-     if(!Array.isArray(data.items))break;
-     const verified=new Map();
-     for(const row of data.items){
-      const customer=String(row.customer_id),key=itemKey.get(customer);
-      if(!key||verified.has(key)||String(row.staff_id)!==String(manifest.staff)||
-         recipientIds.get(customer)!==String(row.recipient_id))return finish(plan.id);
-      verified.set(key,providerResult(row,plan));
-     }
-     for(const [key,receipt] of verified)entries[key]=receipt;
-     if(limit>1&&data.items.some(row=>row.receipt?.query_failure==='refresh_budget_exhausted')){
-      limit=1;
-      continue;
-     }
-     const next=data.next_cursor||'';
-     if(next&&next===cursor)break;
-     cursor=next;
-     limit=20;
-     if(!cursor)break;
-    }
-    if(cursor!==(state.receiptCursor||'')||limit!==(state.receiptLimit||20)){
-     try{await remember({receiptCursor:cursor,receiptLimit:limit});}catch{/* Another read can repeat the same page safely. */}
+    if(!approvedPlanStates.has(plan.state)||!state.contents)return finish(plan.id);
+    const saved=await pages('admin.listAIAssistantRecipients',{plan_id:plan.id});
+    if(!validRecipients(saved)||state.contents!==contentStamp(saved))return finish(plan.id);
+    const at=acceptedAt(plan);
+    for(const row of saved){
+     const key=itemKey.get(String(row.customer_id));
+     if(['rejected','ineligible'].includes(row.review_state)||row.execution_state==='final_failed')
+      entries[key]=fail('CRM 返回该客户提交或执行失败。');
+     else if(row.review_state==='approved'&&row.effect_id)
+      entries[key]={state:'accepted',at};
     }
     return finish(plan.id);
    }catch{return finish(state.planId);}
@@ -477,10 +440,14 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
     await compare(stateID,state,beforeApproval);state=beforeApproval;
     signal.throwIfAborted();
    }
-   await invoke('admin.approveAIAssistantPlan',{params,body:{expected_version:preview.plan_version,preview_digest:preview.preview_digest},
+   const {plan:approved}=await invoke('admin.approveAIAssistantPlan',{params,body:{expected_version:preview.plan_version,preview_digest:preview.preview_digest},
     key:key('approve'),signal,timeout:120000});
-   await remember({phase:'submitted'});
-   setAll({state:'accepted'});
+   if(!validPlan(approved)||approved.id!==plan.id||!approvedPlanStates.has(approved.state)||
+      approved.approved_count!==recipients.length)return finish(plan.id);
+   if(approved.needs_attention_count>0||approved.state==='completed_with_failures')return read();
+   const at=acceptedAt(approved);
+   await remember({phase:'submitted',submittedAt:at});
+   setAll({state:'accepted',at});
    return finish(plan.id);
   }catch(error){
    if(rejected(error)&&error.crmRejected===true)return recordFailure('CRM 明确拒绝本次批量计划。');
