@@ -19,7 +19,7 @@ type DelegateInput struct {
 }
 
 func (a *Server) delegationTools(s *mcp.Server, bound core.Principal) {
-	mcp.AddTool(s, &mcp.Tool{Name: "task_delegate", Description: "今日派发到目标项目的新 Session。默认转交最近一条本人原始要求；可提供 instructions，但它继承今日已读资料的全部读取要求。任务始终按目标项目的资源范围执行，返回接收回执，不代表业务已完成。"}, func(ctx context.Context, _ *mcp.CallToolRequest, in DelegateInput) (*mcp.CallToolResult, RunRef, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "task_delegate", Description: "SuperAgent 派发到目标项目的新 Session。默认转交最近一条本人原始要求；可提供 instructions，但它继承 SuperAgent 已读资料的全部读取要求。任务始终按目标项目的资源范围执行，返回接收回执，不代表业务已完成。"}, func(ctx context.Context, _ *mcp.CallToolRequest, in DelegateInput) (*mcp.CallToolResult, RunRef, error) {
 		if bound.Kind != "personal" || !core.ValidID(in.ProjectID) || !core.ValidID(in.OperationKey) || len(in.Instructions) > 16000 {
 			return nil, RunRef{}, core.ErrDenied
 		}
@@ -38,14 +38,14 @@ func (a *Server) delegationTools(s *mcp.Server, bound core.Principal) {
 			return nil, RunRef{}, e
 		}
 		target := core.Principal{Kind: "project", ProjectID: in.ProjectID, SessionID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(id+"/session")).String()}
-		r := core.Run{ID: id, Principal: target, Operation: "dispatch", Title: "来自今日的项目任务", Sources: in.Sources, NotifySession: bound.SessionID}
+		r := core.Run{ID: id, Principal: target, Operation: "dispatch", Title: "来自 SuperAgent 的项目任务", Sources: in.Sources, NotifySession: bound.SessionID}
 		if in.Instructions != "" {
 			refs, e := a.Store.SessionSources(ctx, bound)
 			if e != nil {
 				return nil, RunRef{}, e
 			}
 			if e = core.AuthorizeAll(ctx, a.Store, target, refs); e != nil {
-				return nil, RunRef{}, fmt.Errorf("%w: 今日已读资料超出目标项目范围，不能转交改写后的 instructions；如只需转交本人要求，请省略 instructions，由宿主直接传本人最近原话。不需要扩大目标项目权限", e)
+				return nil, RunRef{}, fmt.Errorf("%w: SuperAgent 已读资料超出目标项目范围，不能转交改写后的 instructions；如只需转交本人要求，请省略 instructions，由宿主直接传本人最近原话。不需要扩大目标项目权限", e)
 			}
 			r.Goal = in.Instructions
 			r.Lineage = refs

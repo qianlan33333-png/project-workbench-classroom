@@ -153,7 +153,7 @@ window.__ModuleLoader__.load({
           h(
             "p",
             { className: "wb-muted" },
-            "资源注册一次，按项目勾选引用。共享资料只读；“今日”按需读取全部业务资料。",
+            "资源注册一次，按项目勾选引用。共享资料只读；SuperAgent 按需读取本人可用的业务资料。",
           ),
           error && h("p", { role: "alert", className: "wb-note" }, error),
           notice && h("p", { role: "status", className: "wb-note" }, notice),
@@ -662,8 +662,8 @@ window.__ModuleLoader__.load({
           setFiles(v=>({...v,[name]:{...saved,draft:saved.content}}));setNotice("已保存，下一轮生效");
         }catch(e){setError(e.message)}finally{setBusy(false)}
       };
-      return h("section",{className:"wb-rules-editor wb-page","aria-label":"今日 Markdown 配置"},
-        h("h2",null,"今日配置"),h("p",{className:"wb-muted"},"设置和今日 Agent 的合作方式。"),
+      return h("section",{className:"wb-rules-editor wb-page","aria-label":"SuperAgent Markdown 配置"},
+        h("h2",null,"SuperAgent 配置"),h("p",{className:"wb-muted"},"设置和 SuperAgent 的合作方式。"),
         alert(error),notice&&h("p",{role:"status"},notice),
         !file&&!error&&h("p",{role:"status"},"正在读取配置…"),
         h("div",{className:"wb-tabs"},...["SOUL.md","AGENT.md"].map(n=>button(n,()=>{setName(n);setPreview(false);setNotice("")},{key:n,"aria-pressed":name===n,disabled:busy}))),
@@ -690,10 +690,10 @@ window.__ModuleLoader__.load({
         h("div",{className:"wb-native-conversation"},children),
         !pane&&h("div",{className:"wb-companion-head",style:{position:"absolute",top:0,right:0}},
           button("关注",()=>setPane("follow"),{className:"wb-inline"}),button("配置",showRules,{className:"wb-inline"})),
-        h("aside",{className:"wb-companion",style:pane?undefined:{display:"none"},"aria-label":"今日辅助栏"},
+        h("aside",{className:"wb-companion",style:pane?undefined:{display:"none"},"aria-label":"SuperAgent 辅助栏"},
           h("div",{className:"wb-companion-head"},h("strong",null,pane==="rules"?"配置":"关注中的事"),
             h("div",{className:"wb-actions"},button(pane==="rules"?"关注":"配置",pane==="rules"?()=>setPane("follow"):showRules,{className:"wb-inline"}),
-              button("收起",()=>setPane(""),{className:"wb-inline","aria-label":"收起今日辅助栏"}))),
+              button("收起",()=>setPane(""),{className:"wb-inline","aria-label":"收起SuperAgent 辅助栏"}))),
           h("div",{className:"wb-companion-scroll",hidden:pane!=="follow"},
             h(TodayPage,{openSession,embedded:true})),
           rulesOpened&&h("div",{className:"wb-companion-scroll",hidden:pane!=="rules"},h(TodayRules))));
@@ -802,7 +802,7 @@ window.__ModuleLoader__.load({
       useEffect(()=>{let live=true;const refresh=()=>load().catch(e=>{if(live)setError(e.message)});refresh();const id=setInterval(refresh,15000);return()=>{live=false;clearInterval(id)}},[]);
       const act=async fn=>{setBusy(true);setError("");setNotice("");try{await fn();await load();setNotice("已保存")}catch(e){setError(e.message)}finally{setBusy(false)}};
       return h("section",{className:"wb-page"},h("style",null,css),h("div",{className:"wb-content"},
-        !embedded&&h("div",{className:"wb-heading"},h("h1",null,"今日")),
+        !embedded&&h("div",{className:"wb-heading"},h("h1",null,"SuperAgent")),
         error&&h("p",{role:"alert"},error),notice&&h("p",{role:"status"},notice),!data&&h("p",{role:"status"},"正在核对任务与待决定事项…"),
         data&&h("div",{className:"wb-section"},h("h2",null,`等待你决定 · ${data.decisions.length}`),
           data.decisions.length===0?h("p",{className:"wb-muted"},"暂无待决定事项。"):
@@ -811,7 +811,7 @@ window.__ModuleLoader__.load({
         data&&h("div",{className:"wb-section"},h("h2",null,"近期工作"),h("p",{className:"wb-muted"},"执行状态直接核对后台任务；发送与送达以渠道回执为准。"),data.runs.length===0&&h("p",null,"暂无任务。"),
           data.runs.map(r=>h("div",{key:r.id,className:"wb-row"},h("div",{className:"wb-row-main"},h("strong",null,r.title),h("div",{className:"wb-muted"},`${time(r.createdAt)} 开始${r.closedAt?" · "+time(r.closedAt)+" 结束":""}`),h("div",null,stateText(r)),r.stats?.total>0&&h("div",{className:"wb-muted"},`${r.stats.total} 条 · 成功 ${r.stats.succeeded} · 失败 ${r.stats.failed} · 待处理 ${r.stats.pending}`),r.deliveries&&h("div",{className:"wb-note"},receiptText(r))),button("查看对话",()=>openSession(r.sessionId))))),
         data&&h("details",{className:"wb-section"},h("summary",null,`个人规则与记忆 · ${data.memory.length}`),
-          h("p",{className:"wb-muted"},"可以纠正或忘记；推断与本人确认分别保存。"),button("添加个人规则",()=>setEdit({id:"memory_"+crypto.randomUUID(),revision:0,text:"",source:"本人在今日设置中填写",confirmed:true,forgotten:false})),
+          h("p",{className:"wb-muted"},"可以纠正或忘记；推断与本人确认分别保存。"),button("添加个人规则",()=>setEdit({id:"memory_"+crypto.randomUUID(),revision:0,text:"",source:"本人在 SuperAgent 设置中填写",confirmed:true,forgotten:false})),
           data.memory.map(m=>h("div",{key:m.id,className:"wb-row"},h("div",{className:"wb-row-main"},h("p",null,m.text),h("div",{className:"wb-muted"},`${m.confirmed?"本人确认":"待确认"} · ${m.source}`)),button("纠正",()=>setEdit({...m})),button("忘记",()=>act(()=>api("/memory",{...m,forgotten:true})),{disabled:busy}))),
           edit&&h("form",{className:"wb-form",onSubmit:e=>{e.preventDefault();act(async()=>{await api("/memory",{...edit,confirmed:true});setEdit(undefined)})}},field("记忆内容",h("textarea",{required:true,value:edit.text,onChange:e=>setEdit({...edit,text:e.target.value})})),field("来源",h("input",{required:true,value:edit.source,onChange:e=>setEdit({...edit,source:e.target.value})})),h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:busy},"确认保存"),button("取消",()=>setEdit(undefined))))),
         data&&h("details",{className:"wb-section"},h("summary",null,`定时工作 · ${data.schedules.length}`),
@@ -1499,10 +1499,10 @@ window.__ModuleLoader__.load({
             if(!alive)return;rememberPersonal(c.personalSessionId);ctx.uiWorkspace.openSession(c.personalSessionId);
           }).catch(e=>{if(alive)setError(e.message)});return()=>{alive=false}},[retry]);
           return h("section",{className:"wb-page"},h("div",{className:"wb-content"},alert(error),
-            error?button("重试",()=>setRetry(n=>n+1)):h("p",{role:"status"},"正在打开今日对话…")));
+            error?button("重试",()=>setRetry(n=>n+1)):h("p",{role:"status"},"正在打开 SuperAgent 对话…")));
         }
         for (const [id, label, mark, Component, extra] of [
-          ["wb-today","今日",IconClockOutlineRegular,TodayEntry,{}],
+          ["wb-today","SuperAgent",IconClockOutlineRegular,TodayEntry,{}],
           ["wb-projects","项目",UI.IconFolderCloseRegular||IconDatabaseOutlineRegular,ProjectsPage,{openProject}],
           ["wb-resources","知识库",IconDatabaseOutlineRegular,ResourcePage,{}],
           ["wb-experts","专家",UI.IconAgentPresetOutlineRegular||IconDatabaseOutlineRegular,ExpertsPage,{}],
