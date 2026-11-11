@@ -156,10 +156,17 @@ function operationsBatchFixture(count,{lostApproval=false,pendingApproval=false,
      approved_count:saved.recipients.length,updated_at:'2026-11-11T00:00:00Z'};
     if(lostApproval)throw Error('lost response');
     return {plan};
-   case 'admin.listAIAssistantRecipients':
-    return {items:saved.recipients.map((row,i)=>({id:10000+i,customer_id:row.customer_id,staff_id:row.staff_id,version:edited&&i===0?2:1,content_version_id:20000+i,
+   case 'admin.listAIAssistantRecipients': {
+    const limit=options.query.limit??50,offset=Number(options.query.cursor||0);
+    assert.ok(Number.isInteger(limit)&&limit>0&&limit<=50,'CRM recipient page limit');
+    const items=saved.recipients.slice(offset,offset+limit).map((row,index)=>{
+     const i=offset+index;
+     return {id:10000+i,customer_id:row.customer_id,staff_id:row.staff_id,version:edited&&i===0?2:1,content_version_id:20000+i,
      review_state:approved?'approved':'pending_review',effect_id:approved?'eer_'+(i+1):undefined,
-     execution_state:approved?((lostApproval||reportedFailure)&&i===1?'final_failed':'queued'):'not_accepted'}))};
+     execution_state:approved?((lostApproval||reportedFailure)&&i===1?'final_failed':'queued'):'not_accepted'};
+    });
+    return {items,next_cursor:offset+limit<saved.recipients.length?String(offset+limit):''};
+   }
    case 'admin.listAIAssistantExecutionReceipts':
     assert.equal(options.query.live,false);
     assert.ok(options.signal instanceof AbortSignal);
@@ -194,6 +201,7 @@ test('one confirmed work package creates and approves one CRM plan of 5000 perso
  assert.equal(created[0].options.body.recipients.length,5000);
  assert.deepEqual(created[0].options.body.recipients[0].content,[{kind:'text',text:'逐人正文 0'},{kind:'mini_program',material_id:1070}]);
  assert.equal(f.calls.filter(x=>x.operation==='admin.approveAIAssistantPlan').length,1);
+ assert.equal(f.calls.filter(x=>x.operation==='admin.listAIAssistantRecipients').length,100);
  assert.deepEqual(out.entries['item-4999'],{state:'accepted',at:'2026-11-11T00:00:00Z'});
  assert.equal(Object.keys(out.entries).length,5000);
  const callsAfterApproval=f.calls.length;

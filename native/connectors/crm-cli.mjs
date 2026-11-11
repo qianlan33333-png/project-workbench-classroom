@@ -440,7 +440,7 @@ function createOperationsBatch(config,workerCall,invoke,permitted,load,reserve,c
    // Initial recipient version 1 binds the exact create payload. A CRM
    // content edit increments that version even if the plan version stays 1.
    // Reading after preview closes the gap; later edits invalidate the digest.
-   const saved=await pages('admin.listAIAssistantRecipients',params,{limit:200});
+   const saved=await pages('admin.listAIAssistantRecipients',params);
    if(!validRecipients(saved)||saved.some(row=>row.version!==1||!positive(row.content_version_id)||
      row.review_state!=='pending_review'||row.execution_state!=='not_accepted'))
     return recordFailure('CRM 计划的收件人或稿件版本已经改变，未批准发送。');
