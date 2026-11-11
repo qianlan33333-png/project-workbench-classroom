@@ -2,6 +2,11 @@
 
 独立个人应用：官方 DeepSeek Harness + 标准 MCP + Temporal + MySQL。新实现仅在 `native/`；会话和项目文件使用 Harness 原生存储，业务数据与执行状态不使用 SQLite。
 
+## 后续开发默认规则
+
+- 设计、开发、精简或审查本工作台前，读取并使用 `/Users/qianlan/.codex/skills/workbench-harness-development/SKILL.md`。它是自动化应答与运营共同的极简开发入口，按需读取其参考，不在各 worktree 复制规则正文。
+- 自动化运营的本次定稿见 `docs/plans/2026-11-11-minimal-automation-operations-design.md`；设计目标与实际上线状态分别核验。用户当前要求优先，具体发布继续使用下述既有发布 skill。
+
 ## 不变式
 - 一个应用对话稳定对应一个 Harness 会话；对话 project_id 不可改。
 - 渠道只传新消息和明确区分的引用线索，不重拼历史。
