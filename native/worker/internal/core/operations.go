@@ -7,6 +7,8 @@ import (
 	"workbench-native/internal/operations"
 )
 
+const OperationsProfileSource = "operations-profile-directory"
+
 func (s *Store) CleanupOperationsSources(ctx context.Context, run Run) error {
 	if run.Operation != "data_refresh" {
 		return nil

@@ -47,7 +47,7 @@ func (s *Store) PutConnection(ctx context.Context, p Principal, v Connection) er
 		if !validMCPEndpoint(v.Location) || !ValidID(v.SourceTool) || !ValidID(v.SecretEnv) || !strings.HasPrefix(v.SecretEnv, "WORKBENCH_SOURCE_") {
 			return ErrInvalid
 		}
-	case "mysql", CRMArchiveSource, "operations-original":
+	case "mysql", CRMArchiveSource, "operations-original", OperationsProfileSource:
 		if !ValidID(v.SecretEnv) || !strings.HasPrefix(v.SecretEnv, "WORKBENCH_SOURCE_") {
 			return ErrInvalid
 		}
@@ -168,6 +168,28 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 	var originalFile *struct {
 		SHA256 string `json:"sha256"`
 		Count  int    `json:"count"`
+	}
+	var profileCollection string
+	if conn.Kind == OperationsProfileSource {
+		if resource.Relation != "profile-directory" {
+			return snap, ErrInvalid
+		}
+		result, err := operations.CollectProfileDirectory(ctx, os.Getenv(conn.SecretEnv), r.ID)
+		if err != nil {
+			return snap, err
+		}
+		file, ok := result.Files[resource.Relation]
+		if !ok || file.Count < 1 {
+			return snap, ErrInvalid
+		}
+		originalFile = &file
+		conn.Kind, conn.Location = "jsonl", result.Directory
+		profileCollection = os.Getenv(conn.SecretEnv)
+		if err = s.Emit(ctx, RunEvent{ID: r.ID + "-profile-source", RunID: r.ID,
+			SessionID: r.Principal.SessionID, Kind: "operations.profile-source",
+			Text: "原档案目录完整读取。", Details: result.Report}); err != nil {
+			return snap, err
+		}
 	}
 	if conn.Kind == "operations-original" {
 		collectionID := r.ParentRunID
@@ -503,5 +525,9 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 			return snap, fmt.Errorf("%w: source count dropped below configured retention threshold", ErrInvalid)
 		}
 	}
-	return s.Publish(ctx, r.Principal, resource.ID, r.ID, count)
+	published, err := s.Publish(ctx, r.Principal, resource.ID, r.ID, count)
+	if err == nil && profileCollection != "" {
+		err = operations.CleanupCollected(ctx, profileCollection, r.ID)
+	}
+	return published, err
 }

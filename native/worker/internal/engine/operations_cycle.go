@@ -23,6 +23,7 @@ type OperationsCycleInput struct {
 	Principal           core.Principal            `json:"principal"`
 	Sources             []core.ResourceSelection  `json:"sources"`
 	CleanDestination    string                    `json:"cleanDestination"`
+	ProfileDirectory    string                    `json:"profileDirectory,omitempty"`
 	Strategies          core.Ref                  `json:"strategies"`
 	History             core.Ref                  `json:"history"`
 	HistorySource       *core.ResourceSelection   `json:"historySource,omitempty"`
@@ -92,7 +93,7 @@ func (t operationsAuth) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(copy)
 }
 func (a *Activities) OperationsInvoke(ctx context.Context, in OperationCall) (json.RawMessage, error) {
-	allowed := map[string]bool{"data_refresh": true, "strategy_select": true, "batch_generate": true, "crm_push": true, "crm_receipts": true, "run_get": true, "run_resume": true}
+	allowed := map[string]bool{"data_refresh": true, "strategy_select": true, "batch_generate": true, "crm_push": true, "crm_receipts": true, "run_get": true, "run_resume": true, "resource_sync": true}
 	if !allowed[in.Name] || in.Principal.Kind != "project" {
 		return nil, failure(core.ErrDenied)
 	}
@@ -347,9 +348,23 @@ func OperationsCycle(ctx workflow.Context, in OperationsCycleInput) (err error) 
 		if e != nil {
 			return e
 		}
-		return workflow.ExecuteActivity(ctx, "OperationsCycleBatchesSubmitted", id, []string{pushed, additional}).Get(ctx, nil)
+		e = workflow.ExecuteActivity(ctx, "OperationsCycleBatchesSubmitted", id, []string{pushed, additional}).Get(ctx, nil)
+	} else {
+		e = workflow.ExecuteActivity(ctx, "OperationsCycleSubmitted", id, pushed).Get(ctx, nil)
 	}
-	return workflow.ExecuteActivity(ctx, "OperationsCycleSubmitted", id, pushed).Get(ctx, nil)
+	if e != nil {
+		return e
+	}
+	if in.ProfileDirectory != "" {
+		if _, e = step("resource_sync", map[string]any{
+			"operationKey": id + "-profile-directory",
+			"destination":  in.ProfileDirectory,
+			"title":        "更新运营用户档案",
+		}); e != nil {
+			return e
+		}
+	}
+	return nil
 }
 func (a *Activities) OperationsGenerationPage(ctx context.Context, p core.Principal, ref core.Ref, after string) (core.SelectionInfo, error) {
 	return a.Store.SelectionInfo(ctx, p, ref, &core.Selection{After: after, Limit: 2000})

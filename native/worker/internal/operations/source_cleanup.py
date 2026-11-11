@@ -13,7 +13,7 @@ if not (root/'consumed.json').exists():
 for name in ('original','raw'):
     path=root/name
     if path.exists():shutil.rmtree(path)
-for name in ('profiles','history','strategies','methods'):
+for name in ('profiles','history','strategies','methods','profile-directory'):
     (root/(name+'.jsonl')).unlink(missing_ok=True)
 (root/'native-result.json').unlink(missing_ok=True)
 print('{}')

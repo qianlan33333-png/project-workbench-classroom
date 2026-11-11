@@ -478,6 +478,10 @@ func (a *Server) operationsProfiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
+	if cfg.Cycle != nil && cfg.Cycle.ProfileDirectory != "" {
+		a.localOperationsProfiles(w, r, p, cfg.Cycle.ProfileDirectory)
+		return
+	}
 	if cfg.ReadSource {
 		q := r.URL.Query()
 		if id != "" {
