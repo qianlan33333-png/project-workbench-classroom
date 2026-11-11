@@ -38,7 +38,8 @@
     "owner-catalog.js",
     "reply-evidence.js",
     "channel-context.js",
-    "resource-documents.js"
+    "resource-documents.js",
+    "library-command.js"
   ],
   "dsh": {
     "bundle": {

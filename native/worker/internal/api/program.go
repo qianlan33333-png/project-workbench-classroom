@@ -39,10 +39,10 @@ func (a *Server) programRun(ctx context.Context, p core.Principal, in ProgramReq
 		if e != nil {
 			return r, e
 		}
-		if source.Optional && (source.Refresh || source.Version != "" || resource.OwnerProject != p.ProjectID || source.ResourceID == in.Sources[0].ResourceID) {
+		if source.Optional && (source.Refresh || source.Version != "" || source.ResourceID == in.Sources[0].ResourceID) {
 			return r, core.ErrDenied
 		}
-		if source.Refresh && resource.OwnerProject != p.ProjectID && resource.MaintainerProject != p.ProjectID {
+		if source.Refresh && a.Store.CheckResourceWrite(ctx, p, source.ResourceID) != nil {
 			return r, core.ErrDenied
 		}
 		sectionSeen := map[string]bool{}
@@ -59,6 +59,15 @@ func (a *Server) programRun(ctx context.Context, p core.Principal, in ProgramReq
 			}
 			if !found {
 				return r, core.ErrInvalid
+			}
+			if p.Kind == "project" {
+				allowed, err := a.Store.Granted(ctx, source.ResourceID, p.ProjectID, section)
+				if err != nil {
+					return r, err
+				}
+				if !allowed {
+					return r, core.ErrDenied
+				}
 			}
 		}
 		if !source.Refresh {

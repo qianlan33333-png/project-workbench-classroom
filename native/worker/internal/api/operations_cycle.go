@@ -71,9 +71,8 @@ func (a *Server) configureLocalOperationsSchedule(ctx context.Context, cfg opera
 			return view, core.ErrInvalid
 		}
 		seen[id] = true
-		r, e := a.Store.Resource(ctx, id)
-		if e != nil || r.OwnerProject != p.ProjectID {
-			return view, core.ErrDenied
+		if e := a.Store.CheckResourceWrite(ctx, p, id); e != nil {
+			return view, e
 		}
 	}
 	for key, ref := range in.MethodRefs {

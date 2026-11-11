@@ -102,8 +102,7 @@ func (a *Server) operationsToday(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, core.ErrDenied)
 		return
 	}
-	resource, err := a.Store.Resource(ctx, cfg.Input.ResourceID)
-	if err != nil || resource.OwnerProject != p.ProjectID && resource.MaintainerProject != p.ProjectID {
+	if allowed, err := a.Store.Granted(ctx, cfg.Input.ResourceID, p.ProjectID, cfg.Input.Section); err != nil || !allowed {
 		respond(w, nil, core.ErrDenied)
 		return
 	}

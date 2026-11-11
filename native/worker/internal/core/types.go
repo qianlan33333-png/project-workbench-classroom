@@ -61,6 +61,9 @@ type Connection struct {
 	SourceTool string `json:"sourceTool,omitempty"`
 }
 type Resource struct {
+	Kind               string         `json:"kind,omitempty"`
+	Description        string         `json:"description,omitempty"`
+	NativeEditable     bool           `json:"nativeEditable,omitempty"`
 	JSONSource         *JSONSource    `json:"jsonSource,omitempty"`
 	MinRecords         int            `json:"minRecords,omitempty"`
 	MinRetainedPercent int            `json:"minRetainedPercent,omitempty"`
@@ -88,6 +91,9 @@ type RecordCheck struct {
 }
 
 func (r Resource) Validate() error {
+	if (r.Kind != "" && r.Kind != "database" && r.Kind != "corpus") || len([]rune(r.Description)) > 500 {
+		return ErrInvalid
+	}
 	if r.MinRecords < 0 || r.MinRetainedPercent < 0 || r.MinRetainedPercent > 100 {
 		return ErrInvalid
 	}
@@ -123,7 +129,7 @@ func (r Resource) Validate() error {
 		}
 		seen[s.ID] = true
 		for _, f := range s.Fields {
-			if !ValidID(f) {
+			if !ValidID(f) && !(r.NativeEditable && validLibraryColumn(f)) {
 				return ErrInvalid
 			}
 		}
@@ -242,6 +248,21 @@ func AuthorizeAll(ctx context.Context, g Gate, p Principal, refs []Ref) error {
 			}
 			resources[ref.ResourceID] = r
 		}
+		if ref.Version == LivePolicyVersion {
+			if r.Relation != BusinessPolicyRelation || len(r.Sections) != 1 || r.Sections[0].ID != ref.Section {
+				return ErrDenied
+			}
+			if p.Kind == "project" {
+				ok, err := g.Granted(ctx, ref.ResourceID, p.ProjectID, ref.Section)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return ErrDenied
+				}
+			}
+			continue
+		}
 		snap, e := g.Snapshot(ctx, ref.ResourceID, ref.Version)
 		if e != nil {
 			return e
@@ -259,7 +280,7 @@ func AuthorizeAll(ctx context.Context, g Gate, p Principal, refs []Ref) error {
 		if !found {
 			return ErrDenied
 		}
-		if p.Kind != "owner" && p.Kind != "personal" && r.OwnerProject != p.ProjectID && r.MaintainerProject != p.ProjectID {
+		if p.Kind == "project" {
 			key := ref.ResourceID + "/" + ref.Section
 			allowed, checked := permissions[key]
 			if !checked {

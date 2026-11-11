@@ -417,7 +417,7 @@ func (a *Server) configureOperationsSchedule(ctx context.Context, cfg operations
 		if err != nil {
 			return "", err
 		}
-		input.Refresh = resource.ConnectionID != "" && resource.OwnerProject == cfg.ProjectID
+		input.Refresh = resource.ConnectionID != "" && a.Store.CheckResourceWrite(ctx, operationsPrincipal(cfg.ProjectID), input.ResourceID) == nil
 	}
 	method := operationsMethodRef(cfg.ProjectID, kind, schedule.Expert)
 	req := ProgramRequest{Title: title, Destination: operationsResource(cfg.ProjectID, kind), LatestMethod: &method, Quiet: true,

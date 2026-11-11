@@ -18,6 +18,7 @@ import { resourceDocuments } from './resource-documents.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
 import { createSuperAgent } from './superagent.js';
+import { nativeLibraryCommand, activeLibraryCommand } from './library-command.js';
 
 export const inject = [
   "agents",
@@ -154,6 +155,16 @@ export async function apply(ctx, config) {
       sessionId: agent.id,
     };
   }
+  let freshLibraryCommand;
+  ctx.on("session/event", (session, event) => {
+    if (session.header.id !== superAgent.id) return;
+    if (event.type === "agent/inbox/spliced") {
+      const message=event.data.inserted.findLast(message=>message.role==="user");
+      if(!message)return;
+      const input=nativeLibraryCommand(message);
+      freshLibraryCommand=input&&{...input,received:Date.now()};
+    }
+  });
   const owned = new Map();
   async function attach(agent) {
     if (owned.has(agent.id)) return;
@@ -173,9 +184,33 @@ export async function apply(ctx, config) {
         interpolate: false,
       }] };
     });
+    let stepLibraryCommand;
     agent.ctx.on("agent/pre-step", async (payload, next) => {
       await call("/session/check", p, undefined, payload.signal);
+      if (p.kind !== "personal" || p.sessionId !== superAgent.id) return next();
+      if(stepLibraryCommand?.turn!==payload.turn)stepLibraryCommand=undefined;
+      if(payload.messages.some(message=>message.role==="user")){
+        const active=activeLibraryCommand(payload.messages,freshLibraryCommand);
+        stepLibraryCommand=active&&{...active,turn:payload.turn,signal:payload.signal};
+      }
       return next();
+    });
+    agent.ctx.on("agent/turn-stopping",({turn})=>{
+      if(stepLibraryCommand?.turn!==turn)return;
+      if(freshLibraryCommand?.requestId===stepLibraryCommand.requestId)freshLibraryCommand=undefined;
+      stepLibraryCommand=undefined;
+    });
+    agent.ctx.on("tools/execute",async(exec,next)=>{
+      if(!["mcp__workbench__resource_create","mcp__workbench__resource_grant"].includes(exec.name))return next();
+      const evidence=stepLibraryCommand;
+      if(!evidence||evidence.signal?.aborted||evidence.requestId!==freshLibraryCommand?.requestId||Date.now()-freshLibraryCommand.received>120000||delivery.stateOf(agent.session).feedback)
+        throw Error("需要本人当前消息明确指定库、项目和权限，或明确指定新建库的名称和类型。");
+      freshLibraryCommand=undefined;
+      const sessionId=p.sessionId;
+      await call("/resource-owner-command",owner,{sessionId,requestId:evidence.requestId,text:evidence.text},exec.signal);
+      try{return await next()}finally{
+        await call("/resource-owner-command",owner,{sessionId,requestId:"",text:""}).catch(()=>{});
+      }
     });
     // Only global tools are masked. The scoped official MCP client supplies capabilities.
     const dispose = agent.ctx.effect(
@@ -234,7 +269,7 @@ export async function apply(ctx, config) {
         if (!delivery.stateOf(agent.session).feedback) return;
         const readOnly = new Set([
           "attachment_list", "resource_list",
-          "resource_read", "resource_search", "resource_excerpt",
+          "resource_read", "resource_search", "resource_excerpt", "resource_policy_list", "resource_document",
           "project_list",
           "run_get", "run_steps",
           "run_list",
@@ -245,11 +280,13 @@ export async function apply(ctx, config) {
         if (!readOnly.has(exec.name.replace(/^mcp__workbench__/, "")))
           return "任务反馈轮只读；继续业务需要本人在对话中明确提出。";
       });
-      if (p.kind === "personal") superAgent.attach(agent);
-      else agent.ctx.systemPrompt.section({
+      if (p.kind === "personal") {
+        superAgent.attach(agent);
+        agent.ctx.systemPrompt.section({name:"workbench:library",order:79,text:"需要业务资料时用 resource_list 查库。业务口径用 resource_policy_list 查；写入用 resource_item_write，并按资源能力执行，停用用 delete。仅本人当前消息明确指定库、项目和权限（如：给「项目」开通「库」的只读权限）或新库类型和名称（如：新建数据库「运营素材」）时，才分别用 resource_grant 或 resource_create。遇到同名目标先澄清。以工具回执为准。"});
+      } else agent.ctx.systemPrompt.section({
         name: "workbench:method",
         order: 80,
-        text: "你在固定项目内工作。专家 Skill 负责判断，标准工具负责执行。资料仅通过已授权资源读取；批量传引用，不逐人塞入主对话。先选择板块与方法，再提交任务。状态、数据发布、内容生成和实际送达必须区分。",
+        text: "你在固定项目内工作。专家 Skill 负责判断，标准工具负责执行。资料仅通过已授权资源读取；内部业务需要查资料时可以用 resource_list 找库，如 access=none，说明需要哪个库的只读权限。客户对象会话只用配置的对客资料。批量传引用，不逐人塞入主对话。先选择板块与方法，再提交任务。状态、数据发布、内容生成和实际送达必须区分。",
       });
     } catch (e) {
       for(const extension of extensions)extension.dispose();
@@ -452,8 +489,8 @@ export async function apply(ctx, config) {
             }
             if(req.method==='GET'&&path==='/resource-documents'){
               const projectId=u.searchParams.get('projectId'),resourceId=u.searchParams.get('resourceId');
-              if(!(await syncProjects()).some(p=>p.id===projectId))throw requestError('项目不存在',404);
-              json(res,200,await resourceDocuments(config,call,projectId,resourceId,u.searchParams.get('uri')||undefined));return;
+              if(projectId&&!(await syncProjects()).some(p=>p.id===projectId))throw requestError('项目不存在',404);
+              json(res,200,await resourceDocuments(config,call,projectId,resourceId,u.searchParams.get('uri')||undefined,projectId?undefined:owner));return;
             }
             if(req.method==='GET'&&path==='/reply-experts'){
               const project=(await syncProjects()).find(p=>p.id===u.searchParams.get('projectId'));
@@ -568,7 +605,7 @@ export async function apply(ctx, config) {
               res.writeHead(200,{'content-type':response.headers.get('content-type'),'content-disposition':response.headers.get('content-disposition')});
               const stream=Readable.fromWeb(response.body);stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);return;
             }
-            const readPaths = new Set(["/reply-states","/reply-timeline","/reply-accounts","/reply-resources","/transports","/reply-projects","/reply-settings","/message-routes","/reply-session","/reply-channel-history","/resource-page", "/business-policies", "/schedules", "/notification-targets",
+            const readPaths = new Set(["/reply-states","/reply-timeline","/reply-accounts","/reply-resources","/transports","/reply-projects","/reply-settings","/message-routes","/reply-session","/reply-channel-history","/resource-page", "/business-policies", "/resource-permissions", "/schedules", "/notification-targets",
               "/resources",
               "/connections",
               "/grants",
@@ -578,10 +615,9 @@ export async function apply(ctx, config) {
               "/personal/settings",
               "/notifications",
             ]);
-            const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause","/business-policies",
+            const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause","/business-policies","/resource-permissions",
               "/resources",
               "/connections",
-              "/grants",
               "/memory",
               "/decisions/answer",
               "/personal/settings",
@@ -664,6 +700,16 @@ export async function apply(ctx, config) {
       return;
     }
     if(req.method==='GET'&&req.url==='/health'){json(res,200,{ready:true});return;}
+    if(req.method==='POST'&&req.url==='/resource-document') {
+      try {
+        const {principal:p,resourceId,uri}=await body(req);
+        if(p.kind==="personal"?p.sessionId!==superAgent.id:p.kind!=="project")throw requestError("Invalid session",403);
+        const check=await call("/session/check",p);
+        if(check.objectSession)throw requestError("Customer session",403);
+        json(res,200,await resourceDocuments(config,call,p.projectId,resourceId,uri||undefined,p));
+      }catch(e){json(res,e.status||400,{error:e.message})}
+      return;
+    }
     if(req.method==='POST'&&req.url==='/attachments') {
       try {
         const input=await body(req),p=input.principal;

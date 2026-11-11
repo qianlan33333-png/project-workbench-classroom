@@ -6,6 +6,7 @@ window.__ModuleLoader__.load({
     const { useState, useEffect, useRef, useSyncExternalStore } = React;
     const {IconClockOutlineRegular, IconDatabaseOutlineRegular}=require("@deepseek-ai/dsh-client-ui-primitives");
     let resourceProject="";
+    let requestedResourcePermissions=new URLSearchParams(window.location.search).get("resourcePermissions");
     let requestedBusinessPolicy=new URLSearchParams(window.location.search).get("businessPolicy");
     const css = `.wb-page{height:100%;overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:14px;line-height:1.6}.wb-content{max-width:960px;margin:auto;padding:28px clamp(20px,4vw,48px) 48px}.wb-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}.wb-heading h1{font-size:20px;font-weight:500;margin:0}.wb-page button,.wb-inline{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:6px 12px;cursor:pointer}.wb-short-label{display:none}@media(max-width:600px){.wb-full-label{display:none}.wb-short-label{display:inline}.wb-inline{font-size:12px;padding:4px 6px}}.wb-page button:disabled{opacity:.5;cursor:wait}.wb-page textarea{font:inherit;width:100%;box-sizing:border-box;min-height:88px;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:10px}.wb-page input,.wb-page select{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:7px 10px;min-width:0;max-width:100%;box-sizing:border-box}.wb-muted{color:var(--dsw-alias-label-secondary)}.wb-list{border-top:1px solid var(--dsw-alias-border-l3)}.wb-row{display:flex;gap:16px;align-items:center;padding:18px 0;border-bottom:1px solid var(--dsw-alias-border-l3);flex-wrap:wrap}.wb-row-main{flex:1;min-width:180px}.wb-row strong{font-weight:500}.wb-tag{font-size:12px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l3);border-radius:6px}.wb-form{padding:20px 0;display:grid;gap:16px}.wb-field{display:grid;gap:6px;min-width:0}.wb-columns{display:grid;grid-template-columns:1fr 1fr;gap:16px}.wb-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start}.wb-form>h2{font-size:16px;font-weight:500;margin:0}.wb-note{padding:12px 0;overflow-wrap:anywhere}.wb-check{display:flex;gap:8px;align-items:center;padding:6px 0}.wb-section{border:1px solid var(--dsw-alias-border-l3);border-radius:10px;padding:16px;margin-top:12px}.wb-section h2{font-size:16px;font-weight:500;margin:0 0 8px}@media(max-width:600px){.wb-columns{grid-template-columns:1fr}.wb-heading{align-items:flex-start}.wb-row-main{min-width:140px}}`;
     async function api(path, data) {
@@ -108,7 +109,7 @@ window.__ModuleLoader__.load({
         [edit, setEdit] = useState(),
         [connection, setConnection] = useState(),
         [sharing, setSharing] = useState(),
-        [selected, setSelected] = useState({}),[preview,setPreview]=useState(),[business,setBusiness]=useState();
+        [preview,setPreview]=useState(),[business,setBusiness]=useState();
       const load = async () => {
         try {
           const [c, n, g] = await Promise.all([
@@ -150,7 +151,19 @@ window.__ModuleLoader__.load({
         } catch (e) { if (n === previewRequest.current) setError(e.message); }
       };
       useEffect(()=>{
-        if (!catalog || !requestedBusinessPolicy) return;
+        if (!catalog) return;
+        if (requestedResourcePermissions) {
+          const id = requestedResourcePermissions;
+          requestedResourcePermissions = null;
+          const resource = catalog.resources.find(item=>item.id===id);
+          if (!resource) {
+            setError("当前账号无法打开这份资源");
+            return;
+          }
+          setSharing(resource);
+          return;
+        }
+        if (!requestedBusinessPolicy) return;
         const id = requestedBusinessPolicy;
         requestedBusinessPolicy = null;
         const resource = catalog.resources.find(item=>item.id===id && item.relation===businessPolicyRelation && !item.connectionId);
@@ -178,10 +191,9 @@ window.__ModuleLoader__.load({
         catch(e){if(n===previewRequest.current)setError(e.message)}
       };
       const openCorpus=async(r,uri)=>{
-        const projectId=projectFilter||r.ownerProject;
         const n=++documentRequest.current;setError("");setPreview(undefined);previewRequest.current++;
         try{
-          const v=projectId?await api(query("/resource-documents",{projectId,resourceId:r.id,...(uri?{uri}:{})})):{external:false};
+          const v=await api(query("/resource-documents",{resourceId:r.id,...(uri?{uri}:{})}));
           if(n!==documentRequest.current)return;
           if(v.external){setDocuments({resource:r,...v});return}
           await openPreview(r);
@@ -189,22 +201,8 @@ window.__ModuleLoader__.load({
       };
       const resetView=()=>{documentRequest.current++;previewRequest.current++;setDocuments(undefined);setPreview(undefined);setRecord(undefined);setBusiness(undefined)};
       const change = (key, value) => setEdit({ ...edit, [key]: value });
-      const startShare = (r) => {
-        const map = {};
-        for (const p of catalog.projects) {
-          const names = grants
-            .filter((g) => g.resourceId === r.id && g.projectId === p.id)
-            .flatMap((g) => g.sections);
-          map[p.id] = r.sections
-            .filter((s) => names.includes("*") || names.includes(s.id))
-            .map((s) => s.id);
-        }
-        setSelected(map);
-        setSharing(r);
-      };
       const rows = (catalog?.resources ?? []).filter(
-        (r) => ((connections.find(c=>c.id===r.connectionId)?.kind==="directory" ||
-          Boolean(catalog?.documentResourceIds?.includes(r.id)) || r.sections.some(s=>s.fields?.includes("markdown"))) === (kind==="corpus")) && (
+        (r) => ((r.kind || (connections.find(c=>c.id===r.connectionId)?.kind==="directory" || Boolean(catalog?.documentResourceIds?.includes(r.id)) || r.name.includes("语料") || r.sections.some(s=>s.fields?.includes("markdown")) ? "corpus" : "database")) === kind) && (
           !projectFilter ||
           r.ownerProject === projectFilter ||
           r.maintainerProject === projectFilter ||
@@ -236,16 +234,16 @@ window.__ModuleLoader__.load({
                   location: "",
                 }),
               ),
-              button("注册资源", () => setEdit(emptyResource()), {disabled:!catalog||busy}),
+              button("注册资源", () => setEdit({...emptyResource(),kind}), {disabled:!catalog||busy}),
             ),
           ),
           h("div",{className:"wb-tabs","aria-label":"资料类型"},
-            button("语料",()=>{resetView();setKind("corpus")},{"aria-pressed":kind==="corpus"}),
+            button("语料库",()=>{resetView();setKind("corpus")},{"aria-pressed":kind==="corpus"}),
             button("数据库",()=>{resetView();setKind("database")},{"aria-pressed":kind==="database"})),
           h(
             "p",
             { className: "wb-muted" },
-            "资源注册一次，按项目勾选引用。共享资料只读；SuperAgent 按需读取本人可用的业务资料。",
+            "项目权限在各库设置。SuperAgent 默认可以管理所有库；外接只读资料可查询，支持同步的来源可以同步。",
           ),
           error && h("p", { role: "alert", className: "wb-note" }, error),
           notice && h("p", { role: "status", className: "wb-note" }, notice),
@@ -351,6 +349,8 @@ window.__ModuleLoader__.load({
                 },
               },
               h("h2", null, edit.revision ? "编辑资源" : "注册资源"),
+              field("用途描述",h("textarea",{value:edit.description||"",maxLength:500,placeholder:"写下这份资料包含什么、能回答哪些问题",onChange:e=>change("description",e.target.value)})),
+              h("p",{className:"wb-muted"},"所有内部项目都能看到用途描述，请勿填写个人资料或连接信息。"),
               h(
                 "div",
                 { className: "wb-columns" },
@@ -414,7 +414,7 @@ window.__ModuleLoader__.load({
                 field("唯一编号路径（JSON Pointer）",h("input",{value:edit.jsonSource?.keyPointer||"",placeholder:"/id",onChange:e=>change("jsonSource",{...edit.jsonSource,keyPointer:e.target.value})})),
                 field("保存字段与来源路径",h("textarea",{value:edit.sourceFieldsText??JSON.stringify(edit.jsonSource?.fields||{},null,2),onChange:e=>change("sourceFieldsText",e.target.value)})),
                 h("p",{className:"wb-muted"},"例如 {\"name\":\"/display/name\"}。资料板块从这些保存字段中选择；空路径表示保留整条原文。")),
-              field("维护项目",h("select",{value:edit.maintainerProject||"",onChange:e=>change("maintainerProject",e.target.value)},h("option",{value:""},"跟随所属项目 / 本人维护"),...(catalog?.projects??[]).map(p=>h("option",{key:p.id,value:p.id},p.name)))),
+              field("维护项目",h("select",{value:edit.maintainerProject||"",onChange:e=>change("maintainerProject",e.target.value)},h("option",{value:""},"未指定维护项目"),...(catalog?.projects??[]).map(p=>h("option",{key:p.id,value:p.id},p.name)))),
               h("details",null,h("summary",null,"使用条件（可选）"),h("p",{className:"wb-muted"},"登记可供专家选择的固定校验条件。发送时，资格和收件对象从此资料中核对；专家不能在调用时放宽条件。"),field("条件定义",h("textarea",{rows:6,value:edit.checksText??JSON.stringify(edit.checks||[],null,2),onChange:e=>change("checksText",e.target.value)}))),
               h("details",null,h("summary",null,"发布校验（可选）"),field("最少记录数",h("input",{type:"number",min:0,value:edit.minRecords||0,onChange:e=>change("minRecords",Number(e.target.value))})),field("至少保留上一版数量的百分比",h("input",{type:"number",min:0,max:100,value:edit.minRetainedPercent||0,onChange:e=>change("minRetainedPercent",Number(e.target.value))})),field("来源发布版本字段",h("input",{value:edit.watermarkField||"",onChange:e=>change("watermarkField",e.target.value)})),field("记录结构（JSON Schema）",h("textarea",{value:edit.schemaText??JSON.stringify(edit.recordSchema||{},null,2),onChange:e=>change("schemaText",e.target.value)}))),
               ...edit.sections.map((s, i) =>
@@ -487,62 +487,7 @@ window.__ModuleLoader__.load({
                 button("取消", () => setEdit(undefined)),
               ),
             ),
-          sharing &&
-            h(
-              "form",
-              {
-                className: "wb-form",
-                onSubmit: (e) => {
-                  e.preventDefault();
-                  act(async () => {
-                    for (const p of catalog.projects.filter(p=>p.id!==sharing.ownerProject&&p.id!==sharing.maintainerProject))
-                      await api("/grants", {
-                        resourceId: sharing.id,
-                        projectId: p.id,
-                        sections: selected[p.id] || [],
-                      });
-                    setSharing(undefined);
-                  });
-                },
-              },
-              h("h2", null, "允许哪些项目读取「" + sharing.name + "」"),
-              h("p", {className:"wb-muted"}, "所属项目和维护项目始终可使用该资源；这里仅设置其他项目的只读范围。调整维护方请编辑资源。"),
-              ...catalog.projects
-                .filter((p) => p.id !== sharing.ownerProject && p.id !== sharing.maintainerProject)
-                .map((p) =>
-                  h(
-                    "fieldset",
-                    { key: p.id, className: "wb-section" },
-                    h("legend", null, p.name),
-                    ...sharing.sections.map((s) =>
-                      h(
-                        "label",
-                        { key: s.id, className: "wb-check" },
-                        h("input", {
-                          type: "checkbox",
-                          checked: (selected[p.id] || []).includes(s.id),
-                          onChange: (e) =>
-                            setSelected({
-                              ...selected,
-                              [p.id]: e.target.checked
-                                ? [...(selected[p.id] || []), s.id]
-                                : (selected[p.id] || []).filter(
-                                    (id) => id !== s.id,
-                                  ),
-                            }),
-                        }),
-                        s.name,
-                      ),
-                    ),
-                  ),
-                ),
-              h(
-                "div",
-                { className: "wb-actions" },
-                h("button", { type: "submit", disabled: busy }, "保存引用范围"),
-                button("取消", () => setSharing(undefined)),
-              ),
-            ),
+          sharing&&h(ResourcePermissionsDialog,{key:sharing.id,resource:sharing,close:()=>setSharing(undefined),saved:async()=>{setSharing(undefined);await load();setNotice("项目权限已保存");}}),
           documents&&h("section",{className:"wb-section"},
             h("div",{className:"wb-heading"},h("h2",null,documents.resource.name),button("关闭预览",resetView)),
             documents.content!==undefined?h(React.Fragment,null,button("返回语料目录",()=>setDocuments({...documents,content:undefined})),markdown(documents.content)):
@@ -571,8 +516,9 @@ window.__ModuleLoader__.load({
                   h(
                     "div",
                     { className: "wb-muted" },
-                    r.sections.map((s) => s.name).join(" · "),
+                    r.description || r.sections.map((s) => s.name).join(" · "),
                   ),
+                  r.ownerProject&&h("div",{className:"wb-muted"},"所属项目："+(catalog.projects.find(p=>p.id===r.ownerProject)?.name||r.ownerProject)),
                 ),
                 h(
                   "span",
@@ -580,7 +526,7 @@ window.__ModuleLoader__.load({
                   r.relation===businessPolicyRelation ? "实时表" : r.currentVersion ? "已发布" : "尚未发布",
                 ),
                 r.relation===businessPolicyRelation ? button("查看资料",()=>openBusiness(r)) : r.currentVersion&&button("查看资料",()=>kind==="corpus"?openCorpus(r):openPreview(r)),
-                r.relation!==businessPolicyRelation && button("设置引用", () => startShare(r)),
+                button("权限设置", () => setSharing(r), {"aria-label":"权限设置："+r.name}),
                 button("编辑", () => setEdit(r)),
               ),
             ),
@@ -607,7 +553,17 @@ window.__ModuleLoader__.load({
       .wb-page .wb-primary{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-base);border-color:transparent}
       .wb-work-area{display:flex;height:100%;min-height:0;min-width:0;position:relative;background:var(--dsw-alias-bg-base)}
       .wb-native-conversation{flex:1;min-width:0;height:100%;overflow:hidden}
-      .wb-blank-actions{position:absolute;top:8px;right:48px;z-index:2}
+      :is(dialog,[role=dialog]):has(.wb-permission-page){width:min(520px,calc(100vw - 48px));max-width:calc(100vw - 48px)}
+      .wb-permission-page{width:100%;box-sizing:border-box;max-height:68vh}
+      .wb-permission-page .wb-form{margin:0;padding:6px 0;gap:12px}
+      .wb-permission-page p{margin:0}
+      .wb-permission-page .wb-actions{justify-content:flex-end;padding-top:8px}
+      .wb-permission-list{max-height:34vh;overflow:auto}
+      .wb-permission-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--dsw-alias-border-l3)}
+      .wb-permission-row details{grid-column:1/-1;padding-left:22px}
+      .wb-permission-identity{min-width:0;overflow-wrap:anywhere}
+      .wb-permission-identity .wb-muted{display:block;font-size:12px}
+      .wb-permission-row .wb-check{padding:2px 0}
       .wb-companion{width:clamp(260px,27vw,390px);min-height:0;border-left:1px solid var(--dsw-alias-border-l3);display:flex;flex-direction:column;background:var(--dsw-alias-bg-base)}
       .wb-companion .wb-content{padding:14px 16px 24px}
       .wb-companion .wb-section{padding:12px;margin:10px 0}
@@ -647,34 +603,57 @@ window.__ModuleLoader__.load({
           ...columns.map(k=>h("td",{key:k,title:cell(row.fields[k])},cell(row.fields[k]))),
           h("td",null,button("查看",()=>open(row),{"aria-label":"查看记录 "+row.id})))))));
     }
-    function ReadableResources({project,close,manage}) {
-      const [data,setData]=useState(),[error,setError]=useState(""),[notice,setNotice]=useState(""),[busy,setBusy]=useState("");
-      const editing=useRef(false);
-      const load=async()=>{const [resources,grants]=await Promise.all([api("/resources"),api("/grants")]);setData({resources,grants})};
-      useEffect(()=>{load().catch(e=>setError(e.message))},[project.id]);
-      const save=async(resourceId,sections)=>{
-        if(editing.current)return;
-        editing.current=true;setBusy(resourceId);setError("");setNotice("");
-        try{
-          await api("/grants",{resourceId,projectId:project.id,sections});
-          setData(v=>({...v,grants:[...v.grants.filter(g=>g.projectId!==project.id||g.resourceId!==resourceId),{projectId:project.id,resourceId,sections}]}));
-          setNotice("读取范围已保存");
-        }catch(e){setError(e.message)}finally{setBusy("");editing.current=false}
+    function ResourcePermissionsDialog({resource,close,saved}) {
+      const [data,setData]=useState(),[choices,setChoices]=useState({}),[search,setSearch]=useState("");
+      const [error,setError]=useState(""),[busy,setBusy]=useState(false);
+      const pending=useRef(false);
+      const load=()=>{
+        setData(undefined);setError("");
+        return Promise.all([api("/project-list"),api(query("/resource-permissions",{resourceId:resource.id}))]);
       };
-      return h(UI.Modal,{open:true,title:project.name+" · 可读资料",onClose:close,closeLabel:"关闭"},
-        h("section",{className:"wb-page",style:{maxHeight:"68vh",padding:"12px 20px"}},
-          h("p",{className:"wb-muted"},"选择这个项目的对话可以读取的资料板块。"),alert(error),notice&&h("p",{role:"status"},notice),
-          !data&&!error&&h("p",{role:"status"},"正在读取资料…"),
-          data&&h("div",{className:"wb-list"},...data.resources.map(r=>{
-            const own=r.ownerProject===project.id,maintains=r.maintainerProject===project.id;
-            const raw=data.grants.filter(g=>g.projectId===project.id&&g.resourceId===r.id).flatMap(g=>g.sections);
-            const selected=raw.includes("*")?r.sections.map(s=>s.id):raw;
-            return h("div",{className:"wb-row",key:r.id},h("div",{className:"wb-row-main"},
-              h("strong",null,r.name),own||maintains?h("p",{className:"wb-muted"},own?"本项目资料":"由本项目维护 · 可读"):r.sections.map(s=>
-                h("label",{className:"wb-check",key:s.id},h("input",{type:"checkbox",checked:selected.includes(s.id),disabled:!!busy,onChange:e=>
-                  save(r.id,e.target.checked?[...selected,s.id]:selected.filter(id=>id!==s.id))}),s.name||s.id))));
-          }),!data.resources.length&&h("p",{className:"wb-muted"},"暂无可管理资料")),
-          h("div",{className:"wb-actions"},button("在知识库管理",manage),button("关闭",close))));
+      const show=([projects, permissions])=>{
+        setData({projects:projects.projects, permissions});
+        setChoices(Object.fromEntries(permissions.grants.map(grant=>[grant.projectId,grant])));
+      };
+      useEffect(()=>{let active=true;load().then(result=>{if(active)show(result)}).catch(e=>{if(active)setError(e.message)});return()=>{active=false};},[]);
+      const set=(id,update)=>setChoices(old=>({...old,[id]:update(old[id]||{projectId:id,mode:"none",sections:resource.sections.map(s=>s.id)})}));
+      const sections=resource.sections;
+      const projects=(data?.projects||[]).filter(p=>p.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+      const kindName=type=>({ordinary:"普通项目","auto-reply":"自动化应答","auto-operations":"自动化运营"}[type]||"专项项目");
+      return h(UI.Modal,{open:true,title:"权限设置",closeLabel:"关闭",onClose:()=>{if(!pending.current)close()}},
+        h("div",{className:"wb-page wb-permission-page"},h("form",{className:"wb-form",onSubmit:async event=>{
+          event.preventDefault();if(pending.current||!data||data.permissions.locked)return;
+          pending.current=true;setBusy(true);setError("");
+          try{
+            const grants=Object.values(choices).filter(g=>g.mode!=="none");
+            if(grants.some(g=>!g.sections.length))throw Error("请为已授权项目至少选择一个板块。");
+            await api("/resource-permissions",{resourceId:resource.id,revision:data.permissions.revision,grants});
+            await saved();
+          }catch(e){setError(e.message)}finally{pending.current=false;setBusy(false)}
+        }},
+          h("strong",null,resource.name),
+          h("p",{className:"wb-muted"},"可同时设置多个项目。只读可查资料；管理可编辑获准且支持写入的内容。未授权仍可看库名与用途。"),
+          data?.permissions.locked&&h("p",{className:"wb-muted"},"当前只能查看权限。"),
+          field("搜索项目",h("input",{type:"search",value:search,placeholder:"输入项目名称",onChange:e=>setSearch(e.target.value)})),
+          alert(error),
+          !data&&!error&&h("p",{role:"status"},"正在读取项目权限…"),
+          error&&button("重新读取",()=>load().then(show).catch(e=>setError(e.message)),{disabled:busy}),
+          data&&h("div",{className:"wb-permission-list"},...projects.map(p=>{
+            const grant=choices[p.id],mode=grant?.mode||"none",raw=grant?.sections||["*"];
+            const all=raw.includes("*");
+            return h("div",{key:p.id,className:"wb-permission-row"},
+              h("label",{className:"wb-check"},h("input",{type:"checkbox",checked:mode!=="none",disabled:busy||data.permissions.locked,onChange:e=>set(p.id,v=>({...v,mode:e.target.checked?"read":"none"}))}),
+                h("span",{className:"wb-permission-identity"},p.name,h("span",{className:"wb-muted"},kindName(p.type)))),
+              h("select",{"aria-label":p.name+"的权限",value:mode,disabled:busy||data.permissions.locked,onChange:e=>set(p.id,v=>({...v,mode:e.target.value}))},
+                h("option",{value:"none"},"未授权"),h("option",{value:"read"},"只读"),h("option",{value:"manage"},"管理")),
+              mode!=="none"&&sections.length>1&&h("details",null,h("summary",null,all||raw.length===sections.length?"全部板块":"已选 "+raw.length+" 个板块"),
+                ...sections.map(sec=>h("label",{key:sec.id,className:"wb-check"},h("input",{type:"checkbox",checked:all||raw.includes(sec.id),disabled:busy||data.permissions.locked,onChange:e=>{
+                  const selected=all?sections.map(s=>s.id):raw;
+                  const next=e.target.checked?[...selected,sec.id]:selected.filter(id=>id!==sec.id);
+                  set(p.id,v=>({...v,sections:next}));
+                }}),sec.name||sec.id))));
+          }),projects.length===0&&h("p",{className:"wb-muted"},"没有找到符合条件的项目")),
+          h("div",{className:"wb-actions"},button("取消",close,{disabled:busy}),h("button",{className:"wb-primary",type:"submit",disabled:busy||!data||data.permissions.locked},"保存权限")))));
     }
     const onEvent = (event, fn) => { window.addEventListener(event,fn); return () => window.removeEventListener(event,fn); };
     const notifyProjects = () => window.dispatchEvent(new Event("wb-project-list"));
@@ -1463,7 +1442,7 @@ window.__ModuleLoader__.load({
         modal,confirmModal);
     }
 
-    function installWorkbenchViews(ctx,openProject,ReadableButton){
+    function installWorkbenchViews(ctx,openProject){
       const openSession=id=>ctx.uiWorkspace.openSession(id);
       const openCustomer=async id=>{await ctx.sessions.refresh();await ctx.sessions.refreshProjections(id);openSession(id)};
       function ReplyProjectPanel(){
@@ -1531,12 +1510,10 @@ window.__ModuleLoader__.load({
         const Original=base.component;
         function CustomerConversation(props){
           const personalId=useSyncExternalStore(subscribePersonal,personalSnapshot);
-          const blank=props.useSessions(s=>Boolean(s.byId[props.sessionId]?.blank));
           if(props.sessionId?.startsWith('object-'))return h(ReplyPage,{key:props.sessionId,sessionId:props.sessionId,openSession:openCustomer});
           const conversation=h(Original,props);
           if(personalId&&props.sessionId===personalId)return h(TodayConversation,{openSession},conversation);
-          return h("div",{className:"wb-work-area"},h("div",{className:"wb-native-conversation"},conversation),
-            blank&&props.sessionId&&h("div",{className:"wb-blank-actions"},h(ReadableButton,{key:props.sessionId,sessionId:props.sessionId})));
+          return conversation;
         }
         base.component=CustomerConversation;return()=>{if(base.component===CustomerConversation)base.component=Original};
       });
@@ -1583,7 +1560,7 @@ window.__ModuleLoader__.load({
             }
           }
         };
-        installWorkbenchViews(ctx,openProject,ReadableButton);
+        installWorkbenchViews(ctx,openProject);
         function SuperAgentEntry(){
           const [error,setError]=useState("");
           const [retry,setRetry]=useState(0);
@@ -1619,39 +1596,9 @@ window.__ModuleLoader__.load({
             ),
           );
         }
-        if (requestedBusinessPolicy) ctx.effect(()=>{
+        if (requestedBusinessPolicy || requestedResourcePermissions) ctx.effect(()=>{
           ctx.layout.selectPanel("wb-resources");
         },"open linked business policy table");
-        function ReadableButton({sessionId}){
-          const [project,setProject]=useState(),[error,setError]=useState(""),[busy,setBusy]=useState(false);
-          if(!visibleSession(sessionId))return null;
-          const open=async()=>{
-            setBusy(true);setError("");
-            try{
-              const c=await api("/project-list");
-              const w=ctx.workspaces.list.getSnapshot().items.find(v=>v.sessionIds.includes(sessionId));
-              const p=c.projects.find(v=>v.workspaceId===w?.workspaceId||v.sessionIds.includes(sessionId));
-              if(!p||p.type!=="ordinary")throw Error("未找到当前普通项目");
-              setProject(p);
-            }catch(e){setError(e.message)}finally{setBusy(false)}
-          };
-          return h(React.Fragment,null,button("可读资料",open,{className:"wb-inline",disabled:busy}),
-            error&&h(UI.Modal,{open:true,title:"可读资料",closeLabel:"关闭",onClose:()=>setError("")},alert(error)),
-            project&&h(ReadableResources,{project,close:()=>setProject(undefined),manage:()=>{
-              resourceProject=project.id;setProject(undefined);ctx.layout.selectPanel("wb-resources");
-            }}));
-        }
-        ctx.slots.inject("conversation.session.header.utilities", () =>
-          ctx.slots.register(
-            {
-              name: "conversation.session.header.utilities",
-              id: "workbench-resources",
-              order: 30,
-              inject: sessionId=>({sessionId}),
-            },
-            props=>h(ReadableButton,{key:props.sessionId,...props}),
-          ),
-        );
       },
     };
   },

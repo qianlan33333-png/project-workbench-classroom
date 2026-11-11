@@ -67,6 +67,11 @@ func (m modelBridge) OwnerRequest(ctx context.Context, p core.Principal) (engine
 	e := m.hostCall(ctx, "/owner-request", p, &v)
 	return v, e
 }
+func (m modelBridge) LibraryDocuments(ctx context.Context, p core.Principal, id, uri string) (core.LibraryDocuments, error) {
+	var v core.LibraryDocuments
+	e := m.hostCall(ctx, "/resource-document", map[string]any{"principal": p, "resourceId": id, "uri": uri}, &v)
+	return v, e
+}
 func (m modelBridge) Attachments(ctx context.Context, p core.Principal, id string) ([]engine.Attachment, error) {
 	var v []engine.Attachment
 	e := m.hostCall(ctx, "/attachments", map[string]any{"principal": p, "attachmentId": id}, &v)
@@ -177,7 +182,7 @@ func run() error {
 		return errors.New("worker HTTP must bind loopback")
 	}
 	var backgroundReady atomic.Bool
-	apiServer := &api.Server{Store: s, Temporal: c, Token: os.Getenv("WORKBENCH_HOST_TOKEN"), CustomerClients: customerClients, CustomerStore: customerStore, Host: bridge, BackgroundReady: backgroundReady.Load}
+	apiServer := &api.Server{Store: s, Temporal: c, Token: os.Getenv("WORKBENCH_HOST_TOKEN"), CustomerClients: customerClients, CustomerStore: customerStore, Host: bridge, BackgroundReady: backgroundReady.Load, LibraryPermissionsLocked: os.Getenv("WORKBENCH_RESOURCE_ACL_EDIT") != "1"}
 	server := &http.Server{Addr: address, Handler: apiServer.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	errCh := make(chan error, 1)
 	listener, e := net.Listen("tcp", address)

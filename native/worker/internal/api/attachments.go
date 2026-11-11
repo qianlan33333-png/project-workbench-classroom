@@ -55,10 +55,12 @@ func (a *Server) attachmentTools(s *mcp.Server, p core.Principal) {
 				return nil, ref, e
 			}
 		}
-		if e = core.Authorize(ctx, a.Store, p, ref); e != nil {
-			// Authorize needs a published snapshot; resource ownership is fixed above.
-			r, err := a.Store.Resource(ctx, id)
-			if err != nil || r.OwnerProject != p.ProjectID {
+		if p.Kind == "project" {
+			granted, err := a.Store.Granted(ctx, id, p.ProjectID, ref.Section)
+			if err != nil {
+				return nil, ref, err
+			}
+			if !granted {
 				return nil, ref, core.ErrDenied
 			}
 		}

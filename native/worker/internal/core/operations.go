@@ -82,6 +82,9 @@ func (s *Store) TrimOperationsSelection(ctx context.Context, r Run) error {
 	if e = guardWrite(ctx, tx); e != nil {
 		return e
 	}
+	if _, e = s.lockSnapshotWrite(ctx, tx, r.Principal, r.Destination); e != nil {
+		return e
+	}
 	var state string
 	if e = tx.QueryRowContext(ctx, `SELECT state FROM wb_snapshots WHERE resource_id=? AND version=? FOR UPDATE`, r.Destination, r.ID).Scan(&state); e != nil {
 		return e
