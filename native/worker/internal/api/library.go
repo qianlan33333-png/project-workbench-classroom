@@ -100,6 +100,18 @@ func createMatches(text string, in core.LibraryInput) bool {
 }
 
 func (a *Server) libraryRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /resource-metadata", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			ResourceID  string `json:"resourceId"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		v, err := a.Store.UpdateLibraryMetadata(r.Context(), principal(r.Context()), in.ResourceID, in.Name, in.Description)
+		respond(w, v, err)
+	})
 	mux.HandleFunc("GET /resource-permissions", func(w http.ResponseWriter, r *http.Request) {
 		v, e := a.Store.ResourcePermissions(r.Context(), principal(r.Context()), r.URL.Query().Get("resourceId"))
 		respond(w, struct {

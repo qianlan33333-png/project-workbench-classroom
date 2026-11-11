@@ -667,9 +667,7 @@ export async function apply(ctx, config) {
               "/notifications",
             ]);
             const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause","/business-policies",
-              "/resource-permissions",
-              "/vault-create",
-              "/vault-save",
+              "/resource-permissions","/resource-metadata","/vault-create","/vault-save",
               "/resources",
               "/connections",
               "/memory",

@@ -119,14 +119,33 @@ func insertLibrarySnapshot(ctx context.Context, tx *sql.Tx, v Snapshot) error {
 }
 
 func (s *Store) DescribeLibrary(ctx context.Context, p Principal, id, description string) (ResourceDiscovery, error) {
-	var out ResourceDiscovery
 	if !p.IsOwner() {
 		if err := s.CheckLibraryPersonal(ctx, p); err != nil {
-			return out, err
+			return ResourceDiscovery{}, err
 		}
 	}
-	if id == replyActivitySource.ResourceID || strings.HasPrefix(id, "attachment-") {
+	return s.updateLibraryMetadata(ctx, p, id, nil, description)
+}
+
+func (s *Store) UpdateLibraryMetadata(ctx context.Context, p Principal, id, name, description string) (ResourceDiscovery, error) {
+	if !p.IsOwner() {
+		return ResourceDiscovery{}, ErrDenied
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ResourceDiscovery{}, ErrInvalid
+	}
+	return s.updateLibraryMetadata(ctx, p, id, &name, description)
+}
+
+func (s *Store) updateLibraryMetadata(ctx context.Context, p Principal, id string, name *string, description string) (ResourceDiscovery, error) {
+	var out ResourceDiscovery
+	if id == replyActivitySource.ResourceID || (name == nil && strings.HasPrefix(id, "attachment-")) {
 		return out, ErrDenied
+	}
+	description = strings.TrimSpace(description)
+	if utf8.RuneCountInString(description) > 500 {
+		return out, ErrInvalid
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -137,17 +156,35 @@ func (s *Store) DescribeLibrary(ctx context.Context, p Principal, id, descriptio
 	if err != nil {
 		return out, err
 	}
-	if isAttachmentResource(r) {
+	if name == nil && isAttachmentResource(r) {
 		return out, ErrDenied
 	}
-	r.Description = strings.TrimSpace(description)
-	if err = r.Validate(); err != nil {
+	saveKind := name != nil && r.Kind == "" && strings.Contains(r.Name, "语料") != strings.Contains(*name, "语料")
+	if saveKind {
+		// Keep a legacy library in its current tab even if its name no longer
+		// matches the old name-based classification.
+		var connectionKind string
+		if r.ConnectionID != "" {
+			err := tx.QueryRowContext(ctx, `SELECT JSON_UNQUOTE(JSON_EXTRACT(body,'$.kind')) FROM wb_connections WHERE id=?`, r.ConnectionID).Scan(&connectionKind)
+			if err != nil && !IsMissing(err) {
+				return out, err
+			}
+		}
+		r.Kind = resourceKind(r, connectionKind)
+	}
+	if name != nil {
+		r.Name = *name
+	}
+	statement := `UPDATE wb_resources SET body=JSON_SET(body,'$.name',?,'$.description',?),revision=revision+1 WHERE id=?`
+	args := []any{r.Name, description, id}
+	if saveKind {
+		statement = `UPDATE wb_resources SET body=JSON_SET(body,'$.name',?,'$.description',?,'$.kind',?),revision=revision+1 WHERE id=?`
+		args = []any{r.Name, description, r.Kind, id}
+	}
+	if _, err = tx.ExecContext(ctx, statement, args...); err != nil {
 		return out, err
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE wb_resources SET body=?,revision=revision+1 WHERE id=?", jsonText(r), id); err != nil {
-		return out, err
-	}
-	return ResourceDiscovery{ID: id, Name: r.Name, Kind: r.Kind, Description: r.Description, Access: "manage"}, tx.Commit()
+	return ResourceDiscovery{ID: id, Name: r.Name, Kind: r.Kind, Description: description, Access: "manage"}, tx.Commit()
 }
 
 func (s *Store) ChangeLibraryItem(ctx context.Context, p Principal, in LibraryChange) (LibraryReceipt, error) {
