@@ -42,7 +42,8 @@ export async function resourceDocuments(config,call,projectId,resourceId,uri,{al
   const read=async uri=>{
    const result=await client.readResource({uri},{signal});
    const content=result.contents.filter(c=>typeof c.text==='string').map(c=>c.text).join('\n');
-   if(Buffer.byteLength(content)>262144)throw Error('资料超过查看预算');
+   const maxBytes=all||p.kind==='owner'?262144:36000;
+   if(Buffer.byteLength(content)>maxBytes)throw Error('资料超过查看预算，请通过已授权的检索工具读取片段');
    return content;
   };
   let content,notes;
