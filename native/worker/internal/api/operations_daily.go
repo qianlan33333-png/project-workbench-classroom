@@ -206,7 +206,8 @@ func (a *Server) operationsReviewView(ctx context.Context, p core.Principal, cfg
 	}
 	name := operationsStaffName(cfg)
 	strategy, _ := run.Shared["strategy"].(string)
-	editable := (cfg.Cycle == nil || core.IsLocalOperations(run)) && head.Confirm == "" && head.Edit == "" && run.Shared["day"] == operationsDay(time.Now())
+	local := core.IsLocalOperations(run)
+	editable := (cfg.Cycle == nil || local) && head.Confirm == "" && head.Edit == "" && run.Shared["day"] == operationsDay(time.Now())
 	canSend := editable && head.Count > 0 && name != "" && cfg.Transport != "" && engine.OperationsBatchEnabled(strategy, cfg.Staff)
 	view := map[string]any{"state": "ready", "run": head.Run, "digest": head.Digest,
 		"reviewVersion": core.OperationsReviewVersion(head, cfg.Transport, cfg.Staff, name), "sendEnabled": canSend,
@@ -217,7 +218,7 @@ func (a *Server) operationsReviewView(ctx context.Context, p core.Principal, cfg
 		if detail {
 			out["message"], out["progress"], out["revision"] = row.Message, progress, row.Revision
 			out["edited"], out["editable"] = row.Edited, editable && row.Editable
-			out["judgment"], out["attachments"] = row.Judgment, row.Attachments
+			out["judgment"], out["attachments"] = operationsReviewJudgment(row, local), row.Attachments
 		}
 		return out
 	}
@@ -256,6 +257,36 @@ func (a *Server) operationsReviewView(ctx context.Context, p core.Principal, cfg
 	}
 	view["rows"] = result
 	return view, nil
+}
+
+func operationsReviewJudgment(row core.OperationsReviewRow, local bool) any {
+	if !local {
+		return row.Judgment
+	}
+	// Local batches store execution evidence in Judgment. Project the frozen
+	// decision and materials to the existing browser contract at read time,
+	// including for drafts published before this adapter was added.
+	type section struct {
+		Title string   `json:"title"`
+		Lines []string `json:"lines"`
+	}
+	sections := []section{}
+	if row.Reason != "" {
+		sections = append(sections, section{Title: "为什么给他发", Lines: []string{row.Reason}})
+	}
+	var titles []string
+	for _, material := range row.Materials {
+		if material.Title != "" {
+			titles = append(titles, material.Title)
+		}
+	}
+	if len(titles) > 0 {
+		sections = append(sections, section{Title: "为什么推荐这个", Lines: titles})
+	}
+	if len(sections) == 0 {
+		return nil
+	}
+	return map[string]any{"sections": sections, "facts": []any{}}
 }
 
 func operationsDeliveryLabel(head core.OperationsReview, receipt core.OperationsBatchReceipt, row core.OperationsReviewRow) (string, string) {
