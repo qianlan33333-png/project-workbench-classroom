@@ -260,6 +260,9 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 	a.scheduleTools(s, bound)
 	a.moreTools(s, bound)
 	a.delegationTools(s, bound)
+	if bound.Kind == "personal" {
+		a.replyActivityTool(s, bound)
+	}
 	a.messageTools(s, bound)
 	mcp.AddTool(s, &mcp.Tool{Name: "resource_list", Description: "List resources and sections readable in this Session. Connection secrets are never returned."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, Catalog, error) {
 		v, e := a.Store.Resources(ctx, bound)

@@ -17,6 +17,7 @@ import { replyEvidenceProjection } from './reply-evidence.js';
 import { resourceDocuments } from './resource-documents.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
+import { createSuperAgent } from './superagent.js';
 
 export const inject = [
   "agents",
@@ -62,6 +63,7 @@ export async function apply(ctx, config) {
     throw new Error("personalWorkspace is required");
   await mkdir(config.personalWorkspace, { recursive: true });
   const personalPath = await realpath(config.personalWorkspace);
+  const superAgent = createSuperAgent(ctx, personalPath);
   // Rules are owner-authored workspace files, separate from inferred memory.
   const ruleNames = new Set(["SOUL.md", "AGENT.md"]);
   const readRule = async name => {
@@ -99,7 +101,7 @@ export async function apply(ctx, config) {
   });
   const personalWorkspace = await ctx.workspaceRegistry.create(
     personalPath,
-    "今日",
+    "SuperAgent",
   );
   const headers = (p) => ({
     authorization: `Bearer ${token}`,
@@ -232,18 +234,16 @@ export async function apply(ctx, config) {
           "run_list",
           "decision_list",
           "run_items", "message_batch_read",
-          "memory_list",
+          "memory_list", "reply_activity",
         ]);
         if (!readOnly.has(exec.name.replace(/^mcp__workbench__/, "")))
           return "任务反馈轮只读；继续业务需要本人在对话中明确提出。";
       });
-      agent.ctx.systemPrompt.section({
+      if (p.kind === "personal") superAgent.attach(agent);
+      else agent.ctx.systemPrompt.section({
         name: "workbench:method",
         order: 80,
-        text:
-          p.kind === "personal"
-            ? "你是“今日”Personal Agent。本人已明确要求的派发和只读核实应直接执行，不反复征询确认。旧轮次报错不等于本轮失败；必须以本轮实际工具结果汇报。目标项目内部再次派发的错误不代表今日的初次派发失败。先读最新项目目录和任务摘要，按需读取资源。可跨项目理解、安排、持续跟进、等待本人决定。资源读取不代表默认加载全部资料。task_delegate默认省略instructions，由宿主转交本人最近原话；不要主动重写本人已经明确的要求。只有目标项目允许读取当前所有来源时才可改写instructions。来源范围拒绝时可用本人原话重试，不要要求扩大项目权限。不得自行确认发送。"
-            : "你在固定项目内工作。专家 Skill 负责判断，标准工具负责执行。资料仅通过已授权资源读取；批量传引用，不逐人塞入主对话。先选择板块与方法，再提交任务。状态、数据发布、内容生成和实际送达必须区分。",
+        text: "你在固定项目内工作。专家 Skill 负责判断，标准工具负责执行。资料仅通过已授权资源读取；批量传引用，不逐人塞入主对话。先选择板块与方法，再提交任务。状态、数据发布、内容生成和实际送达必须区分。",
       });
     } catch (e) {
       for(const extension of extensions)extension.dispose();
@@ -303,7 +303,7 @@ export async function apply(ctx, config) {
   // Today's daily schedule exists even before the first browser conversation.
   // Workspace session order is mutable (the UI may create another blank chat).
   // Today's identity must survive that ordering and Host restarts.
-  const todayId='today_'+createHash('sha256').update(personalPath).digest('hex').slice(0,24);
+  const todayId = superAgent.id;
   await ensureSession(todayId,personalPath);
   await personalWorkspace.attachSession(todayId);
   let deliveryCursor=0, reportCursor="";
@@ -339,18 +339,26 @@ export async function apply(ctx, config) {
           if(event.sessionId.startsWith('object-')&&!await ctx.sessionPersistence.stat(event.sessionId)){await call('/events/ack',owner,{id:event.id});continue}
           let agent = ctx.agents.get(event.sessionId);
           if(!agent){const w=ctx.workspaceRegistry.list().find(w=>w.sessionIds.includes(event.sessionId));if(!w)throw Error('Result Session workspace unavailable');agent=await ensureSession(event.sessionId,w.path)}
-          if (delivery.stateOf(agent.session).through < event.sequence) {
+          const personal = identity(agent).kind === 'personal';
+          const customer = event.sessionId.startsWith('object-');
+          if (personal || delivery.stateOf(agent.session).through < event.sequence) {
             let text = `执行结果 · ${new Date(event.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}\n任务 ${event.runId} · 阶段 ${event.kind}\n${event.text}\n${JSON.stringify(event.details ?? {})}\n${event.kind==='project.reported'?'上文是目标项目助手的文字汇报；模型表述不等于业务事实，若与工具回执冲突，先查询原任务核对，不能凭汇报推翻已有接收回执。':`这是后台任务 ${event.runId} 的真实回执。`}不是让你回顾最近一轮聊天。只针对这个任务说明已做工作、结果与下一步，不把其他聊天的工具调用算入本任务。${event.kind==='personal.daily'?'上文是本次已生成的今日安排，请以该安排为主要反馈；引用的其他项目状态只是汇总依据，不能说这些工作被你重新执行了。':''}只核对原任务，不重跑业务。`;
             if(event.sessionId.startsWith("object-"))text=channelContext(event);
             else if(event.kind==='message.history')text="渠道历史引用（不会触发自动应答）\n"+event.text;
-            const resultMessage=createUserMessage({
-                content: [{ type: "text", text }],
-                source: { kind: event.sessionId.startsWith("object-") ? "workbench-channel-result" : "workbench-result", sequence: event.sequence },
+            if (personal) {
+              await superAgent.result(agent, event, text);
+            } else {
+              const resultMessage = createUserMessage({
+                content: [{ type: 'text', text }],
+                source: { kind: customer ? 'workbench-channel-result' : 'workbench-result', sequence: event.sequence },
               });
-            if(event.sessionId.startsWith('object-'))agent.session.append('user/message',resultMessage,{surfaceOp:'append'});else agent.followup(resultMessage);
+              if (customer) agent.session.append('user/message', resultMessage, { surfaceOp: 'append' });
+              else agent.followup(resultMessage);
+            }
           }
-          if (!(await ctx.sessions.flush(agent.session)))
-            throw new Error("Session result was not persisted");
+          if (!personal && !await ctx.sessions.flush(agent.session)) {
+            throw Error('Session result was not persisted');
+          }
           await call("/events/ack", owner, { id: event.id });
         } catch (e) {
           ctx.logger.warn(`Result ${event.id} remains pending: ${e.message}`);
@@ -695,9 +703,19 @@ export async function apply(ctx, config) {
         if(incoming&&!isOwner){const admission=await call('/messages/admit?runId='+encodeURIComponent(input.id));if(!admission.allowed){if(!admission.terminal)throw requestError('Earlier customer message pending',503);json(res,200,{accepted:true,sessionId:agent.id});return}}
         unusedIncoming='';
         if(!delivery.stateOf(agent.session).dispatches.includes(input.id)) {
-          agent.followup(createUserMessage({content:[{type:'text',text:(!incoming?'这是一项已经由今日派发到本项目的任务。当前会话就是目标项目会话，派发这一步已完成。请直接执行本人原话中的目标业务，不要重复执行其中针对今日的转交或task_delegate指令。\n\n本人原话：\n':'')+input.goal+'\n\n本次已绑定的资料引用：'+JSON.stringify([...(input.sources||[]),...(input.lineage||[])])}],source:{kind:isOwner?'workbench-owner':incoming?'workbench-incoming':'workbench-delegation',runId:input.id}}));
-          if(!await ctx.sessions.flush(agent.session))throw Error('Project task was not persisted');
+          const instruction = incoming ? '' : '这是一项已经由 SuperAgent 派发到本项目的任务。当前会话就是目标项目会话，派发已完成。请执行原话中的目标业务，不要重复调用 task_delegate。\n\n本人原话：\n';
+          const text = instruction + input.goal + '\n\n本次已绑定的资料引用：' +
+            JSON.stringify([...(input.sources || []), ...(input.lineage || [])]);
+          if (isOwner || !incoming) {
+            await superAgent.dispatch(agent, input.id, text, isOwner ? 'workbench-owner' : 'workbench-delegation');
+          } else {
+            agent.followup(createUserMessage({
+              content: [{ type: 'text', text }],
+              source: { kind: 'workbench-incoming', runId: input.id },
+            }));
+          }
         }
+        if (!await ctx.sessions.flush(agent.session)) throw Error('Project task was not persisted');
         json(res,200,{accepted:true,sessionId:agent.id});
       }catch(e){json(res,e.status||(e instanceof SyntaxError?400:503),{error:e.status?e.message:'Host delivery unavailable'}) }finally{
         // A denied/queued message must not leave a newly restored idle Agent
