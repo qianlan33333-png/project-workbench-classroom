@@ -18,6 +18,22 @@ var scripts embed.FS
 // Evaluate invokes only the embedded original pure rules. No caller-supplied
 // command, path, shell, credential or provider is accepted.
 func Evaluate(ctx context.Context, input any, output any) error {
+	return runProjection(ctx, "rules.py", nil, input, output)
+}
+
+func ProjectProfiles(ctx context.Context, input any, output any) error {
+	module := os.Getenv("WORKBENCH_OPERATIONS_DIRECTORY_MODULE")
+	if module == "" {
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		module = filepath.Join(filepath.Dir(executable), "..", "components", "operations-source", "directory.py")
+	}
+	return runProjection(ctx, "source_profile.py", []string{module}, input, output)
+}
+
+func runProjection(ctx context.Context, script string, args []string, input any, output any) error {
 	root, err := os.MkdirTemp("", "workbench-operations-")
 	if err != nil {
 		return err
@@ -43,7 +59,7 @@ func Evaluate(ctx context.Context, input any, output any) error {
 	if err != nil {
 		return err
 	}
-	command := exec.CommandContext(ctx, "python3", filepath.Join(root, "rules.py"))
+	command := exec.CommandContext(ctx, "python3", append([]string{filepath.Join(root, script)}, args...)...)
 	command.Stdin = bytes.NewReader(body)
 	command.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	var out bytes.Buffer

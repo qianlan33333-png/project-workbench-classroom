@@ -24,6 +24,7 @@ type OperationsCycleInput struct {
 	Sources             []core.ResourceSelection  `json:"sources"`
 	CleanDestination    string                    `json:"cleanDestination"`
 	ProfileDirectory    string                    `json:"profileDirectory,omitempty"`
+	IndependentProfiles bool                      `json:"independentProfiles,omitempty"`
 	Strategies          core.Ref                  `json:"strategies"`
 	History             core.Ref                  `json:"history"`
 	HistorySource       *core.ResourceSelection   `json:"historySource,omitempty"`
@@ -246,7 +247,11 @@ func OperationsCycle(ctx workflow.Context, in OperationsCycleInput) (err error) 
 	if in.MethodSource != nil {
 		sources = append(sources, *in.MethodSource)
 	}
-	clean, e := step("data_refresh", map[string]any{"operationKey": id + "-data", "sources": sources, "destination": in.CleanDestination})
+	refresh := map[string]any{"operationKey": id + "-data", "sources": sources, "destination": in.CleanDestination}
+	if in.IndependentProfiles {
+		refresh["independent"] = true
+	}
+	clean, e := step("data_refresh", refresh)
 	if e != nil {
 		return e
 	}
@@ -255,6 +260,21 @@ func OperationsCycle(ctx workflow.Context, in OperationsCycleInput) (err error) 
 	}
 	ref := func(resource, version string) core.Ref {
 		return core.Ref{ResourceID: resource, Version: version, Section: in.Section}
+	}
+	var profileErr error
+	if in.IndependentProfiles {
+		active = uuid.NewSHA1(uuid.NameSpaceURL, []byte(in.Principal.SessionID+"/"+id+"-profile-directory")).String()
+		profileErr = workflow.ExecuteActivity(ctx, "OperationsStartProfiles", OperationsProfileStart{
+			ID: active, CycleID: id, Destination: in.ProfileDirectory, Principal: in.Principal,
+			Source: ref(in.CleanDestination, clean),
+		}).Get(ctx, nil)
+		if profileErr == nil {
+			profileErr = wait(active)
+		}
+		if ctx.Err() != nil || workflow.IsContinueAsNewError(profileErr) {
+			return profileErr
+		}
+		active = ""
 	}
 	history := in.History
 	if in.HistorySource != nil {
@@ -354,6 +374,9 @@ func OperationsCycle(ctx workflow.Context, in OperationsCycleInput) (err error) 
 	}
 	if e != nil {
 		return e
+	}
+	if in.IndependentProfiles {
+		return profileErr
 	}
 	if in.ProfileDirectory != "" {
 		if _, e = step("resource_sync", map[string]any{

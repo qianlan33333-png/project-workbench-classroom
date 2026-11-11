@@ -189,6 +189,13 @@ def profile(read, params):
     routes = ("profile-overrides", "conversation-intelligence", "hxc-unified/user", "operator-followup", "fde-campaign-assessment")
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
         loaded = dict(zip(routes, pool.map(supplement, routes)))
+    return project_profile(out, loaded)
+
+
+def project_profile(out, loaded, archive="上下文中心发布档案"):
+    """Project a single customer's already collected facts and supplements."""
+    user = out["user"]
+    ref = out["resolved_ref"]
     if (loaded["fde-campaign-assessment"] or {}).get("snapshot_id", out["snapshot_id"]) != out["snapshot_id"]:
         loaded["fde-campaign-assessment"] = None
     overrides = (loaded["profile-overrides"] or {}).get("items") or []
@@ -200,7 +207,6 @@ def profile(read, params):
     candidates = (user.get("_conversationFieldCandidates") or {}).get("fields") or {}
     stored = (user.get("_profileFieldCandidates") or {}).get("candidates") or {}
     provenance = user.get("_profileFactProvenance") or {}
-    archive = "上下文中心发布档案"
     contact = user.get("operator_contact") or {}
     hxc = user.get("_hxcSummary") or {}
     wecom = user.get("_wecomInteraction") or {}

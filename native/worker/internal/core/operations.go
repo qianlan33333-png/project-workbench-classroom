@@ -56,6 +56,7 @@ type OperationsSpec struct {
 	Limit        int                 `json:"limit,omitempty"`
 	Refresh      []ResourceSelection `json:"refresh,omitempty"`
 	AsOf         string              `json:"asOf,omitempty"`
+	Independent  bool                `json:"independent,omitempty"`
 }
 
 // TrimOperationsSelection preserves authoritative identity keys while ensuring

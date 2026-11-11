@@ -1,12 +1,12 @@
 import sys,json,subprocess,shlex,os,hashlib
 from pathlib import Path
 from datetime import datetime,timezone
-from source_common import load, write_json, read_proxy
+from source_common import load, write_json, read_proxy, direct_hxc_reader
 from source_ssh import connection
 root,settings=load();out=root/'raw/unified';out.mkdir(mode=0o700,exist_ok=True)
 sys.path.insert(0,str(root/'original/ops'))
 import hxc_unified_sync_store as original
-from hxc_sync_bounds import Budget,SyncError
+from hxc_sync_bounds import Budget
 proxy='''import json,pathlib,sys,urllib.request,urllib.parse,urllib.error
 v={}
 for line in pathlib.Path('/etc/daru-ops-console.env').read_text().splitlines():
@@ -28,11 +28,24 @@ for line in sys.stdin:
  except urllib.error.HTTPError as e:print(json.dumps({'http_error':e.code}),flush=True)
  except Exception as e:print(json.dumps({'error':'response_too_large' if str(e)=='response_too_large' else type(e).__name__}),flush=True)
 '''
-ssh,ssh_env,target=connection(settings['contextSSH'])
-p=subprocess.Popen(ssh+[target,'python3 -B -c '+shlex.quote(proxy)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=ssh_env)
 budget=Budget(seconds=3*3600)
-def getter(params):
- return read_proxy(p,params,budget,original.ResponseTooLarge)
+p = None
+
+if os.environ.get('WORKBENCH_OPERATIONS_INDEPENDENT') == '1':
+ token_file = Path(settings.get('hxcUnifiedOAuthFile') or settings['hxcUnifiedTokenFile'])
+ if not token_file.is_absolute() or token_file.stat().st_mode & 0o077:
+  raise ValueError('private_hxc_token_file_required')
+ value = token_file.read_text().strip()
+ if not value:
+  raise ValueError('hxc_unified_token_missing')
+ oauth = json.loads(value) if settings.get('hxcUnifiedOAuthFile') else None
+ getter = direct_hxc_reader(value if oauth is None else '', budget, original.ResponseTooLarge, oauth=oauth)
+else:
+ ssh,ssh_env,target=connection(settings['contextSSH'])
+ p=subprocess.Popen(ssh+[target,'python3 -B -c '+shlex.quote(proxy)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=ssh_env)
+
+ def getter(params):
+  return read_proxy(p,params,budget,original.ResponseTooLarge)
 
 try:
  status=getter({'resource':'sync-status'});heads={x['resource']:x for x in status.get('resources',[])}
@@ -70,6 +83,7 @@ try:
   print(json.dumps({'resource':resource,'pages':report['pages'],'changes':report['changes'],'watermark':report['watermark']}),flush=True)
  write_json(out/'read-receipt.json',{'complete':True,'resources':reports});print('original unified source read complete',flush=True)
 finally:
- p.stdin.close();p.terminate()
- try:p.wait(timeout=5)
- except subprocess.TimeoutExpired:p.kill();p.wait()
+ if p is not None:
+  p.stdin.close();p.terminate()
+  try:p.wait(timeout=5)
+  except subprocess.TimeoutExpired:p.kill();p.wait()

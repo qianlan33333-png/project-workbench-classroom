@@ -12,6 +12,7 @@ type CRMRefreshInput struct {
 	Sources      []core.ResourceSelection `json:"sources,omitempty"`
 	OperationKey string                   `json:"operationKey"`
 	Destination  string                   `json:"destination"`
+	Independent  bool                     `json:"independent,omitempty"`
 }
 
 type CRMPushInput struct {
@@ -34,7 +35,7 @@ type CRMReceiptInput struct {
 func (a *Server) crmTools(s *mcp.Server, p core.Principal) {
 	mcp.AddTool(s, &mcp.Tool{Name: "data_refresh", Description: "Refresh registered raw sources, execute their original cleaning on this workbench, and publish fixed result references. Omitting sources retains the existing CRM CLI collection export. Read run_get for completion and count."}, func(ctx context.Context, _ *mcp.CallToolRequest, in CRMRefreshInput) (*mcp.CallToolResult, RunRef, error) {
 		if len(in.Sources) > 0 {
-			return a.refreshOperations(ctx, p, RefreshDataInput{OperationKey: in.OperationKey, Sources: in.Sources, Destination: in.Destination})
+			return a.refreshOperations(ctx, p, in)
 		}
 		if p.Kind != "project" || !core.ValidID(in.OperationKey) || !core.ValidID(in.Destination) {
 			return nil, RunRef{}, core.ErrDenied

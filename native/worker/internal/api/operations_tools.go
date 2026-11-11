@@ -14,11 +14,6 @@ import (
 	"workbench-native/internal/engine"
 )
 
-type RefreshDataInput struct {
-	OperationKey string                   `json:"operationKey"`
-	Sources      []core.ResourceSelection `json:"sources"`
-	Destination  string                   `json:"destination"`
-}
 type SelectStrategyInput struct {
 	StrategyKeys []string `json:"strategyKeys,omitempty"`
 	Limit        int      `json:"limit,omitempty"`
@@ -44,7 +39,7 @@ func (a *Server) submitOperation(ctx context.Context, p core.Principal, r core.R
 	_, e := a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: r.ID, TaskQueue: engine.BatchQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.WriteTask, engine.WriteInput{RunID: r.ID, ProjectID: p.ProjectID, Operation: operation})
 	return nil, RunRef{RunID: r.ID}, accepted(e)
 }
-func (a *Server) refreshOperations(ctx context.Context, p core.Principal, in RefreshDataInput) (*mcp.CallToolResult, RunRef, error) {
+func (a *Server) refreshOperations(ctx context.Context, p core.Principal, in CRMRefreshInput) (*mcp.CallToolResult, RunRef, error) {
 	if !core.ValidID(in.OperationKey) || len(in.Sources) == 0 || len(in.Sources) > 16 {
 		return nil, RunRef{}, core.ErrInvalid
 	}
@@ -73,7 +68,7 @@ func (a *Server) refreshOperations(ctx context.Context, p core.Principal, in Ref
 	}
 	// The first source is the keyed raw stream. Remaining registered streams
 	// refresh read-only history inputs in the same frozen collection step.
-	r := core.Run{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.OperationKey)).String(), Principal: p, ExplicitInputs: true, Operation: "data_refresh", Title: "更新资料", Destination: in.Destination, Operations: &core.OperationsSpec{Refresh: in.Sources}}
+	r := core.Run{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+in.OperationKey)).String(), Principal: p, ExplicitInputs: true, Operation: "data_refresh", Title: "更新资料", Destination: in.Destination, Operations: &core.OperationsSpec{Refresh: in.Sources, Independent: in.Independent}}
 	result, out, e := a.submitOperation(ctx, p, r)
 	if e == nil {
 		for _, source := range in.Sources {
@@ -132,6 +127,7 @@ func (a *Server) prepareLocalOperations(ctx context.Context, p core.Principal, i
 	// Later confirmation and delivery use the saved draft alone.
 	clean, e := a.Store.Run(ctx, p, selected.Sources[0].Version)
 	if e != nil || clean.Operation != "data_refresh" || clean.Operations == nil || clean.Destination != cycle.CleanDestination ||
+		clean.Operations.Independent != cycle.IndependentProfiles ||
 		!slices.EqualFunc(clean.Operations.Refresh, []core.ResourceSelection{cycle.Sources[0], *cycle.HistorySource, *cycle.StrategySource, *cycle.MethodSource},
 			func(a, b core.ResourceSelection) bool {
 				return a.ResourceID == b.ResourceID && a.Refresh && slices.Equal(a.Sections, b.Sections)

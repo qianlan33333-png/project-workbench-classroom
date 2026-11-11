@@ -29,6 +29,17 @@ flowchart LR
 
 常态服务与新人承接可配置在同一条日程。`cycle.additionalBatch` 指定第二条原策略及独立的名单、稿件资源。两包复用同轮清洗、策略、历史和方法快照，并按相同时间逐人判断，每包独立备稿与确认。未确认的往日稿归入历史。已确认批次可跨日继续执行或查询回执。新流程的发送权限使用项目已配置的 CRM 通道与员工，原直接发送模式启用时整批入口关闭。
 
+## 工作台独立更新档案
+
+使用现有运营日程和档案资源。在来源连接原有私有配置中登记只读数据库账号，并增加两个绝对路径。配置文件权限设为 `0600`。
+
+- `hxcUnifiedOAuthFile` 指向包含 `clientId` 和 `clientSecret` 的私有 JSON。工作台直接向黄小璨申请 `operations.sync.read` 短期令牌，分页续跑时按有效期换取新令牌，沿用来源水位和快照语义。
+- `independentInputs` 指向工作台管理的运营 JSON，包含 `history`、`methods`、`writing`。`history.strategies` 是按策略键索引的发布规则，`history.owner_policy` 是本地服务政策，`history.assets` 按原清洗脚本相对路径保存运营规则和素材配置。`methods` 按方法键保存已有方法记录的 `method` 内容，或兼容原方法资源数组。`writing` 沿用 `read_only: true`、`assets`、`newcomer_reference` 的现有写作资料合同。已有历史事实可按原 `history` 合同保留，之后使用工作台自己的工作包和 CRM 回执更新去重记录。
+
+在现有 `POST /operations/original-schedule` 的同一 `cycle` 中设 `independentProfiles: true`，`profileDirectory` 指向本项目的档案资源。可以沿用已发布的资源，也可以用只登记 `main` 板块的本地资源启动。对应的 `data_refresh` 传入 `independent: true`。新模式从 CRM 和黄小璨采集一轮，先保存同轮资料，再分别处理档案与备稿。档案任务和备稿各有原任务编号，可用现有 `run_get` / `run_resume` 处理。例行失败不会暂停下一天的日程。
+
+档案事实由固定脚本投影。仅变化的、已归属客户的问卷及会话进入现有 Harness 批量模型通道。专家超时或证据不足时保存当轮事实与已有的带日期线索。档案任务使用现有 MySQL 原子发布，知识库和用户档案页面读同一个版本。
+
 确认入口继续使用 `/operations/source-confirm`，一次确认固定名单、正文、素材及员工。策略、权益、报告及来源数据的更新在下一轮备稿生效。连接器按原任务建单，自动调用 CRM 原预览与批准。批准前核对 CRM 保存的收件人和稿件，每张可编辑的 CRM 卡片只查一次，确保还是本人确认的内容。CRM 受理在工作台记为「已发送」，明确返回的错误逐条记录，未知结果沿原请求和原计划读取。原服务冷却从受理时点起算。
 
 该口径复用 CRM 批准接口的整批原子受理，以及已有原计划查询。参考 [异步请求与处理状态](https://learn.microsoft.com/en-us/azure/architecture/patterns/async-request-reply)，这里的完成点是工作台向 CRM 交付。

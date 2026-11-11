@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
+	"slices"
 	"strings"
 	"time"
 	"workbench-native/internal/core"
@@ -23,6 +24,9 @@ func (a *Server) configureLocalOperationsSchedule(ctx context.Context, cfg opera
 	var view scheduleView
 	p := operationsPrincipal(cfg.ProjectID)
 	if in.Principal != p || len(in.Sources) != 1 || len(in.StrategyKeys) != 1 || in.StrategyKeys[0] != strategy || in.Limit != 0 || in.Section == "" || len(in.MethodRefs) != 6 {
+		return view, core.ErrInvalid
+	}
+	if in.IndependentProfiles && in.ProfileDirectory == "" {
 		return view, core.ErrInvalid
 	}
 	sources := append([]core.ResourceSelection{}, in.Sources...)
@@ -46,16 +50,23 @@ func (a *Server) configureLocalOperationsSchedule(ctx context.Context, cfg opera
 		if seen[in.ProfileDirectory] {
 			return view, core.ErrInvalid
 		}
-		if e := a.Store.RequireSourceKind(ctx, p, in.ProfileDirectory, core.OperationsProfileSource); e != nil {
-			return view, e
-		}
 		directory, e := a.Store.Resource(ctx, in.ProfileDirectory)
 		if e != nil {
 			return view, e
 		}
-		ref := core.Ref{ResourceID: directory.ID, Version: directory.CurrentVersion, Section: operationsProfileSection}
-		if directory.OwnerProject != p.ProjectID || directory.CurrentVersion == "" || core.Authorize(ctx, a.Store, p, ref) != nil {
+		if directory.OwnerProject != p.ProjectID || !slices.ContainsFunc(directory.Sections, func(section core.Section) bool {
+			return section.ID == operationsProfileSection
+		}) {
 			return view, core.ErrDenied
+		}
+		if !in.IndependentProfiles {
+			if e := a.Store.RequireSourceKind(ctx, p, in.ProfileDirectory, core.OperationsProfileSource); e != nil {
+				return view, e
+			}
+			ref := core.Ref{ResourceID: directory.ID, Version: directory.CurrentVersion, Section: operationsProfileSection}
+			if directory.CurrentVersion == "" || core.Authorize(ctx, a.Store, p, ref) != nil {
+				return view, core.ErrDenied
+			}
 		}
 		seen[in.ProfileDirectory] = true
 	}
@@ -115,13 +126,14 @@ func (a *Server) configureLocalOperationsSchedule(ctx context.Context, cfg opera
 	if wasPaused {
 		installNote = "operations-cycle-installing:paused"
 	}
-	_, e := a.Temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{ID: id, Spec: spec, Action: action, Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP, CatchupWindow: time.Hour, PauseOnFailure: true, Paused: true, Note: installNote})
+	_, e := a.Temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{ID: id, Spec: spec, Action: action, Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP, CatchupWindow: time.Hour, PauseOnFailure: !in.IndependentProfiles, Paused: true, Note: installNote})
 	var exists *serviceerror.AlreadyExists
 	if errors.As(e, &exists) || errors.Is(e, temporal.ErrScheduleAlreadyRunning) {
 		e = a.Temporal.ScheduleClient().GetHandle(ctx, id).Update(ctx, client.ScheduleUpdateOptions{DoUpdate: func(u client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
 			s := u.Description.Schedule
 			s.Spec = &spec
 			s.Action = action
+			s.Policy.PauseOnFailure = !in.IndependentProfiles
 			s.State.Paused = true
 			s.State.Note = installNote
 			return &client.ScheduleUpdate{Schedule: &s}, nil

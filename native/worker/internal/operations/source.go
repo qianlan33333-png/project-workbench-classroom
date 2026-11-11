@@ -24,9 +24,9 @@ type SourceResult struct {
 
 // Collect invokes a fixed adapter. Only an owner-registered server environment
 // supplies the private connection file; model arguments contain resource IDs.
-func Collect(ctx context.Context, config, id string) (SourceResult, error) {
+func Collect(ctx context.Context, config, id string, independent bool) (SourceResult, error) {
 	var result SourceResult
-	err := invokeSource(ctx, "source_collect.py", config, id, &result)
+	err := invokeSource(ctx, "source_collect.py", config, id, &result, independent)
 	if err == nil && (!filepath.IsAbs(result.Directory) || len(result.Files) == 0) {
 		err = errors.New("original source result is invalid")
 	}
@@ -42,7 +42,7 @@ func CollectProfileDirectory(ctx context.Context, config, id string) (SourceResu
 	return result, err
 }
 
-func invokeSource(ctx context.Context, script, config, id string, result any) error {
+func invokeSource(ctx context.Context, script, config, id string, result any, independent ...bool) error {
 	if !filepath.IsAbs(config) {
 		return errors.New("original source connection not configured")
 	}
@@ -72,6 +72,9 @@ func invokeSource(ctx context.Context, script, config, id string, result any) er
 		return e
 	}
 	args := []string{filepath.Join(folder, script), config, id}
+	if len(independent) != 0 && independent[0] {
+		args = append(args, "independent")
+	}
 	command := exec.Command("python3", args...)
 	command.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
