@@ -64,6 +64,18 @@ func (a *Server) configureLocalOperationsSchedule(ctx context.Context, cfg opera
 			return view, core.ErrInvalid
 		}
 	}
+	// Release migration drains the old worker before changing source ownership.
+	// A live in-flight project writer must settle before configuration changes.
+	if active, e := a.Temporal.DescribeWorkflowExecution(ctx, engine.ProjectWriterID(p.ProjectID), ""); e == nil {
+		if active.WorkflowExecutionInfo.Status == enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
+			return view, core.ErrConflict
+		}
+	} else {
+		var missing *serviceerror.NotFound
+		if !errors.As(e, &missing) {
+			return view, e
+		}
+	}
 	id := "program-" + uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/original/"+strategy)).String()
 	spec := client.ScheduleSpec{TimeZoneName: "Asia/Shanghai", Calendars: []client.ScheduleCalendarSpec{{Hour: []client.ScheduleRange{{Start: at.Hour()}}, Minute: []client.ScheduleRange{{Start: at.Minute()}}}}}
 	action := &client.ScheduleWorkflowAction{ID: id, Workflow: engine.ScheduledOperationsCycle, TaskQueue: engine.InteractiveQueue, Args: []any{in}}
@@ -139,18 +151,6 @@ func (a *Server) configureLocalOperationsSchedule(ctx context.Context, cfg opera
 			if !errors.As(e, &missing) {
 				return view, e
 			}
-		}
-	}
-	// Release migration drains the old worker before changing source ownership.
-	// A live in-flight project writer must settle before configuration changes.
-	if active, e := a.Temporal.DescribeWorkflowExecution(ctx, engine.ProjectWriterID(p.ProjectID), ""); e == nil {
-		if active.WorkflowExecutionInfo.Status == enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
-			return view, core.ErrConflict
-		}
-	} else {
-		var missing *serviceerror.NotFound
-		if !errors.As(e, &missing) {
-			return view, e
 		}
 	}
 	cfg.Cycle = &in
