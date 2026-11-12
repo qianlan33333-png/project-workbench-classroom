@@ -1,3 +1,12 @@
+- id: entry-customization
+  disabled: true
+- id: ui-brand-official
+  disabled: true
+- id: ui-settings-account
+  disabled: true
+- id: ui-settings-models
+  config:
+    credentialOnboarding: false
 - id: agent-preset-registry
   config:
     default: workbench

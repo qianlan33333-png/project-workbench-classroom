@@ -48,6 +48,7 @@ func principal(ctx context.Context) core.Principal {
 func (a *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	a.configRoutes(mux)
+	a.activationRoutes(mux)
 	a.personalRoutes(mux)
 	a.messageRoutes(mux)
 	a.businessPolicyRoutes(mux)
@@ -289,6 +290,7 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 	a.delegationTools(s, bound)
 	if bound.Kind == "personal" {
 		a.replyActivityTool(s, bound)
+		a.feishuCLITool(s, bound)
 	}
 	a.messageTools(s, bound)
 	a.libraryTools(s, bound)

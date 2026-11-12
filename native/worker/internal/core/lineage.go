@@ -5,6 +5,20 @@ import (
 	"sort"
 )
 
+// The source records provenance only. Feishu data stays in the owner session.
+var feishuCLISource = Ref{"feishu-cli-user", "live-reads", "personal-only"}
+
+func isPersonalSource(id string) bool {
+	return id == replyActivitySource.ResourceID || id == feishuCLISource.ResourceID
+}
+
+func (s *Store) RememberFeishuCLIRead(ctx context.Context, p Principal) error {
+	if p.Kind != "personal" {
+		return ErrDenied
+	}
+	return s.RememberRead(ctx, p, []Ref{feishuCLISource})
+}
+
 func (s *Store) RememberRead(ctx context.Context, p Principal, refs []Ref) error {
 	if p.IsOwner() {
 		return nil

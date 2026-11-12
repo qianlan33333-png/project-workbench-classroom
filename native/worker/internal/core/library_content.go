@@ -140,7 +140,7 @@ func (s *Store) UpdateLibraryMetadata(ctx context.Context, p Principal, id, name
 
 func (s *Store) updateLibraryMetadata(ctx context.Context, p Principal, id string, name *string, description string) (ResourceDiscovery, error) {
 	var out ResourceDiscovery
-	if id == replyActivitySource.ResourceID || (name == nil && strings.HasPrefix(id, "attachment-")) {
+	if isPersonalSource(id) || (name == nil && strings.HasPrefix(id, "attachment-")) {
 		return out, ErrDenied
 	}
 	description = strings.TrimSpace(description)

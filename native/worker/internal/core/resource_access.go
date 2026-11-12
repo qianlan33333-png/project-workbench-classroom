@@ -177,6 +177,9 @@ func (s *Store) ResourcePermissions(ctx context.Context, p Principal, id string)
 
 // The resource row serializes ACL changes with content writes and publishing.
 func (s *Store) changeResourcePermissions(ctx context.Context, id string, change func(ResourcePermissions) ([]ResourceAccess, error)) (ResourcePermissions, error) {
+	if isPersonalSource(id) {
+		return ResourcePermissions{}, ErrDenied
+	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return ResourcePermissions{}, err
@@ -299,7 +302,7 @@ func (s *Store) CheckResourceWrite(ctx context.Context, p Principal, id string) 
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	if id == replyActivitySource.ResourceID {
+	if isPersonalSource(id) {
 		return ErrDenied
 	}
 	r, err := s.Resource(ctx, id)
@@ -470,7 +473,7 @@ func (s *Store) ResourceDirectory(ctx context.Context, p Principal) ([]ResourceD
 	out := []ResourceDiscovery{}
 	for _, entry := range entries {
 		r := entry.resource
-		if r.ID == replyActivitySource.ResourceID || isAttachmentResource(r) {
+		if isPersonalSource(r.ID) || isAttachmentResource(r) {
 			continue
 		}
 		kind := resourceKind(r, entry.source.Kind)
