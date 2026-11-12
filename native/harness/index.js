@@ -18,6 +18,7 @@ import { resourceDocuments } from './resource-documents.js';
 import {directoryVault, searchVault, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
+import { createActivation, installActivation, sameOrigin, setupBody } from "./activation.js";
 import { createSuperAgent } from './superagent.js';
 import { nativeLibraryCommand, activeLibraryCommand } from './library-command.js';
 
@@ -123,6 +124,31 @@ export async function apply(ctx, config) {
       throw requestError(`worker ${response.status}: ${(await response.text()).slice(0, 300)}`,response.status);
     return response.json();
   };
+  const activation = process.env.WORKBENCH_ACTIVATION_REQUIRED === "1"
+    ? await createActivation({
+      directory: process.env.WORKBENCH_ACTIVATION_DIR || "",
+      issuer: process.env.WORKBENCH_ACTIVATION_ISSUER,
+      publicKey: await readFile(process.env.WORKBENCH_ACTIVATION_PUBLIC_KEY_FILE, "utf8"),
+    })
+    : { active: true };
+  if (process.env.WORKBENCH_ACTIVATION_REQUIRED === "1") installActivation(ctx, activation);
+  if (process.env.WORKBENCH_ACTIVATION_SIGNING_KEY_FILE) {
+    if (process.env.WORKBENCH_ACTIVATION_REQUIRED === "1") throw new Error("The issuer must use the owner deployment profile");
+    const { installActivationIssuer } = await import("./activation-issuer.js");
+    await installActivationIssuer(ctx, {
+      origin: process.env.WORKBENCH_ACTIVATION_ISSUER,
+      signingKeyFile: process.env.WORKBENCH_ACTIVATION_SIGNING_KEY_FILE,
+      call,
+    });
+  }
+  ctx.effect(() => ctx.webServer.register({
+    kind: "exact", path: "/workbench-brand.png",
+    handler: async (req, res) => {
+      if (req.method !== "GET") { res.writeHead(405).end(); return; }
+      const logo = await readFile(new URL("./brand.png", import.meta.url));
+      res.writeHead(200, {"content-type":"image/png","cache-control":"public, max-age=3600"}).end(logo);
+    },
+  }), "workbench: brand asset");
   const projectCache=new Map();
   async function syncProjects(signal) {
     const projects = [];
@@ -352,7 +378,7 @@ export async function apply(ctx, config) {
   let polling = false,
     stopped = false;
   async function deliver() {
-    if (polling || stopped) return;
+    if (!activation.active || polling || stopped) return;
     polling = true;
     try {
       for(const agent of ctx.agents.list()){if(agent.id.startsWith('object-')&&agent.status==='idle'){try{await settleIncoming(agent)}catch{ctx.logger.warn('Customer status settlement deferred: '+agent.id)}}}
@@ -438,10 +464,34 @@ export async function apply(ctx, config) {
           try {
             const u = new URL(req.url, "http://localhost");
             const path = u.pathname.slice("/workbench-api".length);
+            if (!activation.active) { json(res, 403, { error: "请先激活工作台" }); return; }
             if (req.method === "GET" && path === "/vault-editor.js") {
               const script = await readFile(new URL("./vault-editor.bundle.js", import.meta.url));
               res.writeHead(200, {"content-type":"text/javascript; charset=utf-8"});
               res.end(script);
+              return;
+            }
+            if (path === "/channel-links" || path.startsWith("/channel-links/")) {
+              if (admission.peer !== ctx.connection.browserPeer) { json(res, 403, { error: "仅本人网页可管理渠道" }); return; }
+              if (req.method === "POST" && !sameOrigin(req)) { json(res, 403, { error: "origin rejected" }); return; }
+              const suffix = path.slice("/channel-links".length);
+              const allowed = req.method === "GET" ? ["", "/feishu", "/wechat", "/cli"] : req.method === "POST" ? ["/start", "/pin", "/confirm"] : [];
+              if (!allowed.includes(suffix)) { json(res, 404, { error: "未知链接操作" }); return; }
+              const connectorToken = process.env.WORKBENCH_CONNECTOR_TOKEN;
+              if (!connectorToken || connectorToken.length < 32) { json(res, 503, { error: "渠道服务尚未配置" }); return; }
+              try {
+                const data = req.method === "POST" ? await setupBody(req) : undefined;
+                const port = Number(process.env.WORKBENCH_CONNECTOR_PORT || 7383);
+                const response = await fetch("http://127.0.0.1:" + port + "/links" + suffix, {
+                  method: req.method, body: data, redirect: "error",
+                  headers: { authorization: "Bearer " + connectorToken, "content-type": "application/json" },
+                  signal: AbortSignal.timeout(25000),
+                });
+                res.setHeader("Cache-Control", "no-store");
+                json(res, response.status, await response.json());
+              } catch {
+                json(res, 503, { error: "渠道服务暂时不可用，请重试。" });
+              }
               return;
             }
             if (path.startsWith("/operations/")) {
@@ -752,6 +802,7 @@ export async function apply(ctx, config) {
       return;
     }
     if(req.method==='GET'&&req.url==='/health'){json(res,200,{ready:true});return;}
+    if (!activation.active) { json(res, 403, { error: "请先激活工作台" }); return; }
     if(req.method==='POST'&&req.url==='/resource-document') {
       try {
         const {principal:p,resourceId,uri}=await body(req);

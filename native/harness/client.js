@@ -883,7 +883,6 @@ window.__ModuleLoader__.load({
     }});
     const alert = message => message && h("p",{role:"alert",className:"wb-note"},message);
     const query = (path, parameters) => path + "?" + new URLSearchParams(parameters);
-    const typeLabel = type => type === "ordinary" ? "普通" : "专项";
     function ResourceRecords({rows,fields,corpus,open}) {
       if(!rows.length)return h("p",{className:"wb-muted"},"暂无记录");
       if(corpus)return h("div",{className:"wb-list"},...rows.map(row=>{
@@ -1018,21 +1017,6 @@ window.__ModuleLoader__.load({
         alert(error),
         h("div",{className:"wb-actions"},button("取消",onClose,{disabled:busy}),
           h("button",{type:"submit",className:"wb-primary",disabled:busy||!name.trim()},busy?"正在打开…":created?"打开已创建项目":"创建项目")))));
-    }
-    function ProjectsPage({openProject}) {
-      const {data,error}=useProjectList();
-      const [create,setCreate]=useState(false),[search,setSearch]=useState(""),[openError,setOpenError]=useState("");
-      const rows=(data?.projects||[]).filter(p=>p.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
-      return h("section",{className:"wb-page"},h("div",{className:"wb-content"},
-        h("div",{className:"wb-heading"},h("h1",null,"项目"),button("新建项目",()=>setCreate(true),{className:"wb-primary"})),
-        field("查找项目",h("input",{type:"search",value:search,onChange:e=>setSearch(e.target.value),placeholder:"搜索项目名称"})),
-        alert(error||openError),
-        !data&&!error&&h("p",{role:"status"},"正在读取项目…"),
-        data&&h("div",{className:"wb-list",style:{marginTop:16}},...rows.map(p=>
-          h("div",{className:"wb-row",key:p.id},h("div",{className:"wb-row-main"},h("strong",null,p.name)),
-            h("span",{className:"wb-tag"},typeLabel(p.type)),button("打开",()=>{setOpenError("");openProject(p).catch(e=>setOpenError(e.message))},{"aria-label":"打开 "+p.name}))),
-          !rows.length&&h("p",{className:"wb-muted"},search?"没有匹配的项目":"还没有项目")),
-        create&&h(NewProject,{onClose:()=>setCreate(false),onCreated:openProject})));
     }
     const ruleDrafts=new Map();
     function TodayRules() {
@@ -1767,6 +1751,211 @@ window.__ModuleLoader__.load({
         modal,confirmModal);
     }
 
+    const brandTitle = "浅蓝的一号位工作台";
+    const linkTitle = "链接飞书/微信";
+    const linkStates = {
+      unlinked: "未链接", pending: "待验证", linked: "已链接", reconnect: "需重连", partial: "部分链接",
+    };
+    const linkCSS = `
+.wb-brand-name{font-size:16px;font-weight:650;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wb-brand-mark{display:block;flex:none}.wb-more-anchor{width:100%}
+.wb-more-trigger{display:flex;align-items:center;gap:10px;width:100%;min-height:36px;padding:0 12px;background:transparent;color:inherit;border:0;border-radius:8px;font:inherit;text-align:left;cursor:pointer}
+.wb-more-trigger[data-rail]{width:36px;justify-content:center;padding:0}
+.wb-more-trigger:hover,.wb-more-trigger[aria-expanded=true],.wb-project-find:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.wb-link-modal{width:min(620px,calc(100vw - 24px));max-height:calc(100dvh - 24px)}
+.wb-link-content{display:block;overflow:auto;overscroll-behavior:contain}
+.wb-link-panel{padding:2px 0 12px;min-width:0}
+.wb-link-panel section+section{border-top:1px solid var(--dsw-alias-border-l3);margin-top:10px;padding-top:16px}
+.wb-link-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 0 6px}
+.wb-link-section-heading h3{font-size:16px;margin:0}.wb-link-row{display:flex;align-items:center;gap:10px;min-height:52px}
+.wb-link-row+.wb-link-row{border-top:1px solid var(--dsw-alias-border-l3)}
+.wb-link-row strong{font-weight:550;min-width:85px}.wb-link-state{color:var(--dsw-alias-label-secondary);flex:1}
+.wb-link-state[data-linked]{color:var(--dsw-alias-state-business-success,#197143)}
+.wb-link-step{display:grid;gap:12px;margin-top:12px;padding:16px;border-radius:10px;background:var(--dsw-alias-bg-l2,#f5f6f7)}
+.wb-link-step p{margin:0}.wb-link-step img{width:min(232px,100%);height:auto;border-radius:8px}.wb-link-step code{overflow-wrap:anywhere}
+.wb-link-missing{margin:4px 0 12px;color:var(--dsw-alias-label-secondary)}.wb-link-missing ul{max-height:135px;overflow:auto;padding-left:20px;overflow-wrap:anywhere}
+.wb-project-lookup{padding:0 8px 8px}.wb-project-find{background:none;border:0;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;border-radius:6px;padding:4px 8px;cursor:pointer}
+.wb-project-lookup input{box-sizing:border-box;width:100%;margin:4px 0;padding:6px 8px;font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px}
+.wb-project-lookup [role=status]{padding:4px 8px;font-size:12px}
+@media(max-width:480px){.wb-link-row{flex-wrap:wrap;padding:8px 0}.wb-link-row strong{min-width:74px}.wb-link-panel{padding-bottom:8px}}
+`;
+
+    function ChannelLinks({ close }) {
+      const [status, setStatus] = useState();
+      const [flow, setFlow] = useState();
+      const [kind, setKind] = useState();
+      const [manual, setManual] = useState(false);
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState("");
+      const [copied, setCopied] = useState(false);
+      const refreshing = useRef(0);
+      const load = async () => {
+        const revision = ++refreshing.current;
+        try {
+          const next = await api("/channel-links");
+          if (refreshing.current === revision) {
+            setStatus(next);
+            if (revision === 1 && next.active) { setKind(next.active.kind); setFlow(next.active.flow); }
+          }
+        } catch (failure) {
+          if (refreshing.current === revision) setError(failure.message);
+        }
+      };
+      useEffect(() => {
+        void load();
+        return () => { refreshing.current++; };
+      }, []);
+      useEffect(() => {
+        if (!kind) return;
+        let alive = true;
+        let timer;
+        async function poll() {
+          try {
+            const next = await api("/channel-links/" + kind);
+            if (!alive) return;
+            if (next?.id && flow?.id && next.id !== flow.id) return;
+            setFlow(next);
+            if (["done", "linked", "error"].includes(next?.step)) { void load(); return; }
+          } catch (failure) {
+            if (alive) setError(failure.message);
+          }
+          if (alive) timer = setTimeout(poll, 1200);
+        }
+        timer = setTimeout(poll, 500);
+        return () => { alive = false; clearTimeout(timer); };
+      }, [kind, flow?.id]);
+
+      async function act(operation, values, nextKind = kind) {
+        setBusy(true);
+        setError("");
+        setCopied(false);
+        try {
+          const next = await api("/channel-links/" + operation, values);
+          setKind(nextKind);
+          setFlow(next);
+          setManual(false);
+          if (operation === "confirm") void load();
+        } catch (failure) { setError(failure.message); }
+        finally { setBusy(false); }
+      }
+      function start(nextKind, method) {
+        return act("start", { kind: nextKind, method }, nextKind);
+      }
+      const bot = status?.feishu?.bot;
+      const cli = flow?.step === "done" && kind === "cli" ? flow.result : status?.feishu?.cli;
+      const wx = status?.wechat;
+      const label = (item) => h("span", {
+        className: "wb-link-state", "data-linked": item?.state === "linked" || undefined, role: "status",
+      }, linkStates[item?.state] || "读取中");
+      const buttonProps = { disabled: busy };
+      function row(title, item, action) {
+        return h("div", { className: "wb-link-row" }, h("strong", null, title), label(item), action);
+      }
+      function step() {
+        if (manual) return h("form", { className: "wb-link-step", onSubmit: (e) => {
+          e.preventDefault();
+          const form = new FormData(e.currentTarget);
+          act("start", { kind: "feishu", method: "existing", appId: form.get("appId").trim(), appSecret: form.get("appSecret") }, "feishu");
+        } },
+        field("App ID", h("input", { name: "appId", required: true, maxLength: 128, autoComplete: "off" })),
+        field("App Secret", h("input", { name: "appSecret", type: "password", required: true, maxLength: 256, autoComplete: "off" })),
+        h("div", { className: "wb-actions" }, button("取消", () => setManual(false)), h("button", { disabled: busy }, "验证应用")));
+        if (!flow) return null;
+        if (flow.step === "error") return h("p", { role: "alert" }, flow.error || "暂时无法链接，请重试。");
+        if (flow.step === "done") return flow.result?.error ? h("p", { role: "alert" }, flow.result.error) : null;
+        if (flow.step === "linked") return null;
+        if (flow.step === "received") return h("div", { className: "wb-link-step" },
+          h("p", { role: "status" }, "平台已受理测试回复。收到回复后，请确认。"),
+          h("div", null, button("已收到回复", () => act("confirm", { kind, id: flow.id }), buttonProps)));
+        if (flow.step === "test") return h("div", { className: "wb-link-step" },
+          h("p", null, "请在机器人私聊中发送下面这条消息。"),
+          h("code", null, flow.text),
+          flow.botURL && h("a", { href: flow.botURL, target: "_blank", rel: "noreferrer" }, "在飞书打开机器人"),
+          h("div", null, button(copied ? "已复制" : "复制测试口令", async () => {
+            try { await navigator.clipboard.writeText(flow.text); setCopied(true); }
+            catch { setError("请选中并复制测试口令。"); }
+          })));
+        if (flow.step === "pin") return h("form", { className: "wb-link-step", onSubmit: (e) => {
+          e.preventDefault();
+          act("pin", { id: flow.id, code: new FormData(e.currentTarget).get("pin").trim() });
+        } }, field("微信配对码", h("input", { name: "pin", inputMode: "numeric", pattern: "[0-9]{4,8}", required: true, autoComplete: "off" })),
+        h("div", null, h("button", { disabled: busy }, "提交配对码")));
+        return h("div", { className: "wb-link-step" },
+          h("p", { role: "status" }, ({
+            starting: "正在准备链接…", scan: kind === "wechat" ? "请用微信扫码。" : "请用飞书扫码创建机器人。",
+            authorize: "请在飞书中确认所需权限。", confirm: "请在微信中确认链接。", sending: "正在验证私聊回复…",
+          })[flow.step] || "正在检查链接…"),
+          flow.qr && h("img", { src: flow.qr, alt: kind === "wechat" ? "微信链接二维码" : "飞书授权二维码" }),
+          flow.url && h("a", { href: flow.url, target: "_blank", rel: "noreferrer" }, "打开飞书授权页"));
+      }
+      const waiting = flow && !["error", "done", "linked"].includes(flow.step);
+      const botAction = (bot?.state === "unlinked" || bot?.canScan) ? h("div", { className: "wb-actions" },
+        button("扫码链接", () => start("feishu", "scan"), buttonProps),
+        button("使用已有应用", () => { setManual(true); setKind("feishu"); setFlow(undefined); }, buttonProps))
+        : bot && bot.state !== "linked" && button("验证私聊", () => start("feishu", "verify"), buttonProps);
+      const wxAction = wx?.state === "unlinked" ? button("扫码链接", () => start("wechat", "scan"), buttonProps)
+        : wx && wx.state !== "linked" && button(wx.state === "reconnect" ? "重新链接" : "验证私聊",
+          () => start("wechat", wx.state === "reconnect" && wx.canScan ? "scan" : "verify"), buttonProps);
+      const feishuPartial = status && (bot?.state !== "unlinked" || cli?.state !== "unlinked") &&
+        (bot?.state !== "linked" || cli?.state !== "linked");
+      return h(UI.Modal, { open: true, title: linkTitle, closeLabel: "关闭", onClose: close, className: "wb-link-modal", contentClassName: "wb-link-content" },
+        h("div", { className: "wb-page wb-link-panel" }, alert(error),
+          !status && error && button("重试", load),
+          h("section", null,
+            h("div", { className: "wb-link-section-heading" }, h("h3", null, "飞书"),
+              feishuPartial && h("span", { className: "wb-muted" }, "部分链接")),
+            row("机器人对话", bot, botAction),
+            row("CLI 授权", cli, cli && cli.state !== "linked" && button("授权",
+              () => start("cli", "authorize"), { disabled: busy || bot?.state !== "linked" })),
+            cli?.missing?.length > 0 && (cli.state === "partial" || flow?.step === "done") && h("details", { className: "wb-link-missing" },
+              h("summary", null, "查看未开通权限"), h("ul", null, ...cli.missing.map(scope => h("li", { key: scope }, scope)))),
+            (kind === "feishu" || kind === "cli") && step()),
+          h("section", null,
+            h("div", { className: "wb-link-section-heading" }, h("h3", null, "微信")),
+            row("个人微信", wx, wxAction), kind === "wechat" && step()),
+          waiting && h("p", { className: "wb-muted" }, "关闭浮窗后可重新打开查看进度。")));
+    }
+
+    function FooterMore({ wide, openSettings, settingsShortcut }) {
+      const [open, setOpen] = useState(false);
+      const [links, setLinks] = useState(false);
+      const trigger = useRef();
+      const closeLinks = () => { setLinks(false); requestAnimationFrame(() => trigger.current?.focus()); };
+      return h(React.Fragment, null,
+        h(UI.Menu, {
+          open, side: "top", portal: true, autoFocus: true, className: "wb-more-anchor",
+          anchor: h("button", {
+            ref: trigger, type: "button", className: "wb-more-trigger", "data-rail": !wide || undefined,
+            "aria-label": "更多", "aria-haspopup": "menu", "aria-expanded": open, onClick: () => setOpen(!open),
+          }, h(UI.IconEllipsisOutlineMedium, { size: 16 }), wide && "更多"),
+          items: [
+            { id: "settings", label: "设置", icon: h(UI.IconSettingsOutlineMedium, { size: 16 }), shortcut: settingsShortcut },
+            { id: "channels", label: linkTitle, icon: h(UI.IconLinkOutlineRegular || UI.IconPluginPinwheelOutlineRegular, { size: 16 }) },
+          ],
+          onClose: () => setOpen(false),
+          onSelect: (id) => {
+            setOpen(false);
+            if (id === "settings") { trigger.current?.focus(); openSettings(); }
+            else setLinks(true);
+          },
+        }), links && h(ChannelLinks, { close: closeLinks }));
+    }
+
+    function ProjectLookup({ projects, openProject }) {
+      const [open, setOpen] = useState(false), [query, setQuery] = useState(""), [error, setError] = useState("");
+      const trigger = useRef();
+      const matches = projects.filter(project => project.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+      function close() { setOpen(false); setQuery(""); trigger.current?.focus(); }
+      return h("div", { className: "wb-project-lookup" },
+        button("查找项目", () => open ? close() : setOpen(true), { ref: trigger, className: "wb-project-find", "aria-expanded": open }),
+        open && h(React.Fragment, null, h("input", {
+          type: "search", "aria-label": "搜索项目名称", placeholder: "搜索项目名称", autoFocus: true,
+          value: query, onChange: e => setQuery(e.target.value), onKeyDown: e => { if (e.key === "Escape") close(); },
+        }), query.trim() && (matches.length ? matches.map(project =>
+          button(project.name, async () => { try { await openProject(project); close(); } catch (failure) { setError(failure.message); } },
+            { className: "wb-project-shortcut", key: project.id })) : h("div", { role: "status" }, "没有匹配的项目")), alert(error)));
+    }
+
     function installWorkbenchViews(ctx,openProject){
       const openSession=id=>ctx.uiWorkspace.openSession(id);
       const openCustomer=async id=>{await ctx.sessions.refresh();await ctx.sessions.refreshProjections(id);openSession(id)};
@@ -1792,7 +1981,6 @@ window.__ModuleLoader__.load({
               if(!cache.has(entries))cache.set(entries,entries.filter(p=>!["plugins","schedules"].includes(p.id)));
               return select(cache.get(entries));
             }),
-            startSession:workspaceId=>workspaceId?props.startSession(workspaceId):ctx.layout.selectPanel("wb-projects"),
           });
         }
         base.component=WorkbenchSidebar;
@@ -1813,6 +2001,7 @@ window.__ModuleLoader__.load({
           const hidden=new Set([data.personalWorkspaceId,...special.map(p=>p.workspaceId)]);
           if(hidden.size!==replyWorkspaceIds.size||[...hidden].some(id=>!replyWorkspaceIds.has(id)))replyWorkspaceIds=hidden;
           return h("section",{className:"wb-project-tree","aria-label":"项目与会话"},
+            props.wide !== false && h(ProjectLookup,{projects:data.projects,openProject}),
             h(Original,{...props,requestAddWorkspace:()=>setCreate(true),
               useSessions:selector=>props.useSessions(state=>selector(filteredSessions(state))),
               useWorkspaces:selector=>props.useWorkspaces(state=>selector(filteredWorkspaces(state))),
@@ -1846,7 +2035,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ["slots", "layout", "uiWorkspace", "sessions", "workspaces"],
       apply(ctx) {
-        ctx.effect(()=>{const style=document.createElement('style');style.textContent=css+workbenchCSS+operationsCSS;document.head.appendChild(style);return()=>style.remove()},'workbench shared native extension styles');
+        ctx.effect(()=>{const style=document.createElement('style');style.textContent=css+workbenchCSS+operationsCSS+linkCSS;document.head.appendChild(style);return()=>style.remove()},'workbench shared native extension styles');
         ctx.effect(()=>{
           const key=()=>JSON.stringify(ctx.workspaces.list.getSnapshot().items.map(w=>[w.workspaceId,w.title]));
           let previous=key();
@@ -1886,6 +2075,34 @@ window.__ModuleLoader__.load({
           }
         };
         installWorkbenchViews(ctx,openProject);
+        ctx.slots.inject("settings.launcher", () => ctx.slots.register({ name: "settings.launcher", priority: -10 }, FooterMore));
+        ctx.slots.inject("sidebar.brand.mark", () => ctx.slots.register({ name: "sidebar.brand.mark", priority: -10 },
+          ({ size }) => h("img", { src: "/workbench-brand.png", width: size, height: size, alt: brandTitle, title: brandTitle, className: "wb-brand-mark" })));
+        ctx.slots.inject("sidebar.brand.name", () => ctx.slots.register({ name: "sidebar.brand.name", priority: -10 },
+          () => h("span", { className: "wb-brand-name", title: brandTitle }, brandTitle)));
+        ctx.effect(() => {
+          const workspace = ctx.uiWorkspace;
+          const original = workspace.startSession;
+          function start(workspaceId, options) {
+            if (workspaceId) return original.call(this, workspaceId, options);
+            const current = ctx.layout.panelInfo.getSnapshot().activePanelId === null &&
+              Object.values(ctx.sessions.list.getSnapshot().byId).find(session => session.retainedBy?.mainView > 0);
+            const project = current && current.id !== personalSessionId && visibleSession(current.id) &&
+              ctx.workspaces.list.getSnapshot().items.find(w => w.sessionIds.includes(current.id) && !replyWorkspaceIds.has(w.workspaceId));
+            if (project) return original.call(this, project.workspaceId, options);
+            ctx.layout.selectPanel("wb-today");
+          }
+          workspace.startSession = start;
+          return () => { if (workspace.startSession === start) workspace.startSession = original; };
+        }, "workbench: start a session in the active project");
+        function PreviousProjectEntry() {
+          useEffect(() => {
+            ctx.layout.selectPanel(null);
+            requestAnimationFrame(() => document.querySelector(".wb-project-find")?.focus());
+          }, []);
+          return null;
+        }
+        ctx.slots.inject("main", () => ctx.slots.register({ name: "main", key: "wb-projects" }, PreviousProjectEntry));
         function SuperAgentEntry(){
           const [error,setError]=useState("");
           const [retry,setRetry]=useState(0);
@@ -1897,7 +2114,6 @@ window.__ModuleLoader__.load({
         }
         for (const [id, label, mark, Component, extra] of [
           ["wb-today","SuperAgent",IconClockOutlineRegular,SuperAgentEntry,{}],
-          ["wb-projects","项目",UI.IconFolderCloseRegular||IconDatabaseOutlineRegular,ProjectsPage,{openProject}],
           ["wb-resources","知识库",IconDatabaseOutlineRegular,ResourcePage,{}],
           ["wb-experts","专家",UI.IconAgentPresetOutlineRegular||IconDatabaseOutlineRegular,ExpertsPage,{}],
           ["wb-mcp","MCP 插件",UI.IconPluginPinwheelOutlineRegular||IconDatabaseOutlineRegular,MCPPage,{openNativePlugins:()=>ctx.layout.selectPanel("plugins")}],
@@ -1908,7 +2124,7 @@ window.__ModuleLoader__.load({
               {
                 name: "sidebar.panellist",
                 id,
-                order: -30+["wb-today","wb-projects","wb-resources","wb-experts","wb-mcp","wb-schedules"].indexOf(id),
+                order: -30+["wb-today","wb-resources","wb-experts","wb-mcp","wb-schedules"].indexOf(id),
                 label: () => label,
               },
               mark,

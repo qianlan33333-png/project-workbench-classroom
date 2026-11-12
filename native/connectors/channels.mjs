@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import {createCRM} from './crm-cli.mjs';
 import {createGateway} from './wecom-gateway.mjs';
 import {createConversationControl} from './conversation-control.mjs';
+import { wechatAPIOrigin, wechatHeaders } from './wechat-link.mjs';
 import * as lark from '@larksuiteoapi/node-sdk';
 
 export function parseWechatJSON(text){return JSON.parse(text,(key,value,context)=>key==='message_id'&&typeof value==='number'&&context?.source?context.source:value)}
@@ -17,8 +18,10 @@ export async function ingestFeishu(c,{sender,message:m},workerCall){
  await workerCall('/messages',{connectionId:c.id,eventId:m.message_id,actorId:sender.sender_id?.open_id,conversationId:m.chat_id,text:content.text||'',replyTo:m.parent_id||'',occurredAt:platformTime(m.create_time)});
 }
 const unknown=receipt=>({state:'unknown',receipt:receipt||'',error:'结果未明确；连接器不会自动重发。'});
-export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
- const clients=new Map(),tokens=new Map();
+export function createChannels(config,workerCall,fetcher=fetch,feishuFactory,lifecycle={}){
+ const ingest=async(connection,message)=>{if(!await lifecycle.receive?.(connection,message))await workerCall('/messages',message)};
+ const setHealth=(connection,status)=>lifecycle.health?.(connection,status);
+ const clients=new WeakMap(),tokens=new Map();
  const crms=new Map(config.filter(c=>c.enabled&&c.kind==='crm-cli').map(c=>[c.id,createCRM(c,workerCall)]));
  const controls=new Map();
  for(const c of config.filter(c=>c.crm&&c.crm.enabled!==false)){
@@ -29,9 +32,10 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   }
  }
  const gateways=new Map(config.filter(c=>c.enabled&&c.kind==='wecom-gateway').map(c=>[c.id,createGateway(c,workerCall,fetcher)]));
- const entry=id=>{const c=config.find(c=>c.id===id&&c.enabled);if(!c)throw Error('Connector unavailable');return c};
+ const entry=(id,receipt=false)=>{const c=config.find(c=>c.id===id&&c.enabled&&(receipt||!c.receiptOnly));if(!c)throw Error('Connector unavailable');return c};
  const platformWechat=async(c,endpoint,data,signal)=>{
-  const r=await fetcher('https://ilinkai.weixin.qq.com/ilink/bot/'+endpoint,{method:'POST',redirect:'error',signal:AbortSignal.any([signal||new AbortController().signal,AbortSignal.timeout(45000)]),headers:{'content-type':'application/json',AuthorizationType:'ilink_bot_token',Authorization:'Bearer '+c.token,'X-WECHAT-UIN':Buffer.from(String(crypto.randomBytes(4).readUInt32BE())).toString('base64'),'iLink-App-Id':'bot','iLink-App-ClientVersion':String((2<<16)|(4<<8)|10)},body:JSON.stringify({...data,base_info:{channel_version:'2.4.10',bot_agent:'PersonalWorkbench'}})});
+  const headers=c.origin?wechatHeaders():{'content-type':'application/json',AuthorizationType:'ilink_bot_token','X-WECHAT-UIN':Buffer.from(String(crypto.randomBytes(4).readUInt32BE())).toString('base64'),'iLink-App-Id':'bot','iLink-App-ClientVersion':String((2<<16)|(4<<8)|10)};
+  const r=await fetcher(wechatAPIOrigin(c.origin)+'/ilink/bot/'+endpoint,{method:'POST',redirect:'error',signal:AbortSignal.any([signal||new AbortController().signal,AbortSignal.timeout(45000)]),headers:{...headers,Authorization:'Bearer '+c.token},body:JSON.stringify({...data,base_info:{channel_version:c.origin?'3.0.0':'2.4.10',bot_agent:'PersonalWorkbench'}})});
   if(!r.ok)throw Error('WeChat transport unavailable');return parseWechatJSON(await r.text());
  };
  const platformWecom=async(c,endpoint,data)=>{
@@ -43,12 +47,15 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   const u=new URL('https://qyapi.weixin.qq.com/cgi-bin/'+endpoint);u.searchParams.set('access_token',token.value);
   const r=await fetcher(u,{method:'POST',redirect:'error',signal:AbortSignal.timeout(20000),headers:{'content-type':'application/json'},body:JSON.stringify(data)});if(!r.ok)throw Error('WeCom transport unavailable');return r.json();
  };
- const feishu=c=>{if(feishuFactory)return feishuFactory(c);if(!clients.has(c.id))clients.set(c.id,new lark.Client({appId:c.appId,appSecret:c.appSecret,appType:lark.AppType.SelfBuild,domain:lark.Domain.Feishu,loggerLevel:lark.LoggerLevel.error}));return clients.get(c.id)};
+ const feishu=c=>{if(feishuFactory)return feishuFactory(c);if(!clients.has(c))clients.set(c,new lark.Client({appId:c.appId,appSecret:c.appSecret,appType:lark.AppType.SelfBuild,domain:lark.Domain.Feishu,loggerLevel:lark.LoggerLevel.error}));return clients.get(c)};
  async function send({connectionId,idempotencyKey,target,text},options){
   if(crms.has(connectionId))return crms.get(connectionId).send({idempotencyKey,target,text},options);
   if(target.kind==='conversation.mode.changed')return controls.has(connectionId)?controls.get(connectionId).notify({target,text}):{state:'failed',error:'CRM control is not configured'};
   const c=entry(connectionId);if(!text||text.length>16000)throw Error('Invalid message');
   if(gateways.has(c.id))return gateways.get(c.id).send({connectionId,idempotencyKey,target,text});
+  return sendPlatform(c,{idempotencyKey,target,text});
+ }
+ async function sendPlatform(c,{idempotencyKey,target,text}){
   if(c.kind==='wechat'){
    if(target.actorId!==c.ownerId)return{state:'failed',error:'此微信连接只允许本人通知。'};
    const state=await workerCall('/connector-state?id='+encodeURIComponent(c.id));const context=state.contextTokens?.[target.actorId];if(!context)return{state:'failed',error:'本人需要先建立微信回复窗口。'};
@@ -84,7 +91,7 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   // Only state.changed is idempotent at the receiver. Customer sends never
   // enter this branch and are never retried as a receipt query.
   if(target.kind==='conversation.mode.changed')return controls.has(connectionId)?controls.get(connectionId).notify({target,text}):{state:'failed',error:'CRM control is not configured'};
-  const c=entry(connectionId);
+  const c=entry(connectionId,true);
   if(gateways.has(c.id))return gateways.get(c.id).receipt({receipt,target,state});
   if(!receipt)return unknown();
   if(c.kind==='wechat'){let proof;try{proof=JSON.parse(receipt)}catch{return unknown(receipt)};if(!proof.complete||proof.parts?.length!==proof.total||!proof.total)return unknown(receipt);return{state:'accepted',receipt,error:'微信接口提供受理回执，尚无客户送达查询接口。'}};
@@ -107,28 +114,39 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   return unknown(receipt);
  }
  async function pollWechat(c,signal){
+  let failures=0;
   while(!signal.aborted){
    try{
     const state=await workerCall('/connector-state?id='+encodeURIComponent(c.id));state.contextTokens??={};
-    const result=await platformWechat(c,'getupdates',{get_updates_buf:state.get_updates_buf||''},signal);if(result.ret||result.errcode)throw Error('Wechat polling unavailable');
+    const result=await platformWechat(c,'getupdates',{get_updates_buf:state.get_updates_buf||''},signal);
+    if(result.ret===-14||result.errcode===-14){setHealth(c,'reconnect');return}
+    if(result.ret||result.errcode)throw Error('Wechat polling unavailable');
+    failures=0;setHealth(c,'ready');
     for(const m of result.msgs||[]){
      if(m.message_type!==1||m.group_id||m.from_user_id!==c.ownerId||m.message_id==null)continue;
      if(m.context_token){state.contextTokens[m.from_user_id]=m.context_token;await workerCall('/connector-state',{id:c.id,value:state})}
      const text=(m.item_list||[]).filter(i=>i.type===1||i.type===3).map(i=>i.text_item?.text||i.voice_item?.text||'').join('').trim();
      if(!text)continue;
-     await workerCall('/messages',{connectionId:c.id,eventId:String(m.message_id),actorId:m.from_user_id,conversationId:m.from_user_id,text,occurredAt:platformTime(m.create_time_ms)});
+     await ingest(c,{connectionId:c.id,eventId:String(m.message_id),actorId:m.from_user_id,conversationId:m.from_user_id,text,occurredAt:platformTime(m.create_time_ms)});
     }
     state.get_updates_buf=result.get_updates_buf??state.get_updates_buf;
     await workerCall('/connector-state',{id:c.id,value:state});
-   }catch{if(!signal.aborted)await new Promise(r=>setTimeout(r,3000))}
+   }catch{if(!signal.aborted){if(++failures>=3)setHealth(c,'reconnect');await new Promise(r=>setTimeout(r,3000))}}
   }
  }
  async function pollFeishu(c,signal){
-  const ws=new lark.WSClient({appId:c.appId,appSecret:c.appSecret,loggerLevel:lark.LoggerLevel.error});
-  const dispatcher=new lark.EventDispatcher({}).register({'im.message.receive_v1':event=>ingestFeishu(c,event,workerCall)});
-  await ws.start({eventDispatcher:dispatcher});if(!signal.aborted)await new Promise(r=>signal.addEventListener('abort',r,{once:true}));ws.close({force:true});
+  const ws=new lark.WSClient({appId:c.appId,appSecret:c.appSecret,loggerLevel:lark.LoggerLevel.error,
+   onReady:()=>setHealth(c,'ready'),onReconnected:()=>setHealth(c,'ready'),onReconnecting:()=>setHealth(c,'reconnect'),
+   onError:()=>setHealth(c,'reconnect'),handshakeTimeoutMs:15000});
+  const dispatch=(path,data)=>path==='/messages'?ingest(c,data):workerCall(path,data);
+  const dispatcher=new lark.EventDispatcher({}).register({'im.message.receive_v1':event=>ingestFeishu(c,event,dispatch)});
+  try{
+   await ws.start({eventDispatcher:dispatcher});
+   if(!signal.aborted)await new Promise(r=>signal.addEventListener('abort',r,{once:true}));
+  }finally{ws.close({force:true})}
  }
- return{send,receipt,operationsMaterialVersions:({connectionId,ids,drafts},options)=>{
+ const startOne=(c,signal)=>c.kind==='wechat'?pollWechat(c,signal):c.kind==='feishu'?pollFeishu(c,signal):c.kind==='wecom-gateway'&&c.receiveMode==='poll'?gateways.get(c.id).poll(signal):Promise.resolve();
+ return{send,sendTest:sendPlatform,receipt,startOne,operationsMaterialVersions:({connectionId,ids,drafts},options)=>{
   const crm=crms.get(connectionId);
   if(!crm)throw Error('CRM material connector unavailable');
   return crm.materialVersions({ids,drafts},options);
@@ -136,5 +154,5 @@ export function createChannels(config,workerCall,fetcher=fetch,feishuFactory){
   const crm=crms.get(connectionId);
   if(!crm)throw Error('CRM batch connector unavailable');
   return crm.batch({runId},send,options);
- },identity:async(input,options)=>{entry(input.connectionId);const g=gateways.get(input.connectionId);if(!g)throw Error('Contact lookup unavailable');return g.identity(input,options)},describe:async({connectionId})=>{entry(connectionId);const g=gateways.get(connectionId);if(!g)throw Error('This connection has no account directory');return g.describe()},ingestControl:async(id,raw,headers)=>{const c=controls.get(id);if(!c)throw Object.assign(Error('not_bound'),{status:404,code:'not_bound'});return c.handle(raw,headers)},ingestGateway:async(id,raw,headers)=>{const g=gateways.get(id);if(!g)throw Error('Unknown gateway');return g.ingest(raw,headers)},start:async signal=>Promise.all(config.filter(c=>c.enabled&&c.receive).map(c=>c.kind==='wechat'?pollWechat(c,signal):c.kind==='feishu'?pollFeishu(c,signal):c.kind==='wecom-gateway'&&c.receiveMode==='poll'?gateways.get(c.id).poll(signal):Promise.resolve()))};
+ },identity:async(input,options)=>{entry(input.connectionId);const g=gateways.get(input.connectionId);if(!g)throw Error('Contact lookup unavailable');return g.identity(input,options)},describe:async({connectionId})=>{entry(connectionId);const g=gateways.get(connectionId);if(!g)throw Error('This connection has no account directory');return g.describe()},ingestControl:async(id,raw,headers)=>{const c=controls.get(id);if(!c)throw Object.assign(Error('not_bound'),{status:404,code:'not_bound'});return c.handle(raw,headers)},ingestGateway:async(id,raw,headers)=>{const g=gateways.get(id);if(!g)throw Error('Unknown gateway');return g.ingest(raw,headers)},start:async (signal,connections=config)=>Promise.all(connections.filter(c=>c.enabled&&c.receive).map(c=>startOne(c,signal)))};
 }

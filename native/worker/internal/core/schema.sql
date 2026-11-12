@@ -157,3 +157,10 @@ CREATE TABLE IF NOT EXISTS wb_business_policies (
  KEY business_lookup(resource_id,topic,enabled,valid_until),
  FOREIGN KEY(resource_id) REFERENCES wb_resources(id)
 );
+
+CREATE TABLE IF NOT EXISTS wb_activation_codes (
+  digest BINARY(32) PRIMARY KEY,
+  expires_at DATETIME NOT NULL,
+  installation CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  claimed_at DATETIME NULL
+);

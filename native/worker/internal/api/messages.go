@@ -203,6 +203,15 @@ func (a *Server) messageRoutes(mux *http.ServeMux) {
 			respond(w, v, a.Store.PutTransport(r.Context(), principal(r.Context()), v))
 		}
 	})
+	mux.HandleFunc("POST /transports/retire-personal", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			ID          string `json:"id"`
+			Replacement string `json:"replacement"`
+		}
+		if decode(w, r, &in) {
+			respond(w, nil, a.Store.RetirePersonalTransport(r.Context(), principal(r.Context()), in.ID, in.Replacement))
+		}
+	})
 	mux.HandleFunc("POST /message-routes", func(w http.ResponseWriter, r *http.Request) {
 		var v core.MessageRoute
 		if decode(w, r, &v) {

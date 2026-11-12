@@ -13,10 +13,9 @@ const replyActivityBudget = 60
 // The reference remains stable across versions and contains no message data.
 var replyActivitySource = Ref{"reply-inbound-ledger", "live-activity", "personal-only"}
 
-func (s *Store) ensureReplyActivitySource(ctx context.Context) error {
-	ref := replyActivitySource
+func (s *Store) ensurePersonalSource(ctx context.Context, ref Ref, name string) error {
 	sections := []Section{{ID: ref.Section, Name: "本人来源", Fields: []string{"source"}}}
-	resource := Resource{ID: ref.ResourceID, Name: "自动化应答 · 本人来源", Sections: sections}
+	resource := Resource{ID: ref.ResourceID, Name: name, Sections: sections}
 	snapshot := Snapshot{ResourceID: ref.ResourceID, Version: ref.Version, Sections: sections, State: "published"}
 
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -33,7 +32,7 @@ func (s *Store) ensureReplyActivitySource(ctx context.Context) error {
 		AND NOT EXISTS (SELECT 1 FROM wb_grants WHERE resource_id=wb_resources.id)`, ref.ResourceID, ref.Version))
 	if err != nil || Digest(stored) != Digest(resource) {
 		if err == nil || IsMissing(err) {
-			return fmt.Errorf("%w: reserved reply activity resource differs", ErrConflict)
+			return fmt.Errorf("%w: reserved personal resource %s differs", ErrConflict, ref.ResourceID)
 		}
 		return err
 	}
@@ -47,7 +46,7 @@ func (s *Store) ensureReplyActivitySource(ctx context.Context) error {
 		ref.ResourceID, ref.Version))
 	if err != nil || Digest(storedSnapshot) != Digest(snapshot) {
 		if err == nil || IsMissing(err) {
-			return fmt.Errorf("%w: reserved reply activity snapshot differs", ErrConflict)
+			return fmt.Errorf("%w: reserved personal snapshot %s differs", ErrConflict, ref.ResourceID)
 		}
 		return err
 	}

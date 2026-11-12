@@ -151,8 +151,15 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return e
 		}
 	}
-	if err := s.ensureReplyActivitySource(ctx); err != nil {
-		return err
+	for _, source := range []struct {
+		ref  Ref
+		name string
+	}{
+		{replyActivitySource, "自动化应答 · 本人来源"}, {feishuCLISource, "飞书 CLI · 本人来源"},
+	} {
+		if err := s.ensurePersonalSource(ctx, source.ref, source.name); err != nil {
+			return err
+		}
 	}
 	return s.migrateResourceGrants(ctx)
 }
@@ -239,7 +246,7 @@ func (s *Store) Resources(ctx context.Context, p Principal) ([]Resource, error) 
 			return nil, e
 		}
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT body,current_version,revision FROM wb_resources WHERE id<>? ORDER BY id`, replyActivitySource.ResourceID)
+	rows, e := s.DB.QueryContext(ctx, `SELECT body,current_version,revision FROM wb_resources WHERE id NOT IN (?,?) ORDER BY id`, replyActivitySource.ResourceID, feishuCLISource.ResourceID)
 	if e != nil {
 		return nil, e
 	}
@@ -303,7 +310,7 @@ func (s *Store) RegisterResource(ctx context.Context, p Principal, r Resource) e
 	return s.putResource(ctx, p, r, false)
 }
 func (s *Store) putResource(ctx context.Context, p Principal, r Resource, seed bool) error {
-	if !p.IsOwner() || r.ID == replyActivitySource.ResourceID || r.Relation == VaultRelation || validVaultID(r.ID) {
+	if !p.IsOwner() || isPersonalSource(r.ID) || r.Relation == VaultRelation || validVaultID(r.ID) {
 		return ErrDenied
 	}
 	if e := r.Validate(); e != nil {
@@ -365,7 +372,7 @@ func readSnapshot(ctx context.Context, q resourceQuery, id, version string) (Sna
 	return v, e
 }
 func (s *Store) canWrite(ctx context.Context, p Principal, id string) (Resource, error) {
-	if id == replyActivitySource.ResourceID {
+	if isPersonalSource(id) {
 		return Resource{}, ErrDenied
 	}
 	if e := p.Validate(); e != nil {
