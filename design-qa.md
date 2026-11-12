@@ -117,3 +117,11 @@ final result: passed
 - 隔离 Chromium 通过菜单、模拟私聊状态、键盘关闭、侧栏折叠、工作区新建与查找、激活提交。两个视口无页面错误。桌面锁定，使用项目要求的隔离浏览器完成验收。截图中的连接状态为测试数据。
 
 final result: passed
+
+## 2026-11-12 新会话和品牌清理
+
+对照用户附图和 1440 × 900 的隔离原生页面。前后对照见 `.var/ui-cleanup/composer-comparison.png`。删除空白页标题区及徽标后，保留项目、专家和输入框的可操作层级。品牌色、字体与侧栏沿用已有工作台设计。项目选择见 `.var/ui-cleanup/15-project-picker.png`，首次创建项目及窄屏输入见 `.var/ui-cleanup/19-mobile-first-project.png`、`.var/ui-cleanup/20-mobile-composer.png`。
+
+浏览器覆盖按钮、快捷键、多个项目选择、同项目新会话、模型选择、设置和插件管理。窄屏 390 × 844 的项目创建浮窗可操作，输入区无横向溢出。对照图均为隔离数据。生产额外检查了 1440px 和 390px 的页面品牌，以及设置窗在初始化期间保持打开。
+
+final result: passed
