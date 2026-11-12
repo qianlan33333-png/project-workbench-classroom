@@ -182,6 +182,7 @@ type Snapshot struct {
 	SourceWatermark string         `json:"sourceWatermark,omitempty"`
 	VaultOperation  string         `json:"vaultOperation,omitempty"`
 	VaultItemID     string         `json:"vaultItemId,omitempty"`
+	VaultFolders    *[]string      `json:"vaultFolders,omitempty"`
 	RecordSchema    map[string]any `json:"recordSchema,omitempty"`
 	PublishedAt     *time.Time     `json:"publishedAt,omitempty"`
 }

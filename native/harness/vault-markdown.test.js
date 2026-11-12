@@ -1,6 +1,43 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {directoryVault, renameVaultNote, searchVault, vaultView} from './vault-markdown.js';
+import {directoryVault, renameVaultNote, searchVault, vaultFolderPaths, vaultStructure, vaultView} from './vault-markdown.js';
+
+test('folder movement preserves empty branches and rewrites links to the moved subtree', () => {
+  const docs = [
+    {path:'客户/旧目录/服务.md',text:'## 规则\n\n[[./备注#正文]]'},
+    {path:'客户/旧目录/备注.md',text:'## 正文'},
+    {path:'入口.md',text:'[[客户/旧目录/服务#规则|规则]]\n\n[备注](客户/旧目录/备注.md#正文)'},
+  ];
+  const folders = vaultFolderPaths(docs,['客户/旧目录/空目录']);
+  assert.deepEqual(folders,['客户','客户/旧目录','客户/旧目录/空目录']);
+  const moved = vaultStructure(docs,folders,{action:'move-folder',from:'客户/旧目录',to:'归档/服务'});
+  assert.ok(moved.folders.includes('归档/服务/空目录'));
+  assert.ok(moved.changes.some(note=>note.path==='客户/旧目录/备注.md' && note.text===null));
+  const next = moved.changes.filter(note=>note.text!==null);
+  const oldLink = vaultView(next,'入口.md').document.html;
+  assert.ok(oldLink.includes(encodeURIComponent('归档/服务/服务.md')));
+  assert.ok(oldLink.includes(encodeURIComponent('归档/服务/备注.md')));
+  assert.throws(()=>vaultStructure(docs,folders,{action:'move-folder',from:'客户/旧目录',to:'客户/旧目录/空目录/套娃'}),{status:400});
+  const deleted = vaultStructure(docs,folders,{action:'delete-folder',from:'客户/旧目录'});
+  assert.deepEqual(deleted.folders,['客户']);
+  assert.equal(deleted.changes.length,2);
+});
+
+test('duplicating a folder keeps original links and routes internal links inside the copy', () => {
+  const docs = [
+    {path:'原件/说明.md',text:'[[条款|规则]]'},
+    {path:'原件/条款.md',text:'# 条款'},
+    {path:'首页.md',text:'[[条款]]'},
+  ];
+  const copy = vaultStructure(docs,['原件/空目录'],{action:'duplicate-folder',from:'原件',to:'副本'});
+  const merged = new Map(docs.map(note=>[note.path,note]));
+  for (const note of copy.changes) merged.set(note.path,note);
+  const all = [...merged.values()];
+  assert.ok(copy.folders.includes('副本/空目录'));
+  for (const [from,to] of [['首页.md','原件/条款.md'],['原件/说明.md','原件/条款.md'],['副本/说明.md','副本/条款.md']]) {
+    assert.ok(vaultView(all,from).document.html.includes(encodeURIComponent(to)));
+  }
+});
 
 test('imported metadata is folded separately without modifying the source Markdown', () => {
   const sourcePath = 'product-operation-packs/sku-31314141/v1/无具体交流跟进规则.md';

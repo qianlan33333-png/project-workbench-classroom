@@ -15,7 +15,8 @@ import { toolNamespace, namespaceOfTool } from './tool-namespace.js';
 import { installPersonalMemory } from './personal-memory.js';
 import { replyEvidenceProjection } from './reply-evidence.js';
 import { resourceDocuments } from './resource-documents.js';
-import {directoryVault, renameVaultNote, searchVault, vaultView} from './vault-markdown.js';
+import { zipSync } from 'fflate';
+import {directoryVault, renameVaultNote, searchVault, vaultFolderPaths, vaultStructure, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
 import { createActivation, installActivation, sameOrigin, setupBody, workbenchTitle as brandTitle } from "./activation.js";
@@ -145,8 +146,12 @@ export async function apply(ctx, config) {
       : undefined;
     const editable = resource.relation === 'obsidian-vault' && !resource.connectionId;
     let notes;
+    let storedFolders = [];
     if (editable || connection?.kind === 'directory') {
-      if (section) notes = await directoryVault(read, {...resource, currentVersion:version}, section.id);
+      if (section) [notes, storedFolders] = await Promise.all([
+        directoryVault(read, {...resource, currentVersion:version}, section.id),
+        editable ? read('/vault-folders?' + new URLSearchParams({resourceId,version})) : [],
+      ]);
     } else {
       if (projectId && !(await syncProjects(signal)).some(project => project.id === projectId)) {
         throw requestError('项目不存在', 404);
@@ -158,7 +163,7 @@ export async function apply(ctx, config) {
     }
     signal.throwIfAborted();
     const originalCenter = (resource.vaultOrigin?.resourceId ?? resource.id) === 'context-center-config';
-    return {notes, version, editable, originalCenter};
+    return {notes, version, editable, originalCenter, folders:vaultFolderPaths(notes ?? [],storedFolders ?? [])};
   }
 
   const activation = process.env.WORKBENCH_ACTIVATION_REQUIRED === "1"
@@ -606,31 +611,49 @@ export async function apply(ctx, config) {
               if(projectId&&!(await syncProjects()).some(p=>p.id===projectId))throw requestError('项目不存在',404);
               json(res,200,await resourceDocuments(config,call,projectId,resourceId,u.searchParams.get('uri')||undefined,{identity:projectId?undefined:owner}));return;
             }
-            if (req.method === "GET" && path === "/vault-view") {
+            if (req.method === "GET" && (path === "/vault-view" || path === "/vault-export")) {
               const disconnect = new AbortController();
               res.once("close", () => disconnect.abort());
               const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(30000)]);
               const resourceId = u.searchParams.get("resourceId");
               const projectId = u.searchParams.get("projectId") || undefined;
-              const {notes, version, editable, originalCenter} = await loadVault(resourceId, u.searchParams.get("version"), projectId, signal);
+              const {notes, version, editable, originalCenter, folders} = await loadVault(resourceId, u.searchParams.get("version"), projectId, signal);
               if (!notes || (!editable && notes.length === 0)) {
                 json(res, 200, {supported:false});
                 return;
               }
               signal.throwIfAborted();
+              if (path === '/vault-export') {
+                const files = Object.create(null);
+                for (const folder of folders) files[folder + '/'] = new Uint8Array();
+                for (const note of notes) files[note.path] = Buffer.from(note.text);
+                // Refuse legacy names that could resolve outside an extracted ZIP on Windows.
+                for (const name of Object.keys(files)) {
+                  if (/[:\\\u0000-\u001f]/u.test(name) || name.split('/').some(part => part === '.' || part === '..')) {
+                    throw requestError('来源包含无法安全导出的路径：' + name, 422);
+                  }
+                }
+                const archive = zipSync(files, {level:0});
+                res.writeHead(200, {'content-type':'application/zip','cache-control':'no-store'}).end(archive);
+                return;
+              }
               if (u.searchParams.has("search")) {
-                json(res, 200, {supported:true, version, notes:searchVault(notes, u.searchParams.get("search").slice(0, 200))});
+                json(res, 200, {supported:true, version, notes:searchVault(notes, u.searchParams.get("search").slice(0, 200), {
+                  snippets:u.searchParams.get("snippets")==="1",
+                })});
                 return;
               }
               const requested = u.searchParams.get("note") ?? undefined;
               const view = vaultView(notes, requested, {originalCenter});
               if (requested && !view.document) throw requestError("笔记不存在", 404);
-              json(res, 200, {supported:true, editable, projectId, version, ...view});
+              json(res, 200, {supported:true, editable, projectId, version, folders, ...view});
               return;
             }
-            if (req.method === 'POST' && (path === '/vault-copy' || path === '/vault-rename')) {
-              const origin = req.headers.origin;
-              if (!origin || new URL(origin).host !== req.headers.host) throw requestError('origin rejected', 403);
+            if (req.method === 'POST' && ['/vault-copy','/vault-rename','/vault-structure','/vault-preview'].includes(path)) {
+              if (!sameOrigin(req)) throw requestError('origin rejected', 403);
+              if ((path === '/vault-structure' || path === '/vault-preview') && admission.peer !== ctx.connection.browserPeer) {
+                throw requestError('请在本人工作台网页操作', 403);
+              }
               const input = await body(req);
               const {resourceId, version, projectId} = input;
               if (typeof resourceId !== 'string' || typeof version !== 'string' || !version) {
@@ -640,7 +663,24 @@ export async function apply(ctx, config) {
               res.once('close', () => disconnect.abort());
               const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(90000)]);
               const vault = await loadVault(resourceId, version, projectId, signal);
-              if (path === '/vault-rename') {
+              if (path === '/vault-structure') {
+                if (!vault.editable || !vault.notes) throw requestError('语料库只读', 403);
+                if (!['create-folder','move-folder','delete-folder','duplicate-folder','duplicate-note'].includes(input.action)) {
+                  throw requestError('无效的语料库操作');
+                }
+                const changes = vaultStructure(vault.notes, vault.folders, input);
+                json(res, 200, await call('/vault-structure', owner, {resourceId, version, ...changes}, signal));
+              } else if (path === '/vault-preview') {
+                if (!vault.editable || !vault.notes) throw requestError('语料库只读', 403);
+                if (typeof input.note !== 'string' || typeof input.text !== 'string' || Buffer.byteLength(input.text) > 240*1024) {
+                  throw requestError('笔记正文超过预览范围');
+                }
+                const docs = vault.notes.filter(doc => doc.path !== input.note);
+                docs.push({path:input.note,text:input.text});
+                const view = vaultView(docs,input.note,{originalCenter:vault.originalCenter, includeBacklinks:false});
+                if (!view.document) throw requestError('无效的笔记路径');
+                json(res, 200, {html:view.document.html, hasTitle:view.document.hasTitle});
+              } else if (path === '/vault-rename') {
                 if (!vault.editable || !vault.notes) throw requestError('语料库只读', 403);
                 const {from, to} = input;
                 if (typeof from !== 'string' || typeof to !== 'string' || to.length > 1024) throw requestError('无效的笔记路径');

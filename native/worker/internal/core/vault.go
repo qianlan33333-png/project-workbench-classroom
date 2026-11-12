@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -65,8 +67,12 @@ func validVaultID(id string) bool {
 }
 
 func validVaultPath(name string) bool {
+	return strings.EqualFold(path.Ext(name), ".md") && validVaultEntryPath(name)
+}
+
+func validVaultEntryPath(name string) bool {
 	if name == "" || len(name) > 1024 || !utf8.ValidString(name) ||
-		name != path.Clean(name) || !strings.EqualFold(path.Ext(name), ".md") ||
+		name != path.Clean(name) ||
 		strings.ContainsAny(name, `\:*?"<>|[]#^`) || strings.ContainsFunc(name, unicode.IsControl) {
 		return false
 	}
@@ -77,6 +83,51 @@ func validVaultPath(name string) bool {
 		}
 	}
 	return true
+}
+
+// The last layout survives an intervening write made by a rollback version.
+// Older snapshots on either side of a rollback still expose their own notes.
+func vaultFoldersAt(ctx context.Context, q resourceQuery, snapshot Snapshot) ([]string, error) {
+	if snapshot.VaultFolders != nil {
+		return *snapshot.VaultFolders, nil
+	}
+	var body []byte
+	err := q.QueryRowContext(ctx, `SELECT JSON_EXTRACT(body,'$.vaultFolders') FROM wb_snapshots
+		WHERE resource_id=? AND state='published' AND published_at<? AND JSON_CONTAINS_PATH(body,'one','$.vaultFolders')
+		ORDER BY published_at DESC LIMIT 1`, snapshot.ResourceID, snapshot.PublishedAt).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var folders []string
+	err = json.Unmarshal(body, &folders)
+	return folders, err
+}
+
+func (s *Store) VaultFolders(ctx context.Context, p Principal, id, version string) ([]string, error) {
+	if !p.IsOwner() {
+		return nil, ErrDenied
+	}
+	if !validVaultID(id) || !ValidID(version) {
+		return nil, ErrInvalid
+	}
+	r, err := s.Resource(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if r.Relation != VaultRelation || r.ConnectionID != "" {
+		return nil, ErrDenied
+	}
+	snapshot, err := s.Snapshot(ctx, id, version)
+	if err != nil {
+		return nil, err
+	}
+	if snapshot.State != "published" {
+		return nil, ErrConflict
+	}
+	return vaultFoldersAt(ctx, s.DB, snapshot)
 }
 
 func (s *Store) CreateVault(ctx context.Context, p Principal, root, id, name string) (Resource, error) {
@@ -236,7 +287,7 @@ func (s *Store) SaveVault(ctx context.Context, p Principal, root, id, previous s
 	if len(changes) > 200 {
 		return Snapshot{}, ErrInvalid
 	}
-	return s.saveVaultChanges(ctx, p, root, id, previous, changes)
+	return s.saveVaultChanges(ctx, p, root, id, previous, changes, nil)
 }
 
 // SaveVaultRename applies the old path, new path, and affected Markdown in one version.
@@ -247,24 +298,35 @@ func (s *Store) SaveVaultRename(ctx context.Context, p Principal, root, id, prev
 	if len(changes) < 2 || len(changes) > 10001 {
 		return Snapshot{}, ErrInvalid
 	}
-	return s.saveVaultChanges(ctx, p, root, id, previous, changes)
+	return s.saveVaultChanges(ctx, p, root, id, previous, changes, nil)
 }
 
-func (s *Store) saveVaultChanges(ctx context.Context, p Principal, root, id, previous string, changes []VaultChange) (Snapshot, error) {
-	if len(previous) != 64 || !ValidID(previous) || len(changes) == 0 {
+func (s *Store) SaveVaultStructure(ctx context.Context, p Principal, root, id, previous string, changes []VaultChange, folders *[]string) (Snapshot, error) {
+	if !p.IsOwner() {
+		return Snapshot{}, ErrDenied
+	}
+	if folders == nil || len(*folders) > 20000 || len(changes) > 20000 {
+		return Snapshot{}, ErrInvalid
+	}
+	return s.saveVaultChanges(ctx, p, root, id, previous, changes, folders)
+}
+
+func (s *Store) saveVaultChanges(ctx context.Context, p Principal, root, id, previous string, changes []VaultChange, folders *[]string) (Snapshot, error) {
+	if len(previous) != 64 || !ValidID(previous) || (len(changes) == 0 && folders == nil) {
 		return Snapshot{}, ErrInvalid
 	}
 	version := Digest(struct {
 		Previous string
 		Changes  []VaultChange
-	}{previous, changes})
-	return s.saveVault(ctx, p, root, id, previous, version, "", func(_ []Record) ([]VaultChange, string, error) {
+		Folders  *[]string `json:",omitempty"`
+	}{previous, changes, folders})
+	return s.saveVault(ctx, p, root, id, previous, version, "", folders, func(_ []Record) ([]VaultChange, string, error) {
 		return changes, "", nil
 	})
 }
 
 // saveVault serializes changes and permission updates on the resource row.
-func (s *Store) saveVault(ctx context.Context, p Principal, root, id, previous, version, operation string, build func([]Record) ([]VaultChange, string, error)) (Snapshot, error) {
+func (s *Store) saveVault(ctx context.Context, p Principal, root, id, previous, version, operation string, layout *[]string, build func([]Record) ([]VaultChange, string, error)) (Snapshot, error) {
 	if !filepath.IsAbs(root) || !validVaultID(id) {
 		return Snapshot{}, ErrInvalid
 	}
@@ -332,6 +394,25 @@ func (s *Store) saveVault(ctx context.Context, p Principal, root, id, previous, 
 	if err != nil {
 		return Snapshot{}, err
 	}
+	var paths []string
+	if layout != nil {
+		paths = *layout
+	} else {
+		paths, err = vaultFoldersAt(ctx, tx, published)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		// Retain the parent when the last note moves out or is deleted.
+		for _, record := range records {
+			if parent := path.Dir(record.Fields["name"].(string)); parent != "." {
+				paths = append(paths, parent)
+			}
+		}
+	}
+	folders, err := vaultLayout(notes, paths)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	target := filepath.Join(parent, version)
 	_, statErr := os.Lstat(target)
 	keepFiles := false
@@ -360,7 +441,7 @@ func (s *Store) saveVault(ctx context.Context, p Principal, root, id, previous, 
 		}
 	}
 	snapshot := Snapshot{ResourceID: id, Version: version, Previous: previous,
-		Sections: r.Sections, SourceWatermark: fingerprint, VaultOperation: operation, VaultItemID: itemID}
+		Sections: r.Sections, SourceWatermark: fingerprint, VaultOperation: operation, VaultItemID: itemID, VaultFolders: &folders}
 	if err = insertVaultSnapshot(ctx, tx, snapshot, records); err != nil {
 		return Snapshot{}, err
 	}
@@ -401,7 +482,7 @@ func (s *Store) ChangeVaultItem(ctx context.Context, p Principal, root string, i
 		return out, ErrInvalid
 	}
 	version := Digest([]string{p.SessionID, in.ResourceID, in.OperationKey})
-	v, err := s.saveVault(ctx, p, root, in.ResourceID, "", version, Digest(in), func(records []Record) ([]VaultChange, string, error) {
+	v, err := s.saveVault(ctx, p, root, in.ResourceID, "", version, Digest(in), nil, func(records []Record) ([]VaultChange, string, error) {
 		return vaultItemChanges(records, in)
 	})
 	if err != nil {
@@ -497,26 +578,58 @@ func applyVaultChanges(records []Record, changes []VaultChange) (map[string]stri
 			notes[change.Path] = *change.Text
 		}
 	}
-	type pathOwner struct{ spelling, note string }
-	seen := make(map[string]pathOwner, len(notes))
 	var bytes int
-	for name, body := range notes {
+	for _, body := range notes {
 		bytes += len(body)
-		for key := name; key != "."; key = path.Dir(key) {
-			if _, isFile := notes[key]; key != name && isFile {
-				return nil, &vaultPathConflict{first: key, second: name}
-			}
-			folded := norm.NFC.String(strings.ToLower(key))
-			if other, exists := seen[folded]; exists && other.spelling != key {
-				return nil, &vaultPathConflict{first: other.note, second: name}
-			}
-			seen[folded] = pathOwner{spelling: key, note: name}
-		}
 	}
 	if len(notes) > 10000 || bytes > 32*1024*1024 {
 		return nil, ErrInvalid
 	}
+	if _, err := vaultLayout(notes, nil); err != nil {
+		return nil, err
+	}
 	return notes, nil
+}
+
+func vaultLayout(notes map[string]string, folders []string) ([]string, error) {
+	type entry struct {
+		name, origin string
+		folder       bool
+	}
+	seen := make(map[string]entry, len(notes)+len(folders))
+	directories := make([]string, 0, len(folders))
+	add := func(name string, folder bool) error {
+		for component := name; component != "."; component = path.Dir(component) {
+			key := norm.NFC.String(strings.ToLower(component))
+			if other, exists := seen[key]; exists {
+				if other.name != component || other.folder != folder {
+					return &vaultPathConflict{first: other.origin, second: name}
+				}
+				return nil // Its ancestors were already registered.
+			}
+			seen[key] = entry{name: component, origin: name, folder: folder}
+			if folder {
+				directories = append(directories, component)
+			}
+			folder = true
+		}
+		return nil
+	}
+	for name := range notes {
+		if err := add(name, false); err != nil {
+			return nil, err
+		}
+	}
+	for _, folder := range folders {
+		if !validVaultEntryPath(folder) {
+			return nil, ErrInvalid
+		}
+		if err := add(folder, true); err != nil {
+			return nil, err
+		}
+	}
+	sort.Strings(directories)
+	return directories, nil
 }
 
 func makeVaultDirectory(name string) error {

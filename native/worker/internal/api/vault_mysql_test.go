@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -232,6 +233,39 @@ func TestMySQLVaultCreateSaveAndExistingAccess(t *testing.T) {
 				tool("resource_item_write", edit, true)
 			}
 		})
+	}
+	current, err := store.Resource(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := map[string]any{"resourceId": id, "version": current.CurrentVersion,
+		"folders": []string{"空目录/子目录"}, "changes": []core.VaultChange{}}
+	var structured, layoutRetry core.Snapshot
+	call(project, "POST", "/vault-structure", layout, 403, nil)
+	call(owner, "POST", "/vault-structure", layout, 200, &structured)
+	call(owner, "POST", "/vault-structure", layout, 200, &layoutRetry)
+	if structured.Version != layoutRetry.Version || structured.Count == 0 {
+		t.Fatal("folder save or retry changed the note snapshot")
+	}
+	layout["folders"] = []string{"其他目录"}
+	call(owner, "POST", "/vault-structure", layout, 409, nil)
+	folderURL := func(version string) string { return "/vault-folders?resourceId=" + id + "&version=" + version }
+	var folders []string
+	call(owner, "GET", folderURL(structured.Version), nil, 200, &folders)
+	if !slices.Contains(folders, "空目录") || !slices.Contains(folders, "空目录/子目录") {
+		t.Fatalf("empty nested folders did not persist: %v", folders)
+	}
+	call(project, "GET", folderURL(structured.Version), nil, 403, nil)
+	var legacyWrite core.Snapshot
+	call(owner, "POST", "/vault-save", map[string]any{"resourceId": id, "version": structured.Version,
+		"changes": []core.VaultChange{{Path: "回滚期间.md", Text: &text}}}, 200, &legacyWrite)
+	// Simulate an intervening write by the previous installed program.
+	if _, err := store.DB.ExecContext(ctx, `UPDATE wb_snapshots SET body=JSON_REMOVE(body,'$.vaultFolders') WHERE resource_id=? AND version=?`, id, legacyWrite.Version); err != nil {
+		t.Fatal(err)
+	}
+	call(owner, "GET", folderURL(legacyWrite.Version), nil, 200, &folders)
+	if !slices.Contains(folders, "空目录/子目录") {
+		t.Fatal("an older writer hid a previously published empty folder")
 	}
 }
 

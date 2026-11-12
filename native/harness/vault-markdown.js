@@ -159,13 +159,21 @@ function sourceInformation(tree) {
   };
 }
 
-export function searchVault(documents, search) {
+export function searchVault(documents, search, {snippets = false} = {}) {
   const query = key(search.trim());
-  return orderedNotes(documents).filter(doc => !query || [doc.path, doc.text].some(text =>
-    key(text).includes(query))).map(doc => ({path: doc.path}));
+  return orderedNotes(documents).flatMap(doc => {
+    if (!query) return [{path:doc.path}];
+    const content = doc.text.normalize('NFC');
+    const hit = key(content).indexOf(query);
+    if (hit < 0 && !key(doc.path).includes(query)) return [];
+    if (!snippets || hit < 0) return [{path:doc.path}];
+    const start = Math.max(0, hit - 36);
+    const end = Math.min(content.length, hit + query.length + 80);
+    return [{path:doc.path, snippet:(start ? '…' : '') + content.slice(start, end).replace(/\s+/g, ' ') + (end < content.length ? '…' : '')}];
+  });
 }
 
-export function vaultView(documents, selected, {originalCenter = false} = {}) {
+export function vaultView(documents, selected, {originalCenter = false, includeBacklinks = true} = {}) {
   const docs = orderedNotes(documents);
   const {byPath, byName} = noteLookup(docs);
   const current = selected === undefined ? docs[0]?.path : selected;
@@ -173,12 +181,14 @@ export function vaultView(documents, selected, {originalCenter = false} = {}) {
   const backlinks = [];
   let document;
   for (const {path: name, text} of docs) {
+    if (!includeBacklinks && name !== current) continue;
     const {tree, nodes, definitions} = parseNote(text);
     const source = name === current && originalCenter ? sourceInformation(tree) : undefined;
     const edits = [];
     if (source) edits.push({start:source.title.position.start.offset, end:source.end, replacement:''});
     let properties;
     let linked = false;
+    const outgoing = new Set();
     for (const node of nodes) {
       const {start, end} = node.position || {};
       if (start?.offset === undefined || end?.offset === undefined) continue;
@@ -194,6 +204,7 @@ export function vaultView(documents, selected, {originalCenter = false} = {}) {
       if (!link) continue;
       if (name !== current && link.note && link.note === current) linked = true;
       if (name !== current) continue;
+      if (link.note && link.note !== current) outgoing.add(link.note);
       const label = link.label ?? descendants(node, []).map(child => child.value || child.alt || '').join('');
       const replacement = link.note
         ? `[${labelText(label)}](<#wb-vault/${encodeURIComponent(link.note)}/${encodeURIComponent(link.heading)}>)`
@@ -204,6 +215,9 @@ export function vaultView(documents, selected, {originalCenter = false} = {}) {
     if (name === current) document = {
       path: name, text, html: String(renderer.processSync(rewrite(text, edits))), properties,
       source: source?.display,
+      outline: nodes.filter(node => node.type === 'heading' && node !== source?.title)
+        .map(node => ({level:node.depth,text:nodeText(node)})),
+      outgoing: [...outgoing],
       hasTitle: nodes.some(node => node.type === 'heading' && node.depth === 1 && node !== source?.title),
     };
   }
@@ -245,14 +259,13 @@ export function renameVaultNote(documents, oldPath, newPath) {
   if (docs.some(doc => doc.path !== oldPath && key(doc.path) === key(newPath))) {
     throw Object.assign(Error('该路径已存在，请选择其他名称。'), {status:409});
   }
-  const before = noteLookup(docs);
-  const after = noteLookup(docs.map(doc => doc.path === oldPath ? {path:newPath} : doc));
-  const changes = [{path: oldPath, text: null}];
-  for (const doc of docs) {
+  return renameVaultPaths(docs, new Map([[oldPath,newPath]]));
+}
+
+function rewriteMovedLinks(doc, from, before, after, moved) {
     const {nodes, definitions} = parseNote(doc.text);
     const refs = new Set(nodes.filter(node => node.type === 'linkReference').map(node => node.identifier));
     const defined = new Set();
-    const from = doc.path === oldPath ? newPath : doc.path;
     const edits = [];
     for (const node of nodes) {
       if (node.type === 'definition') {
@@ -261,9 +274,9 @@ export function renameVaultNote(documents, oldPath, newPath) {
       } else if (node.type !== 'wikilink' && node.type !== 'link') continue;
       const original = resolveLink(node, doc.path, before.byPath, before.byName, definitions)?.note;
       if (!original) continue;
-      const target = original === oldPath ? newPath : original;
+      const target = moved.get(original) ?? original;
       const explicit = node.type === 'wikilink' ? node.path : node.url.split('#', 1)[0];
-      if ((!explicit || original !== oldPath) && resolveLink(node, from, after.byPath, after.byName, definitions)?.note === target) continue;
+      if ((!explicit || !moved.has(original)) && resolveLink(node, from, after.byPath, after.byName, definitions)?.note === target) continue;
       const {start, end} = node.position;
       const raw = doc.text.slice(start.offset, end.offset);
       let replacement;
@@ -283,11 +296,84 @@ export function renameVaultNote(documents, oldPath, newPath) {
       }
       if (replacement && replacement !== raw) edits.push({start:start.offset, end:end.offset, replacement});
     }
-    if (from !== doc.path || edits.length) {
-      changes.push({path:from, text:rewrite(doc.text, edits), create:from !== doc.path});
-    }
+    return rewrite(doc.text, edits);
+}
+
+function renameVaultPaths(docs, moved) {
+  const before = noteLookup(docs);
+  const after = noteLookup(docs.map(doc => ({path:moved.get(doc.path) ?? doc.path})));
+  const changes = [...moved.keys()].map(path => ({path,text:null}));
+  for (const doc of docs) {
+    const from = moved.get(doc.path) ?? doc.path;
+    const text = rewriteMovedLinks(doc, from, before, after, moved);
+    if (from !== doc.path || text !== doc.text) changes.push({path:from,text,create:from !== doc.path});
   }
   return changes;
+}
+
+export function vaultFolderPaths(documents, stored = []) {
+  const folders = new Set(stored);
+  for (const entry of [...documents.map(doc => doc.path), ...stored]) {
+    for (let parent = path.dirname(entry); parent !== '.' && parent !== '/'; parent = path.dirname(parent)) {
+      if (folders.has(parent)) break;
+      folders.add(parent);
+    }
+  }
+  return [...folders].sort();
+}
+
+function structureError(message, status = 400) {
+  return Object.assign(new Error(message), {status});
+}
+
+function structurePath(name) {
+  return typeof name === 'string' && name.length <= 1024 && !/[\\:*?"<>|\[\]#^\u0000-\u001f\u007f]/u.test(name) &&
+    name.split('/').every(part => part && part.length <= 255 && !part.startsWith('.') && !part.endsWith('.') && part === part.trim());
+}
+
+export function vaultStructure(documents, stored, {action, from, to}) {
+  const docs = orderedNotes(documents);
+  const folders = vaultFolderPaths(docs, stored);
+  const existingFolder = folders.includes(from);
+  const note = docs.find(item => item.path === from);
+  const inside = (candidate, parent) => candidate === parent || candidate.startsWith(parent + '/');
+  const isFolder = action.endsWith('-folder');
+  if (action !== 'create-folder' && !(isFolder ? existingFolder : note)) {
+    throw structureError('资料已移动或删除，请刷新语料库。', 409);
+  }
+  if (action === 'delete-folder') {
+    return {folders:folders.filter(folder => !inside(folder, from)), changes:docs.filter(doc => inside(doc.path, from)).map(doc => ({path:doc.path,text:null}))};
+  }
+  if (!structurePath(to) || (action === 'duplicate-note' && !/\.md$/i.test(to))) {
+    throw structureError('请输入有效的库内路径。');
+  }
+  if (from === to || (existingFolder && inside(key(to), key(from)) && key(to) !== key(from))) {
+    throw structureError('请选择其他位置。');
+  }
+  const moving = action === 'move-folder';
+  if ([...folders, ...docs.map(doc => doc.path)].some(entry => key(entry) === key(to) && !(moving && entry === from))) {
+    throw structureError('该路径已存在，请选择其他名称。',409);
+  }
+  if (action === 'create-folder') return {folders:[...folders,to],changes:[]};
+  const transfer = candidate => to + candidate.slice(from.length);
+  if (moving) {
+    const moved = new Map(docs.filter(doc => inside(doc.path, from)).map(doc => [doc.path,transfer(doc.path)]));
+    return {folders:folders.map(folder => inside(folder, from) ? transfer(folder) : folder), changes:renameVaultPaths(docs,moved)};
+  }
+  const copied = action === 'duplicate-folder' ? docs.filter(doc => inside(doc.path, from)) : [note];
+  const mapped = new Map(copied.map(doc => [doc.path,transfer(doc.path)]));
+  const before = noteLookup(docs);
+  const after = noteLookup([...docs,...copied.map(doc => ({path:mapped.get(doc.path)}))]);
+  const changes = docs.flatMap(doc => {
+    const text = rewriteMovedLinks(doc,doc.path,before,after,new Map());
+    return text === doc.text ? [] : [{path:doc.path,text}];
+  });
+  for (const doc of copied) {
+    const path = mapped.get(doc.path);
+    changes.push({path,text:rewriteMovedLinks(doc,path,before,after,mapped),create:true});
+  }
+  const newFolders = action === 'duplicate-folder' ? folders.filter(folder => inside(folder, from)).map(transfer) : [];
+  return {folders:[...folders,...newFolders],changes};
 }
 
 export async function directoryVault(call, resource, section) {

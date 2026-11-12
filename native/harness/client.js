@@ -105,6 +105,30 @@ window.__ModuleLoader__.load({
       .wb-vault-tree details>div{padding-inline-start:8px}
       .wb-vault-tree summary,.wb-vault-backlinks summary,.wb-vault-source summary{cursor:pointer;padding:5px 0;overflow-wrap:anywhere}
       .wb-vault-tree summary svg{width:15px;height:15px;vertical-align:-2px;margin-inline:4px 6px}
+      .wb-vault-tree-tools,.wb-vault-tree-nav,.wb-vault-tabs{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+      .wb-vault-tree-tools button,.wb-vault-tree-nav button,.wb-vault-tabs button{padding:4px 8px}
+      .wb-vault-tree-nav{margin-block:0 8px}
+      .wb-vault-entry{display:flex;align-items:center;min-width:0}
+      summary.wb-vault-entry{display:list-item}
+      .wb-vault-folder-row{display:inline-flex;align-items:center;vertical-align:middle;width:calc(100% - 16px)}
+      .wb-vault-folder-row>span{flex:1;min-width:0}
+      .wb-vault-entry>button:first-child{flex:1;min-width:0}
+      .wb-vault-entry>button,.wb-vault-folder-row>button{background:transparent;border:0;text-align:start;padding:5px 8px}
+      .wb-vault-entry>.wb-vault-row-menu{width:auto;padding:2px 8px;flex:none}
+      .wb-vault-folder-row>.wb-vault-row-menu{width:auto;padding:2px 8px;flex:none}
+      .wb-vault-entry[data-drop=true],.wb-vault-root[data-drop=true]{outline:2px solid var(--dsw-alias-label-link,#1768d8);outline-offset:-2px;border-radius:6px}
+      .wb-vault-root{padding:5px 8px;color:var(--dsw-alias-label-secondary)}
+      .wb-vault-hit{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .wb-vault-tabs{padding:6px 14px;border-bottom:1px solid var(--dsw-alias-border-l3);overflow:auto;flex-wrap:nowrap}
+      .wb-vault-tab{display:flex;align-items:center;gap:2px;white-space:nowrap}
+      .wb-vault-tab button[aria-selected=true]{background:var(--dsw-alias-interactive-bg-hover)}
+      .wb-vault-context{font-size:14px;margin-bottom:16px}
+      .wb-vault-context ol{list-style:none;padding:0;margin:4px 0}
+      .wb-vault-context li button{border:0;padding-block:2px;text-align:left}
+      .wb-vault-edit-layout{display:grid;gap:12px;min-width:0}
+      .wb-vault-edit-layout[data-mode=split]{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+      .wb-vault-preview{min-width:0;max-height:62vh;overflow:auto;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:12px}
+      .wb-vault-export{display:inline-block;font-size:13px;color:var(--dsw-alias-label-link,#1768d8);margin-top:16px}
       .wb-vault-tree details button,.wb-vault-tree>button{background:transparent;border:0;padding:5px 8px;width:100%;text-align:left;overflow-wrap:anywhere}
       .wb-vault-tree button:hover,.wb-vault-tree button[aria-current=true]{background:var(--dsw-alias-interactive-bg-hover)}
       .wb-vault-body{padding:28px clamp(18px,4%,40px) 36px;overflow:auto;min-width:0;overflow-wrap:anywhere;font-size:17px;line-height:1.65}
@@ -150,44 +174,97 @@ window.__ModuleLoader__.load({
         .wb-vault-tree{display:none}
         .wb-vault-tree[data-open=true]{display:block;max-height:38vh;flex:none;padding:12px;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l3)}
         .wb-vault-tree button,.wb-vault-tree summary,.wb-vault-note-tools button{min-height:44px}
-        .wb-vault-tree summary{box-sizing:border-box;padding-block:11px}
+        .wb-vault-tree summary{box-sizing:border-box;padding-block:0}
         .wb-vault-body{overflow:visible;padding:18px 14px;font-size:16px}
         .wb-vault-body h1{font-size:24px;margin-bottom:16px}
         .wb-vault-markdown h2{font-size:20px;margin-top:18px}
+        .wb-vault-edit-layout[data-mode=split]{grid-template-columns:minmax(0,1fr)}
+        .wb-vault-tree button.wb-vault-row-menu{min-width:44px}
       }
     `;
 
     const noteLabel = path => path.split("/").at(-1).replace(/(?:\.md)+$/i, "").replace(/\.txt$/i, "");
     const markdownPath = value => /\.md$/i.test(value.trim()) ? value.trim() : value.trim() + ".md";
 
-    function VaultTree({notes, active, disabled, open, contextMenu}) {
-      const folders = {folders:new Map(), notes:[]};
-      for (const note of notes) {
-        const parts = note.path.split("/");
-        parts.pop();
-        let folder = folders;
-        for (const part of parts) {
-          if (!folder.folders.has(part)) folder.folders.set(part,{folders:new Map(), notes:[]});
-          folder = folder.folders.get(part);
+    const vaultName = path => path.split("/").at(-1);
+    const vaultParent = path => path.slice(0,Math.max(0,path.lastIndexOf("/")));
+    const vaultJoin = (folder,name) => folder ? `${folder}/${name}` : name;
+    const vaultInside = (path,folder) => path === folder || path.startsWith(folder + "/");
+
+    // Tree and drop feedback adapted from Obsidian Web Gateway (MIT), App.tsx.
+    // Only a drag started in this mounted tree can request a same-library move.
+    function VaultTree({notes, folders, active, disabled, editable, open, showMenu, move, collapsed, fold, reverse}) {
+      const dragged = useRef(null);
+      const [dropTarget,setDropTarget] = useState(null);
+      const root = {folders:new Map(), notes:[]};
+      const folderAt = path => {
+        let node = root;
+        for (const part of path ? path.split("/") : []) {
+          if (!node.folders.has(part)) node.folders.set(part,{folders:new Map(),notes:[]});
+          node = node.folders.get(part);
         }
-        folder.notes.push(note.path);
-      }
-      const render = folder => h(React.Fragment,null,
-        ...Array.from(folder.folders, ([name, child]) =>
-          h("details",{open:true,key:name},h("summary",null,
-            IconFolderOpenOutlineRegular&&h(IconFolderOpenOutlineRegular,{"aria-hidden":true}),name),
-            h("div",null,render(child)))),
-        ...folder.notes.map(path => button(noteLabel(path),()=>open(path),{
-          key:path, disabled, title:path, "aria-current":path===active,
-          onContextMenu:contextMenu && (event=>contextMenu(path,event)),
-        })));
-      return render(folders);
+        return node;
+      };
+      for (const folder of folders) folderAt(folder);
+      for (const note of notes) folderAt(vaultParent(note.path)).notes.push(note);
+      const resetDrag = () => { dragged.current=null; setDropTarget(null); };
+      const canDrop = folder => {
+        const item=dragged.current;
+        return editable && !disabled && item && vaultParent(item.path)!==folder &&
+          (item.kind!=="folder" || !vaultInside(folder,item.path));
+      };
+      const target = folder => ({
+        "data-drop":dropTarget===folder,
+        onDragOver:event=>{
+          if(!canDrop(folder))return;
+          event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect="move";setDropTarget(folder);
+        },
+        onDragLeave:event=>{if(!(event.relatedTarget instanceof Node)||!event.currentTarget.contains(event.relatedTarget))setDropTarget(value=>value===folder?null:value);},
+        onDrop:event=>{
+          if(!canDrop(folder))return;
+          event.preventDefault();event.stopPropagation();
+          const item=dragged.current;
+          resetDrag();
+          move(item,folder);
+        },
+      });
+      const source = (kind,path) => ({
+        draggable:editable&&!disabled,
+        onDragStart:event=>{
+          if(!editable||disabled)return;
+          event.stopPropagation();
+          dragged.current={kind,path};
+          event.dataTransfer.setData("application/x-workbench-vault-entry",path);
+          event.dataTransfer.effectAllowed="move";
+        },
+        onDragEnd:resetDrag,
+        onContextMenu:!disabled ? event=>showMenu(event,{kind,path}) : undefined,
+      });
+      const menuButton = (kind,path) => button("⋯",event=>showMenu(event,{kind,path}),{
+        className:"wb-vault-row-menu",disabled,"aria-haspopup":"menu","aria-label":`${kind==="folder"?"文件夹":"笔记"}操作：${vaultName(path)}`,
+      });
+      const sortNames = (a,b) => (reverse?-1:1)*a.localeCompare(b,"zh");
+      const render = (node,parent) => h(React.Fragment,null,
+        ...[...node.folders].sort(([a],[b])=>sortNames(a,b)).map(([name,child])=>{
+          const path=vaultJoin(parent,name);
+          return h("details",{open:!collapsed.has(path),key:path},
+            h("summary",{className:"wb-vault-entry",...target(path),...source("folder",path),onClick:event=>{event.preventDefault();fold(path);}},
+              h("span",{className:"wb-vault-folder-row"},IconFolderOpenOutlineRegular&&h(IconFolderOpenOutlineRegular,{"aria-hidden":true}),
+                h("span",{title:path},name),menuButton("folder",path))),
+            h("div",null,render(child,path)));
+        }),
+        ...[...node.notes].sort((a,b)=>sortNames(a.path,b.path)).map(({path,snippet})=>
+          h("div",{className:"wb-vault-entry",key:path},button(h(React.Fragment,null,noteLabel(path),
+            snippet&&h("span",{className:"wb-vault-hit"},snippet)),()=>open(path),{
+            disabled,title:path,"aria-current":path===active,...source("note",path),
+          }),menuButton("note",path))));
+      return h(React.Fragment,null,editable&&h("div",{className:"wb-vault-root",...target("")},"根目录"),render(root,""));
     }
 
     // Adapted from Obsidian Web Gateway's note menu and MutationModal (MIT).
     // Upstream 99901b27d040360516b54ff86b7214908488ae2a, web/src/App.tsx.
     // See OBSIDIAN-WEB-GATEWAY.LICENSE.txt.
-    function VaultNoteActions({menu, toggle, openMutation, close, disabled}) {
+    function VaultNoteActions({menu, toggle, actions, close, disabled, floating=false}) {
       const trigger = useRef(null);
       const menuRef = useRef(null);
       useEffect(()=>{
@@ -209,8 +286,8 @@ window.__ModuleLoader__.load({
         };
       },[menu]);
       return h("div",{className:"wb-vault-note-menu",ref:menuRef},
-        button("⋯",toggle,{ref:trigger,disabled,"aria-label":"笔记操作","aria-expanded":Boolean(menu),"aria-haspopup":"menu"}),
-        menu&&h("div",{className:"wb-vault-note-popover",role:"menu","aria-label":"笔记操作",
+        !floating&&button("⋯",toggle,{ref:trigger,disabled,"aria-label":"笔记操作","aria-expanded":Boolean(menu),"aria-haspopup":"menu"}),
+        menu&&h("div",{className:"wb-vault-note-popover",role:"menu","aria-label":floating?"文件树操作":"笔记操作",
           style:menu.x===undefined?undefined:{position:"fixed",left:menu.x,top:menu.y,right:"auto"},
           onKeyDown:event=>{
             if (!["ArrowDown","ArrowUp","Home","End"].includes(event.key)) return;
@@ -220,24 +297,36 @@ window.__ModuleLoader__.load({
             event.preventDefault();
             items[next]?.focus();
           }},
-          button("重命名或移动",()=>openMutation("rename"),{role:"menuitem"}),
-          button("删除",()=>openMutation("delete"),{role:"menuitem",className:"wb-vault-danger"})));
+          ...actions.map(([label,action])=>button(label,()=>{close();action();},{key:label,role:"menuitem",
+            className:label==="删除"?"wb-vault-danger":undefined}))));
     }
 
-    function VaultMutationModal({dialog,busy,error,onChange,onClose,onSubmit}) {
+    function VaultMutationModal({dialog,folders,busy,error,onChange,onClose,onSubmit}) {
       const destructive = dialog.kind === "delete";
-      const copy = destructive
-        ? {title:"删除笔记",body:dialog.backlinks? `删除「${noteLabel(dialog.path)}」？有 ${dialog.backlinks} 篇笔记链接到它。` : `删除「${noteLabel(dialog.path)}」？`,action:"删除"}
-        : {title:"重命名或移动笔记",body:"输入新名称或库内路径。指向这篇笔记的库内链接会一同更新。",action:"保存"};
+      const folder=dialog.entry==="folder";
+      const subject=folder?"文件夹":"笔记";
+      const name=folder?vaultName(dialog.path):noteLabel(dialog.path);
+      const copy={
+        create:{title:"新建文件夹",label:"文件夹名称",action:"创建"},
+        rename:{title:`重命名或移动${subject}`,label:"新路径",action:"保存"},
+        move:{title:`移动${subject}`,label:"移动到",action:"移动"},
+        duplicate:{title:`复制${subject}`,label:"副本路径",action:"复制"},
+        delete:{title:`删除${subject}`,action:"删除",body:folder
+          ? `删除「${name}」及其内容？其中有 ${dialog.count} 篇笔记。`
+          : `删除「${name}」？${dialog.backlinks?`有 ${dialog.backlinks} 篇笔记链接到它。`:""}`},
+      }[dialog.kind];
+      const moving=dialog.kind==="move";
+      const destinations=["",...folders].filter(path=>!folder||!vaultInside(path,dialog.path));
       return h(UI.Modal,{open:true,title:copy.title,closeLabel:"关闭",onClose:()=>{if(!busy)onClose();}},
         h("form",{className:"wb-page wb-vault-dialog",onSubmit},
-          h("p",null,copy.body),
-          !destructive&&field("新路径",h("input",{autoFocus:true,value:dialog.value,disabled:busy,
-            onChange:event=>onChange(event.target.value),placeholder:"文件夹/笔记"})),
+          copy.body&&h("p",null,copy.body),
+          !destructive&&field(copy.label,moving?h("select",{autoFocus:true,value:dialog.value,disabled:busy,onChange:event=>onChange(event.target.value)},
+            ...destinations.map(path=>h("option",{key:path,value:path},path||"根目录"))):
+            h("input",{autoFocus:true,value:dialog.value,disabled:busy,onChange:event=>onChange(event.target.value)})),
           alert(error),
           h("div",{className:"wb-actions"},button("取消",onClose,{disabled:busy}),
             h("button",{type:"submit",className:destructive?"wb-vault-danger":"wb-primary",
-              disabled:busy||(!destructive&&(!dialog.value.trim()||markdownPath(dialog.value)===dialog.path))},copy.action))));
+              disabled:busy||(moving?dialog.value===vaultParent(dialog.path):!destructive&&!dialog.value.trim())},copy.action))));
     }
 
     function VaultCopyModal({data,close,copy,openCopy}) {
@@ -314,7 +403,7 @@ window.__ModuleLoader__.load({
       return h("div",{ref:element,className:"wb-vault-editor"});
     }
 
-    function VaultPanel({data,load,refresh,save,rename,copy,openCopy,close}) {
+    function VaultPanel({data,load,refresh,save,rename,structure,preview,download,archive,copy,openCopy,close}) {
       const [search,setSearch]=useState(""),[matches,setMatches]=useState();
       const [treeOpen,setTreeOpen]=useState(false),[draft,setDraft]=useState(),[saving,setSaving]=useState(false);
       const [problem,setProblem]=useState(""),[searchFailed,setSearchFailed]=useState(false),[anchor,setAnchor]=useState();
@@ -322,18 +411,44 @@ window.__ModuleLoader__.load({
       const [receipt,setReceipt]=useState(),[conflict,setConflict]=useState(false);
       const [opening,setOpening]=useState(false);
       const [menu,setMenu]=useState(),[mutation,setMutation]=useState(),[mutationError,setMutationError]=useState("");
-      const [undo,setUndo]=useState(),[copyOpen,setCopyOpen]=useState(false),[notice,setNotice]=useState("");
+      const [copyOpen,setCopyOpen]=useState(false),[notice,setNotice]=useState("");
       const [refreshNeeded,setRefreshNeeded]=useState(false);
+      const [collapsed,setCollapsed]=useState(()=>new Set()),[reverse,setReverse]=useState(false),[searchFolder,setSearchFolder]=useState("");
+      const [tabs,setTabs]=useState([]),[editMode,setEditMode]=useState("edit"),[draftPreview,setDraftPreview]=useState();
+      // Same opt-in and idle-save behavior as the upstream editing workspace.
+      const [autosave,setAutosave]=useState(()=>{
+        try{return localStorage.getItem("wb-vault-autosave")==="true";}catch{return false;}
+      });
       const inFlight=useRef(false), navigation=useRef(0);
-      const bodyRef=useRef(null);
+      const bodyRef=useRef(null),treeRef=useRef(null),searchRef=useRef(null),menuAnchor=useRef(null);
       const note=data.document;
+      const folders=data.folders??[];
+      const blocked=Boolean(draft||opening||saving||receipt);
+      const fold=path=>setCollapsed(current=>{
+        const next=new Set(current);
+        if(next.has(path))next.delete(path);else next.add(path);
+        return next;
+      });
+      useEffect(()=>{
+        const active=note?.path;
+        const existing=new Set(data.notes.map(item=>item.path));
+        setTabs(current=>{
+          const available=current.filter(path=>existing.has(path));
+          return active&&!available.includes(active)?[...available,active]:available;
+        });
+        if(active)setCollapsed(current=>new Set([...current].filter(path=>!vaultInside(active,path))));
+      },[note?.path,data.version]);
+      useEffect(()=>{
+        if(!treeRef.current?.clientHeight||window.innerWidth<900)return;
+        treeRef.current.querySelector('button[aria-current="true"]')?.scrollIntoView({block:"nearest"});
+      },[note?.path,treeOpen]);
       useEffect(()=>{
         setMatches(undefined);
         setSearchFailed(false);
         if(!search.trim())return;
         const abort=new AbortController();
         const timer=setTimeout(()=>{
-          const params={resourceId:data.resource.id,version:data.version,search};
+          const params={resourceId:data.resource.id,version:data.version,search,snippets:"1"};
           if(data.projectId)params.projectId=data.projectId;
           fetch("/workbench-api"+query("/vault-view",params),{signal:abort.signal})
             .then(response=>{if(!response.ok)throw Error();return response.json();})
@@ -342,6 +457,19 @@ window.__ModuleLoader__.load({
         },180);
         return()=>{clearTimeout(timer);abort.abort();};
       },[search,data.resource.id,data.projectId,data.version]);
+      useEffect(()=>{
+        setDraftPreview(undefined);
+        if(!draft||editMode==="edit"||!draft.path.trim())return;
+        let cancelled=false;
+        const timer=setTimeout(async()=>{
+          try{
+            const path=draft.existing?draft.path:vaultJoin(draft.folder,markdownPath(draft.path));
+            const result=await preview(path,draft.text);
+            if(!cancelled)setDraftPreview(result);
+          }catch(error){if(!cancelled)setDraftPreview({error:error.message});}
+        },240);
+        return()=>{cancelled=true;clearTimeout(timer);};
+      },[draft?.path,draft?.text,editMode,data.version]);
       useEffect(()=>{
         if(!anchor||anchor.path!==note?.path)return;
         const body=bodyRef.current;
@@ -353,7 +481,7 @@ window.__ModuleLoader__.load({
         }else{
           const wanted=anchor.heading.split("#").map(slug);
           const levels=[];
-          element=[...body.querySelectorAll("h1,h2,h3,h4,h5,h6")].find(el=>{
+          element=[...body.querySelectorAll(".wb-vault-markdown :is(h1,h2,h3,h4,h5,h6)")].find(el=>{
             const level=Number(el.tagName[1]);
             levels.length=level-1;
             levels.push(slug(el.textContent));
@@ -368,20 +496,25 @@ window.__ModuleLoader__.load({
         else setProblem("未找到链接指定的标题或段落");
         setAnchor(undefined);
       },[anchor,note?.path,note?.html]);
-      const open=async(path,heading)=>{
+      const open=async(path,heading,newTab=false)=>{
         if(draft||saving||receipt)return false;
         const request=++navigation.current;
         setTreeOpen(false);
         setMenu(undefined);
         setProblem("");
-        if(!undo)setNotice("");
+        setNotice("");
         setAnchor(undefined);
         try{
           if(path!==note?.path||opening){
             setOpening(true);
             await load(path);
           }
-          if(request===navigation.current&&heading)setAnchor({path,heading});
+          if(request===navigation.current){
+            if(!newTab&&!tabs.includes(path)&&note?.path&&note.path!==path){
+              setTabs(current=>[...new Set(current.map(item=>item===note.path?path:item))]);
+            }
+            if(heading)setAnchor({path,heading});
+          }
           return request===navigation.current;
         }catch(e){if(request===navigation.current)setProblem(e.message);return false;}
         finally{if(request===navigation.current)setOpening(false);}
@@ -391,24 +524,25 @@ window.__ModuleLoader__.load({
         const target=href?.match(/^#wb-vault\/([^/]+)\/([^/]*)$/);
         if(!target)return;
         e.preventDefault();
-        try{open(decodeURIComponent(target[1]),decodeURIComponent(target[2]));}
+        try{open(decodeURIComponent(target[1]),decodeURIComponent(target[2]),e.metaKey||e.ctrlKey);}
         catch{setProblem("笔记链接格式有误");}
       };
-      const start=existing=>{
+      const start=(existing,folder="")=>{
         setProblem("");
-        if(!undo)setNotice("");
+        setNotice("");
         setConflict(false);
         setEditorStatus("loading");
         setTreeOpen(false);
         setMenu(undefined);
-        setDraft(existing?{path:existing.path,text:existing.text,original:existing.text,existing:true}:{path:"",text:"",existing:false});
+        setEditMode("edit");
+        setDraft(existing?{path:existing.path,text:existing.text,original:existing.text,existing:true}:{path:"",folder,text:"",existing:false});
       };
       const readSaved=async saved=>{
         try{
           await load(saved.path,saved.version);
-          setDraft(undefined);
+          if(saved.keepEditing)setDraft(current=>current&&({...current,original:saved.text}));
+          else setDraft(undefined);
           setReceipt(undefined);
-          setUndo(saved.undo);
           setNotice(saved.message);
           setRefreshNeeded(false);
         }catch{setProblem(saved.message+"，读回失败。");}
@@ -419,7 +553,7 @@ window.__ModuleLoader__.load({
         try{await readSaved(receipt);}
         finally{inFlight.current=false;setSaving(false);}
       };
-      const commit=async (request,path,message,deleted)=>{
+      const commit=async (request,path,message,options={})=>{
         if(inFlight.current||receipt)return;
         inFlight.current=true;
         setSaving(true);
@@ -429,8 +563,9 @@ window.__ModuleLoader__.load({
         try{
           const saved=await request();
           if(typeof saved.version!=="string"||!saved.version)throw Error("未收到保存回执，请重试。");
-          const confirmed={path,version:saved.version,message,undo:deleted&&{...deleted,version:saved.version}};
-          if(message!=="笔记已保存")setSearch("");
+          const confirmed={path,version:saved.version,message,keepEditing:options.keepEditing,text:options.text};
+          if(options.remap)setTabs(current=>[...new Set(current.map(options.remap))]);
+          if(!options.keepEditing&&message!=="笔记已保存"){setSearch("");setSearchFolder("");}
           setMutation(undefined);
           setReceipt(confirmed);
           await readSaved(confirmed);
@@ -449,45 +584,116 @@ window.__ModuleLoader__.load({
       const submit=async e=>{
         e.preventDefault();
         if(inFlight.current||receipt||conflict||editorStatus!=="ready"||draft.text===draft.original||!draft.path.trim())return;
-        const path=markdownPath(draft.path);
+        const path=draft.existing?draft.path:vaultJoin(draft.folder,markdownPath(draft.path));
         if(!draft.existing&&data.notes.some(item=>item.path.normalize("NFC").toLowerCase()===path.normalize("NFC").toLowerCase())){
           setProblem("这篇笔记已存在");
           return;
         }
         await commit(()=>save(path,draft.text,!draft.existing),path,"笔记已保存");
       };
-      const openMutation=kind=>{
+      useEffect(()=>{
+        if(!autosave||!draft?.existing||draft.text===draft.original||editorStatus!=="ready"||saving||conflict||receipt||problem)return;
+        const {path,text}=draft;
+        const timer=setTimeout(()=>commit(()=>save(path,text,false),path,"已自动保存",{keepEditing:true,text}),1100);
+        return()=>clearTimeout(timer);
+      },[autosave,draft,editorStatus,saving,conflict,receipt,data.version,problem]);
+      const openMutation=(kind,item)=>{
         setMenu(undefined);
         setMutationError("");
-        setMutation({kind,path:note.path,value:note.path,text:note.text,backlinks:data.backlinks.length});
+        const {path,kind:entry}=item;
+        let value=path;
+        if(kind==="create")value="";
+        if(kind==="move")value=vaultParent(path);
+        if(kind==="duplicate"){
+          const suffix=entry==="note"?".md":"";
+          const name=entry==="note"?noteLabel(path):vaultName(path);
+          const occupied=new Set([...folders,...data.notes.map(item=>item.path)].map(path=>path.normalize("NFC").toLowerCase()));
+          for(let i=1;;i++){
+            value=vaultJoin(vaultParent(path),`${name} 副本${i===1?"":` ${i}`}${suffix}`);
+            if(!occupied.has(value.normalize("NFC").toLowerCase()))break;
+          }
+        }
+        setMutation({kind,entry,path,value,backlinks:note?.path===path?data.backlinks.length:0,
+          count:entry==="folder"?data.notes.filter(item=>vaultInside(item.path,path)).length:0});
+      };
+      const moveEntry=(item,to)=>{
+        const {path,kind}=item;
+        if(to===path)return;
+        if(kind==="note"){
+          const remap=entry=>entry===path?to:entry;
+          return commit(()=>rename(path,to),remap(note?.path),"笔记已移动或重命名",{remap});
+        }
+        const remap=entry=>entry&&vaultInside(entry,path)?to+entry.slice(path.length):entry;
+        return commit(()=>structure("move-folder",path,to),remap(note?.path),"文件夹已移动或重命名",{remap});
       };
       const submitMutation=async event=>{
         event.preventDefault();
-        const {kind,path,value,text}=mutation;
-        if(kind==="rename"){
-          if(!value.trim()||markdownPath(value)===path)return;
-          const target=markdownPath(value);
-          await commit(()=>rename(path,target),target,"笔记已移动或重命名");
-        }else{
-          const index=data.notes.findIndex(item=>item.path===path);
-          const next=data.notes[index+1]?.path??data.notes[index-1]?.path;
-          await commit(()=>save(path,null,false),next,"笔记已删除",{path,text});
+        const {kind,entry,path,value}=mutation;
+        if(kind==="create"){
+          if(!value.trim())return;
+          const target=vaultJoin(path,value.trim());
+          await commit(()=>structure("create-folder",undefined,target),note?.path,"文件夹已创建");
+          setCollapsed(current=>new Set([...current].filter(folder=>!vaultInside(target,folder))));
+          return;
         }
+        if(kind==="delete"){
+          const removing=candidate=>entry==="folder"?vaultInside(candidate,path):candidate===path;
+          const remaining=note?.path&&!removing(note.path)?note.path:data.notes.find(item=>!removing(item.path))?.path;
+          await commit(entry==="folder"?()=>structure("delete-folder",path):()=>save(path,null,false),remaining,
+            entry==="folder"?"文件夹已删除":"笔记已删除");
+          return;
+        }
+        const target=kind==="move"?vaultJoin(value,vaultName(path)):entry==="note"?markdownPath(value):value.trim();
+        if(kind==="duplicate"){
+          await commit(()=>structure(`duplicate-${entry}`,path,target),entry==="note"?target:note?.path,
+            entry==="folder"?"文件夹已复制":"笔记已复制");
+          return;
+        }
+        if(target===path){setMutation(undefined);return;}
+        await moveEntry({path,kind:entry},target);
       };
       const refreshVault=async()=>{
         setOpening(true);
         try{
           await refresh();
-          setRefreshNeeded(false);setUndo(undefined);setProblem("");
+          setRefreshNeeded(false);setProblem("");
         }catch(e){setProblem(e.message);}
         finally{setOpening(false);}
       };
-      const contextMenu=async(path,event)=>{
+      const showMenu=(event,item)=>{
         event.preventDefault();
-        const x=Math.max(8,Math.min(event.clientX,window.innerWidth-184));
-        const y=Math.max(8,Math.min(event.clientY,window.innerHeight-110));
-        if(await open(path))setMenu({x,y});
+        event.stopPropagation();
+        const rect=event.currentTarget.getBoundingClientRect();
+        menuAnchor.current=event.currentTarget;
+        const x=Math.max(8,Math.min(event.type==="contextmenu"?event.clientX:rect.left,window.innerWidth-186));
+        const y=Math.max(8,Math.min(event.type==="contextmenu"?event.clientY:rect.bottom,window.innerHeight-292));
+        setMenu({...item,x,y});
       };
+      const closeMenu=()=>{setMenu(undefined);menuAnchor.current?.focus({preventScroll:true});};
+      const entryActions=item=>{
+        if(!item?.path)return [];
+        const mutation=(label,kind)=>[label,()=>openMutation(kind,item)];
+        const copyPath=["复制路径",async()=>{
+          try{await navigator.clipboard.writeText(item.path);setNotice("路径已复制");}
+          catch{setProblem("无法复制路径");}
+        }];
+        if(item.kind==="folder")return [
+          ...(data.editable?[["在此新建笔记",()=>start(undefined,item.path)],mutation("新建子文件夹","create")]:[]),
+          ["在此文件夹搜索",()=>{setSearchFolder(item.path);searchRef.current?.focus();}],copyPath,
+          ...(data.editable?[mutation("重命名或移动","rename"),mutation("移动到","move"),mutation("复制文件夹","duplicate"),mutation("删除","delete")]:[]),
+        ];
+        return [["在新标签打开",()=>open(item.path,undefined,true)],["下载 Markdown",async()=>{
+          try{await download(item.path);}catch(error){setProblem(error.message);}
+        }],copyPath,...(data.editable?[mutation("重命名或移动","rename"),mutation("移动到","move"),mutation("复制笔记","duplicate"),mutation("删除","delete")]:[])];
+      };
+      const closeTab=path=>{
+        const left=tabs.filter(item=>item!==path);
+        if(!left.length)return;
+        if(path===note?.path)open(left[Math.max(0,tabs.indexOf(path)-1)]??left[0]);
+        setTabs(left);
+      };
+      const shown=(matches??data.notes).filter(item=>!searchFolder||vaultInside(item.path,searchFolder));
+      const showHeading=index=>bodyRef.current?.querySelectorAll(".wb-vault-markdown :is(h1,h2,h3,h4,h5,h6)")[index]?.scrollIntoView({block:"start"});
       return h("section",{className:"wb-page wb-vault"},
         h("style",null,css+vaultCss),
         h("header",{className:"wb-vault-toolbar"},
@@ -495,29 +701,59 @@ window.__ModuleLoader__.load({
           h("strong",null,data.resource.name),
           button("目录",()=>setTreeOpen(!treeOpen),{className:"wb-vault-mobile","aria-expanded":treeOpen}),
           !data.editable&&button("复制为可编辑库",()=>setCopyOpen(true),{disabled:opening})),
+        tabs.length>1&&h("div",{className:"wb-vault-tabs",role:"tablist","aria-label":"已打开的笔记"},
+          ...tabs.map((path,index)=>h("div",{key:path,className:"wb-vault-tab",role:"presentation"},
+            button(noteLabel(path),()=>open(path),{role:"tab",title:path,disabled:blocked,"aria-selected":note?.path===path,
+              onKeyDown:event=>{
+                const step=event.key==="ArrowLeft"?-1:event.key==="ArrowRight"?1:0;
+                if(!step)return;
+                event.preventDefault();
+                const next=(index+step+tabs.length)%tabs.length;
+                const buttons=event.currentTarget.closest('[role="tablist"]').querySelectorAll('[role="tab"]');
+                buttons[next]?.focus();
+                open(tabs[next]);
+              }}),
+            button("×",()=>closeTab(path),{disabled:blocked,"aria-label":`关闭${noteLabel(path)}`})))),
         h("div",{className:"wb-vault-layout"},
-          h("nav",{className:"wb-vault-tree","aria-label":"笔记目录","data-open":treeOpen},
+          h("nav",{className:"wb-vault-tree",ref:treeRef,"aria-label":"笔记目录","data-open":treeOpen},
             data.editable&&h("div",{className:"wb-vault-tree-tools"},
-              button("新建笔记",()=>start(),{disabled:Boolean(draft||opening||saving||receipt)})),
-            h("input",{value:search,placeholder:"搜索笔记","aria-label":"搜索笔记",type:"search",
-              onChange:e=>setSearch(e.target.value)}),
+              button("新建笔记",()=>start(),{disabled:blocked}),
+              button("新建文件夹",()=>openMutation("create",{kind:"folder",path:""}),{disabled:blocked})),
+            h("input",{ref:searchRef,value:search,placeholder:"搜索笔记","aria-label":"搜索笔记",type:"search",
+              onChange:e=>setSearch(e.target.value),onKeyDown:event=>{if(event.key==="Enter"&&!blocked&&shown[0])open(shown[0].path);}}),
+            h("div",{className:"wb-vault-tree-nav"},
+              folders.length>0&&button(collapsed.size?"展开全部":"折叠全部",()=>setCollapsed(collapsed.size?new Set():new Set(folders))),
+              button(reverse?"名称降序":"名称升序",()=>setReverse(!reverse),{"aria-label":reverse?"切换为名称升序":"切换为名称降序"}),
+              searchFolder&&button(`搜索：${searchFolder} ×`,()=>setSearchFolder(""),{"aria-label":"清除文件夹筛选"})),
             search.trim()&&!matches?h("p",{role:"status",className:"wb-muted"},searchFailed?"搜索失败，请重新输入":"正在搜索"):
-              matches?.length===0?h("p",{className:"wb-muted"},"没有匹配的笔记"):
-                h(VaultTree,{notes:matches??data.notes,active:note?.path,disabled:Boolean(draft||saving||receipt),open,
-                  contextMenu:data.editable?contextMenu:undefined})),
+              (matches||searchFolder)&&shown.length===0?h("p",{className:"wb-muted"},"没有匹配的笔记"):
+                h(VaultTree,{notes:shown,folders:matches||searchFolder?[]:folders,active:note?.path,disabled:blocked,
+                  editable:data.editable,open,showMenu,move:(item,folder)=>moveEntry(item,vaultJoin(folder,vaultName(item.path))),
+                  collapsed:matches||searchFolder?new Set():collapsed,fold,reverse})),
           h("article",{className:"wb-vault-body",ref:bodyRef,onClickCapture:follow},
             h("div",{className:"wb-vault-reading"},
               alert(problem),
               !draft&&refreshNeeded&&button("刷新语料库",refreshVault,{disabled:opening||saving}),
-              notice&&h("div",{className:"wb-actions"},
-                h("span",{role:"status"},notice),
-                undo&&data.version===undo.version&&button("撤销删除",()=>commit(()=>save(undo.path,undo.text,true),undo.path,"笔记已恢复"),{disabled:saving||opening})),
+              notice&&h("p",{role:"status"},notice),
               !draft&&receipt&&button("重试读回",retryRead,{disabled:saving}),
-              draft?h("form",{onSubmit:submit},
+              draft?h("form",{onSubmit:submit,onKeyDown:event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==="s")submit(event);}},
                 draft.existing?h("strong",{title:draft.path},noteLabel(draft.path)):field("笔记名称",h("input",{required:true,value:draft.path,disabled:saving||Boolean(receipt),
                   onChange:e=>{const path=e.target.value;setDraft(current=>({...current,path}));}})),
-                h(VaultEditor,{text:draft.text,attempt:editorAttempt,onStatus:setEditorStatus,readOnly:saving||Boolean(receipt),
-                  onChange:text=>setDraft(current=>({...current,text}))}),
+                draft.folder&&h("span",{className:"wb-muted"},`位置：${draft.folder}`),
+                h("div",{className:"wb-actions","aria-label":"编辑视图"},...[["edit","源码"],["preview","预览"],["split","并排预览"]].map(([mode,label])=>
+                  button(label,()=>setEditMode(mode),{key:mode,"aria-pressed":editMode===mode,disabled:saving})),
+                  draft.existing&&h("label",{className:"wb-check"},h("input",{type:"checkbox",checked:autosave,disabled:saving,onChange:event=>{
+                    const enabled=event.target.checked;
+                    setAutosave(enabled);
+                    try{localStorage.setItem("wb-vault-autosave",String(enabled));}catch{}
+                  }}),"自动保存")),
+                h("div",{className:"wb-vault-edit-layout","data-mode":editMode},
+                  h("div",{hidden:editMode==="preview"},h(VaultEditor,{text:draft.text,attempt:editorAttempt,onStatus:setEditorStatus,readOnly:saving||Boolean(receipt),
+                    onChange:text=>setDraft(current=>({...current,text}))})),
+                  editMode!=="edit"&&h("section",{className:"wb-vault-preview","aria-label":"Markdown 预览"},
+                    !draft.path.trim()?h("p",{className:"wb-muted"},"填写笔记名称后显示预览。"):
+                    draftPreview?.error?alert(draftPreview.error):draftPreview?h("div",{className:"wb-vault-markdown",dangerouslySetInnerHTML:{__html:draftPreview.html}}):
+                      h("p",{role:"status",className:"wb-muted"},"正在渲染"))),
                 editorStatus==="failed"&&alert("编辑器加载失败"),
                 h("div",{className:"wb-actions"},receipt?button("重试读回",retryRead,{disabled:saving}):h(React.Fragment,null,
                   h("button",{type:"submit",disabled:saving||conflict||editorStatus!=="ready"||draft.text===draft.original},"保存"),
@@ -526,12 +762,15 @@ window.__ModuleLoader__.load({
                     try{await navigator.clipboard.writeText(draft.text);setProblem("草稿已复制。");}
                     catch{setProblem("复制失败，请选中正文手动复制。");}
                   }),
-                  button("取消",()=>{setDraft(undefined);setProblem("");},{disabled:saving})))):
+                  button(draft.existing&&draft.text===draft.original?"返回阅读":"取消",()=>{setDraft(undefined);setProblem("");},{disabled:saving})))):
                 note?h(React.Fragment,null,
-                  data.editable&&h("div",{className:"wb-vault-note-tools"},
-                    button("编辑正文",()=>start(note),{disabled:Boolean(saving||opening||receipt)}),
-                    h(VaultNoteActions,{menu,toggle:()=>setMenu(menu?undefined:{}),openMutation,close:()=>setMenu(undefined),
-                      disabled:Boolean(saving||opening||receipt)})),
+                  h("div",{className:"wb-vault-note-tools"},
+                    data.editable&&button("编辑正文",()=>start(note),{disabled:blocked}),
+                    h(VaultNoteActions,{menu:menu&&!menu.path?menu:undefined,toggle:()=>setMenu(menu?undefined:{}),
+                      actions:entryActions({kind:"note",path:note.path}),close:()=>setMenu(undefined),disabled:blocked})),
+                  note.outline?.length>1&&h("details",{className:"wb-vault-context"},h("summary",null,"大纲"),
+                    h("ol",null,...note.outline.map(({level,text},index)=>h("li",{key:index,style:{paddingInlineStart:(level-1)*10}},
+                      button(text||"无标题",()=>showHeading(index)))))),
                   !note.hasTitle&&h("h1",null,noteLabel(note.path)),
                   note.properties&&h("details",null,h("summary",null,"属性"),h("pre",null,note.properties)),
                   h("div",{className:"wb-vault-markdown",dangerouslySetInnerHTML:{__html:note.html}}),
@@ -547,9 +786,14 @@ window.__ModuleLoader__.load({
                   h("details",{className:"wb-vault-backlinks",key:note.path+"-backlinks"},
                     h("summary",null,`反向链接（${data.backlinks.length}）`),
                     data.backlinks.length?h("ul",null,...data.backlinks.map(path=>h("li",{key:path},
-                      button(noteLabel(path),()=>open(path),{title:path})))):h("p",{className:"wb-muted"},"暂无反向链接"))):
-                  h("p",{className:"wb-muted"},"还没有笔记。")))),
-        mutation&&h(VaultMutationModal,{dialog:mutation,busy:saving,error:mutationError,
+                      button(noteLabel(path),()=>open(path),{title:path})))):h("p",{className:"wb-muted"},"暂无反向链接")),
+                  note.outgoing?.length>0&&h("details",{className:"wb-vault-backlinks",key:note.path+"-outgoing"},
+                    h("summary",null,`链接到（${note.outgoing.length}）`),h("ul",null,...note.outgoing.map(path=>h("li",{key:path},
+                      button(noteLabel(path),()=>open(path),{title:path})))))):
+                  h("p",{className:"wb-muted"},"还没有笔记。")),
+              !draft&&h("a",{className:"wb-vault-export",href:archive,download:data.resource.name+".zip"},"下载语料库 ZIP"))),
+        menu?.path&&h(VaultNoteActions,{floating:true,menu,actions:entryActions(menu),close:closeMenu}),
+        mutation&&h(VaultMutationModal,{dialog:mutation,folders,busy:saving,error:mutationError,
           onChange:value=>setMutation({...mutation,value}),onClose:()=>setMutation(undefined),onSubmit:submitMutation}),
         copyOpen&&h(VaultCopyModal,{data,close:()=>setCopyOpen(false),copy,openCopy}));
     }
@@ -703,6 +947,18 @@ window.__ModuleLoader__.load({
           refresh:()=>openCorpus(resource,undefined,undefined,projectId,true),
           save:(path,text,create)=>api("/vault-save",{...base,changes:[{path,text,create}]}),
           rename:(from,to)=>api("/vault-rename",{...base,from,to}),
+          structure:(action,from,to)=>api("/vault-structure",{...base,action,from,to}),
+          preview:(note,text)=>api("/vault-preview",{...base,note,text}),
+          archive:"/workbench-api"+query("/vault-export",{...base,...(projectId?{projectId}:{})}),
+          download:async path=>{
+            const doc=vault.document?.path===path?vault.document:
+              (await api(query("/vault-view",{...base,note:path,...(projectId?{projectId}:{})}))).document;
+            if(typeof doc?.text!=="string")throw Error("无法读取这篇笔记");
+            const url=URL.createObjectURL(new Blob([doc.text],{type:"text/markdown;charset=utf-8"}));
+            const link=document.createElement("a");
+            link.href=url;link.download=vaultName(path);link.click();
+            setTimeout(()=>URL.revokeObjectURL(url),1000);
+          },
           copy:input=>api("/vault-copy",{...base,projectId,...input}),
           openCopy:async destination=>{await load();await openCorpus(destination,undefined,destination.currentVersion,undefined,true);}});
       }
