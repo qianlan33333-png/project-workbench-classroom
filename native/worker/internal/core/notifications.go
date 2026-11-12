@@ -119,6 +119,10 @@ func (s *Store) RetirePersonalTransport(ctx context.Context, p Principal, id, re
 		WHERE connection_id=? AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.principal.kind'))='personal'`, replacement); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `UPDATE wb_message_routes SET body=JSON_SET(body,'$.enabled',CAST('false' AS JSON))
+		WHERE connection_id=? AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.principal.kind'))='personal'`, id); err != nil {
+		return err
+	}
 	old.Enabled = false
 	if _, err = tx.ExecContext(ctx, `UPDATE wb_transports SET body=? WHERE id=?`, jsonText(old), id); err != nil {
 		return err

@@ -45,6 +45,18 @@ func TestMySQLPersonalChannelSwitchPreservesDeliveryReceipts(t *testing.T) {
 	}
 	_, err = s.FinishDelivery(ctx, run.ID, "unknown", "original-platform-receipt", "")
 	must(err)
+	approval := Run{ID: id + "-approve", Principal: personal, Operation: "message", Title: "approval on a different channel"}
+	must(s.SaveRun(ctx, approval))
+	must(s.PutDelivery(ctx, approval, Delivery{ID: approval.ID, RunID: approval.ID, ItemID: "send",
+		ConnectionID: otherID, Target: other.Target, Text: "pending approval"}))
+	decision, err := s.Ask(ctx, approval, 1, "send this message?")
+	must(err)
+	command := IncomingMessage{ConnectionID: oldID, EventID: "before-switch", ConversationID: oldID, ActorID: oldID, Text: "发 " + approval.ID[:8]}
+	earlier, err := s.AcceptMessage(ctx, command)
+	must(err)
+	if earlier.DecisionID != decision.ID {
+		t.Fatal("fixture did not match the waiting decision")
+	}
 
 	if err := s.RetirePersonalTransport(ctx, owner, oldID, otherID); !errors.Is(err, ErrDenied) {
 		t.Fatalf("cross-provider switch accepted: %v", err)
@@ -64,6 +76,11 @@ func TestMySQLPersonalChannelSwitchPreservesDeliveryReceipts(t *testing.T) {
 	if staged.Enabled {
 		t.Fatal("failed retirement activated the staged route")
 	}
+	oldRoute, err := s.Route(ctx, oldID)
+	must(err)
+	if !oldRoute.Enabled {
+		t.Fatal("failed retirement disabled the current route")
+	}
 	old.Projects = nil
 	must(s.PutTransport(ctx, owner, old))
 	must(s.RetirePersonalTransport(ctx, owner, oldID, nextID))
@@ -72,6 +89,15 @@ func TestMySQLPersonalChannelSwitchPreservesDeliveryReceipts(t *testing.T) {
 	must(err)
 	if !active.Enabled {
 		t.Fatal("replacement route was not activated")
+	}
+	command.EventID = "after-switch"
+	later, err := s.AcceptMessage(ctx, command)
+	must(err)
+	if later.State != "unrouted" || later.DecisionID != "" {
+		t.Fatalf("retired account could select an approval: %+v", later)
+	}
+	if _, matched, err := s.OwnerMessageDecision(ctx, earlier); matched || !errors.Is(err, ErrDenied) {
+		t.Fatalf("retired account could use a previously admitted approval: %v", err)
 	}
 	after, err := s.NotificationSettings(ctx)
 	must(err)

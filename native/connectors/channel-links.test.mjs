@@ -14,6 +14,8 @@ test('private-chat pairing sends one test reply and only enables the owner route
   const started = [];
   const config = [];
   let retirementDenied = false;
+  let loseRetirementResponse = false;
+  let boundReplacement;
   const channels = {
     startOne(connection, signal) {
       started.push(connection);
@@ -26,8 +28,13 @@ test('private-chat pairing sends one test reply and only enables the owner route
   };
   const workerCall = async (path, data) => {
     if (path === '/personal/settings') return { sessionId: 'fixture-superagent' };
+    if (path === '/notification-targets') return boundReplacement ? [boundReplacement] : [];
     writes.push({ path, data });
     if (path === '/transports/retire-personal' && retirementDenied) throw Object.assign(Error('project uses this channel'), { status: 403 });
+    if (path === '/transports/retire-personal' && loseRetirementResponse) {
+      boundReplacement = { connectionId: data.replacement, target: { actorId: 'ou_other', conversationId: 'oc_other' } };
+      throw Object.assign(Error('connection lost after Worker commit'), { status: 503 });
+    }
   };
   const setup = () => createChannelLinks({
     config, channels, directory, workerCall, signal: abort.signal, endpoint: 'http://127.0.0.1:7383/mcp',
@@ -101,16 +108,54 @@ test('private-chat pairing sends one test reply and only enables the owner route
     assert.equal(writes.filter(w => w.path === '/message-routes').at(-1).data.enabled, false);
     assert.equal(await links.receive(rotated, { ...input, text: 'still operating after Worker rejection' }), false);
     retirementDenied = false;
+    loseRetirementResponse = true;
+    await assert.rejects(links.confirm({ kind: 'feishu', id: switched.id }), { status: 503 });
+    const otherMessage = { actorId: 'ou_other', conversationId: 'oc_other', eventId: 'om_new', text: 'new owner message' };
+    assert.equal(await links.receive(other, otherMessage), false, 'the exact replacement route is active in Worker');
+    assert.equal(await links.receive(other, { ...otherMessage, actorId: 'ou_unbound' }), true);
+    loseRetirementResponse = false;
 
     const restartedConfig = [];
     const restarted = await createChannelLinks({ config: restartedConfig, channels, directory, workerCall,
       signal: abort.signal, endpoint: 'http://127.0.0.1:7383/mcp' });
-    assert.equal(restarted.snapshot('feishu').id, switched.id, 'the confirmation refers to the same receipt after restart');
+    assert.equal(restarted.snapshot('feishu'), null, 'restart finishes a previously confirmed switch');
     assert.deepEqual(await restarted.confirm({ kind: 'feishu', id: switched.id }), { id: switched.id, step: 'linked' });
     assert.deepEqual(await restarted.confirm({ kind: 'feishu', id: switched.id }), { id: switched.id, step: 'linked' });
     assert.equal(restartedConfig.find(c => c.id === rotated.id)?.receiptOnly, true);
     assert.equal(restartedConfig.find(c => c.id === other.id)?.receiptOnly, undefined);
     assert.deepEqual(writes.at(-1), { path: '/transports/retire-personal', data: { id: rotated.id, replacement: other.id } });
+  } finally {
+    abort.abort();
+    await rm(directory, { recursive: true });
+  }
+});
+
+test('pairing a legacy Feishu connection keeps its existing project private messages', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'workbench-feishu-shared-'));
+  const abort = new AbortController();
+  const legacy = { kind: 'feishu', id: 'legacy-feishu', appId: 'cli_fixture', appSecret: 'fixture-secret', enabled: true, receive: true };
+  let replies = 0;
+  const links = await createChannelLinks({ config: [legacy], directory, signal: abort.signal, endpoint: 'http://127.0.0.1:7383/mcp',
+    workerCall: async path => {
+      assert.equal(path, '/notification-targets');
+      return [{ connectionId: legacy.id, target: { actorId: 'ou_owner', conversationId: 'oc_owner' } }];
+    },
+    channels: { async sendTest() { replies++; return { state: 'sent', receipt: 'private-test-proof' }; } },
+  });
+  try {
+    const projectMessage = { actorId: 'ou_project', conversationId: 'oc_project', eventId: 'om_project', text: 'existing project question' };
+    assert.equal(await links.receive(legacy, projectMessage), false);
+    await links.begin({ kind: 'feishu', method: 'verify' });
+    for (let i = 0; i < 100 && links.snapshot('feishu').step === 'starting'; i++) await delay(5);
+    const pair = links.snapshot('feishu');
+    assert.equal(pair.step, 'test');
+    assert.equal(await links.receive(legacy, projectMessage), false);
+    assert.equal(await links.receive(legacy, { ...projectMessage, text: pair.text }), true);
+    assert.equal(replies, 0);
+    await links.receive(legacy, { actorId: 'ou_owner', conversationId: 'oc_owner', eventId: 'om_owner', text: pair.text });
+    await links.confirm({ kind: 'feishu', id: pair.id });
+    assert.equal(replies, 1);
+    assert.equal(await links.receive(legacy, projectMessage), false);
   } finally {
     abort.abort();
     await rm(directory, { recursive: true });

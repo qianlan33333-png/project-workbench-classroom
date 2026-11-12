@@ -280,10 +280,16 @@ export async function createChannelLinks({ config, channels, directory, workerCa
     const trusted = record.target || { actorId: connection.ownerId };
     const trustedMessage = (!trusted.actorId || trusted.actorId === message.actorId) &&
       (!trusted.conversationId || trusted.conversationId === message.conversationId);
-    if (pair?.step !== 'test' || message.text.trim() !== pair.text || pair.expiresAt < Date.now() || !trustedMessage) {
-      return !operational || !trustedMessage;
+    const isTest = pair?.step === 'test' && message.text.trim() === pair.text && pair.expiresAt >= Date.now();
+    if (!isTest) {
+      if (operational) return !trustedMessage && !staticConnections.has(connection.id);
+      if (!record.retire || !trustedMessage) return true;
+      // A confirmed switch can commit in MySQL even if its response was lost.
+      // Deliver only once the durable route has enabled this exact target.
+      const bound = await boundTarget(connection);
+      return bound?.actorId !== message.actorId || bound?.conversationId !== message.conversationId;
     }
-    if (attempts[kind]?.busy) return true;
+    if (!trustedMessage || attempts[kind]?.busy) return true;
 
     // Claim before making the external call. A restart or ambiguous send never
     // replays the same test message.
