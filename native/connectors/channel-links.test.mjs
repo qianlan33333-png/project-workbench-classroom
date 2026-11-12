@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createChannelLinks } from './channel-links.mjs';
+import { createChannels } from './channels.mjs';
 
 test('private-chat pairing sends one test reply and only enables the owner route after confirmation', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'workbench-channel-link-'));
@@ -113,6 +114,14 @@ test('private-chat pairing sends one test reply and only enables the owner route
     const otherMessage = { actorId: 'ou_other', conversationId: 'oc_other', eventId: 'om_new', text: 'new owner message' };
     assert.equal(await links.receive(other, otherMessage), false, 'the exact replacement route is active in Worker');
     assert.equal(await links.receive(other, { ...otherMessage, actorId: 'ou_unbound' }), true);
+    const sender = createChannels(config, workerCall, undefined, credentials => {
+      assert.equal(credentials, other);
+      return { im: { message: { create: async () => ({ code: 0, data: { message_id: 'fixture-reply' } }) } } };
+    });
+    const reply = await sender.send({ connectionId: other.id, idempotencyKey: 'reply-after-commit',
+      target: boundReplacement.target, text: 'reply after Worker commit' });
+    assert.equal(reply.state, 'sent');
+    assert.match(reply.receipt, /fixture-reply/);
     loseRetirementResponse = false;
 
     const restartedConfig = [];

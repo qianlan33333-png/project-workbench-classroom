@@ -313,10 +313,15 @@ export async function createChannelLinks({ config, channels, directory, workerCa
   async function finishRetirement(kind) {
     const record = records[kind];
     if (!record.retire) return;
+    // Only the Worker enables the replacement route. Have its credentials in
+    // memory before that commit so an accepted inbound can always be answered.
+    configure(record.connection);
     try {
       await workerCall('/transports/retire-personal', { id: record.retire, replacement: record.connection.id });
     } catch (failure) {
       if (failure.status !== 403) throw failure;
+      const index = config.indexOf(record.connection);
+      if (index >= 0) config.splice(index, 1);
       await save(kind, { ...record, retire: undefined });
       throw error('原渠道仍有其他用途，无法替换。原连接仍可使用。', 409);
     }
@@ -324,7 +329,6 @@ export async function createChannelLinks({ config, channels, directory, workerCa
     const former = resolve(old);
     await save(kind, { ...record, staged: undefined, previous: undefined, retire: undefined, verified: true,
       retired: [...(record.retired || []), old], pairing: { ...record.pairing, step: 'linked' } });
-    configure(record.connection);
     if (former) {
       configure({ ...former, receiptOnly: true });
       await stopReceiver(former);
