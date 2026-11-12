@@ -10,6 +10,16 @@ const labels = { feishu: '飞书', wechat: '微信' };
 const botScopes = ['im:message.p2p_msg:readonly', 'im:message:send_as_bot'];
 const terminalSteps = new Set(['error', 'received', 'linked', 'done']);
 const pairingLifetime = 10 * 60 * 1000;
+const pairingCommand = /^链接工作台\s+([a-f0-9]{12})$/i;
+const barePairingCode = /^[a-f0-9]{12}$/i;
+
+function pairingCode(pair) {
+  return pairingCommand.exec(pair?.text || '')?.[1];
+}
+
+function previousPairingCodes(record) {
+  return [pairingCode(record?.pairing), ...(record?.previousPairingCodes || [])].filter(Boolean).slice(0, 8);
+}
 
 function error(message, status = 400) {
   return Object.assign(new Error(message), { status, public: true });
@@ -80,7 +90,7 @@ export async function createChannelLinks({ config, channels, directory, workerCa
       const current = connectionOf(kind);
       if (current) configure(current);
       if (record.pairing?.step === 'sending') {
-        await save(kind, { ...record, pairing: { id: record.pairing.id, step: 'error', error: '测试回复结果待核实，请重新发起验证。' } });
+        await save(kind, { ...record, pairing: { ...record.pairing, step: 'error', error: '测试回复结果待核实，请重新发起验证。' } });
       }
       if (record.retire) await finishRetirement(kind).catch(() => {});
     } catch (failure) {
@@ -147,7 +157,8 @@ export async function createChannelLinks({ config, channels, directory, workerCa
       : { connection: { kind, id: established.id }, legacy: true });
     if (previous) previous.target = target || current?.target;
     const record = { connection, legacy, staged: !legacy, previous: previous || undefined,
-      retired: old?.retired, target: target || undefined, verified: false, pairing: pairing(id) };
+      retired: old?.retired, target: target || undefined, verified: false, pairing: pairing(id),
+      previousPairingCodes: previousPairingCodes(old) };
     await save(kind, record);
     if (old?.staged) await stopReceiver(receiverOf(old));
     if (sameAccount && !legacy) await stopReceiver(established);
@@ -167,15 +178,16 @@ export async function createChannelLinks({ config, channels, directory, workerCa
     if (!attempt) return null;
     const current = attempt.view;
     const record = records[key];
-    const { receipt: _receipt, expiresAt, ...visible } = current.step === 'pairing' ? record?.pairing || { step: 'error' } : current;
+    const { receipt: _receipt, expiresAt, text, ...visible } = current.step === 'pairing' ? record?.pairing || { step: 'error' } : current;
     if (visible.step === 'test') {
-      if (expiresAt < Date.now()) return { id: attempt.id, step: 'error', error: '测试口令已过期，请重新验证。' };
+      if (expiresAt <= Date.now()) return { id: attempt.id, step: 'error', error: '测试口令已过期，请重新验证。' };
       if (record?.staged && health.get(record.connection.id) === 'reconnect') {
         return { id: attempt.id, step: 'error', error: '渠道暂时无法连接，请重新扫码或检查应用凭证。' };
       }
     }
     const appId = visible.step === 'test' && key === 'feishu' && resolve(record)?.appId;
     return { id: attempt.id, ...visible,
+      ...(visible.step === 'test' ? { text } : {}),
       ...(appId ? { botURL: 'https://applink.feishu.cn/client/bot/open?appId=' + encodeURIComponent(appId) } : {}) };
   }
 
@@ -227,7 +239,7 @@ export async function createChannelLinks({ config, channels, directory, workerCa
       }
       if (method === 'verify') {
         const record = records[kind];
-        if (record) await save(kind, { ...record, pairing: pairing(attempt.id) });
+        if (record) await save(kind, { ...record, pairing: pairing(attempt.id), previousPairingCodes: previousPairingCodes(record) });
         else if (originals[kind]) await stage(kind, originals[kind], attempt.id, true);
         else throw error('请先链接渠道。');
       } else {
@@ -270,18 +282,26 @@ export async function createChannelLinks({ config, channels, directory, workerCa
   async function receive(connection, message) {
     const kind = connection.kind;
     const record = records[kind];
-    if (!record) return false;
+    const text = typeof message.text === 'string' ? message.text.trim() : '';
+    const commandCode = pairingCommand.exec(text)?.[1];
+    const code = (commandCode || (barePairingCode.test(text) ? text : '')).toUpperCase();
+    const isPairingMessage = Boolean(commandCode || code && providers.some(provider => {
+      const known = records[provider];
+      return pairingCode(known?.pairing) === code || known?.previousPairingCodes?.includes(code);
+    }));
+    if (!record) return isPairingMessage;
     const candidate = resolve(record);
     const current = connectionOf(kind);
-    if (connection !== candidate) return !config.includes(connection) || Boolean(connection.receiptOnly);
+    if (connection !== candidate) return isPairingMessage || !config.includes(connection) || Boolean(connection.receiptOnly);
     const pair = record.pairing;
     const operational = record.legacy || record.verified || record.staged && current?.id === connection.id;
-    if (typeof message.actorId !== 'string' || !message.actorId || !message.conversationId || typeof message.text !== 'string') return !operational;
+    if (typeof message.actorId !== 'string' || !message.actorId || !message.conversationId || !message.eventId || typeof message.text !== 'string') {
+      return isPairingMessage || !operational;
+    }
     const trusted = record.target || { actorId: connection.ownerId };
     const trustedMessage = (!trusted.actorId || trusted.actorId === message.actorId) &&
       (!trusted.conversationId || trusted.conversationId === message.conversationId);
-    const isTest = pair?.step === 'test' && message.text.trim() === pair.text && pair.expiresAt >= Date.now();
-    if (!isTest) {
+    if (!isPairingMessage) {
       if (operational) return !trustedMessage && !staticConnections.has(connection.id);
       if (!record.retire || !trustedMessage) return true;
       // A confirmed switch can commit in MySQL even if its response was lost.
@@ -289,7 +309,8 @@ export async function createChannelLinks({ config, channels, directory, workerCa
       const bound = await boundTarget(connection);
       return bound?.actorId !== message.actorId || bound?.conversationId !== message.conversationId;
     }
-    if (!trustedMessage || attempts[kind]?.busy) return true;
+    if (pair?.step !== 'test' || code !== pairingCode(pair) || pair.expiresAt <= Date.now() ||
+        !trustedMessage || attempts[kind]?.busy) return true;
 
     // Claim before making the external call. A restart or ambiguous send never
     // replays the same test message.
@@ -303,9 +324,9 @@ export async function createChannelLinks({ config, channels, directory, workerCa
       });
       if (!['sent', 'accepted'].includes(receipt.state) || !receipt.receipt) throw error('测试回复未获平台确认，请重新验证。');
       await save(kind, { ...record, target: { actorId: target.actorId, conversationId: target.conversationId },
-        pairing: { id: pair.id, step: 'received', receipt: receipt.receipt } });
+        pairing: { ...pair, step: 'received', receipt: receipt.receipt } });
     } catch (failure) {
-      await save(kind, { ...record, pairing: { id: pair.id, step: 'error', error: failure.public ? failure.message : '测试回复结果待核实，请重新发起验证。' } });
+      await save(kind, { ...record, pairing: { ...pair, step: 'error', error: failure.public ? failure.message : '测试回复结果待核实，请重新发起验证。' } });
     }
     return true;
   }

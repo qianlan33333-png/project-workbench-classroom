@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -53,13 +53,15 @@ test('private-chat pairing sends one test reply and only enables the owner route
     assert.equal(config.length, 0);
     const connection = started.at(-1);
     links.health(connection, 'ready');
-    const input = { actorId: 'ou_owner', conversationId: 'oc_owner', eventId: 'om_test', text: pairing.text };
+    const input = { actorId: 'ou_owner', conversationId: 'oc_owner', eventId: 'om_test', text: pairing.text.split(' ')[1] };
     assert.equal(await links.receive(connection, { ...input, text: 'normal message before pairing' }), true);
+    assert.equal(await links.receive({ kind: 'wechat' }, input), true, 'a code pasted in the other channel is consumed');
     assert.deepEqual(writes, []);
     await Promise.all([links.receive(connection, input), links.receive(connection, input)]);
     assert.equal(sends.length, 1);
     assert.equal(links.snapshot('feishu').step, 'received');
     assert.equal(links.snapshot('feishu').receipt, undefined);
+    assert.equal(links.snapshot('feishu').text, undefined);
     assert.deepEqual(writes, []);
     await links.confirm({ kind: 'feishu', id: pairing.id });
     assert.equal(links.snapshot('feishu').step, 'linked');
@@ -67,6 +69,9 @@ test('private-chat pairing sends one test reply and only enables the owner route
     assert.equal(writes.find(w => w.path === '/message-routes')?.data.principal.sessionId, 'fixture-superagent');
     assert.equal(await links.receive(connection, { ...input, actorId: 'ou_other', text: 'unbound chat' }), true);
     assert.equal(await links.receive(connection, { ...input, text: 'normal owner message' }), false);
+    assert.equal(await links.receive(connection, input), true, 'consumed code stays out of the session');
+    const unknownCode = input.text === '123456ABCDEF' ? '123456ABCDEE' : '123456ABCDEF';
+    assert.equal(await links.receive(connection, { ...input, text: unknownCode }), false);
     const secondary = { kind: 'feishu', id: 'secondary', enabled: true, receive: true };
     config.push(secondary);
     assert.equal(await links.receive(secondary, { ...input, text: 'independent channel' }), false);
@@ -81,6 +86,7 @@ test('private-chat pairing sends one test reply and only enables the owner route
     assert.deepEqual(config, [connection, secondary], 'production send still uses the established credentials before confirmation');
     const writesBeforeRotation = writes.length;
     assert.equal(await links.receive(rotated, { ...input, text: 'normal owner message' }), false);
+    assert.equal(await links.receive(rotated, input), true, 'superseded code stays out of the session');
     assert.equal(await links.receive(rotated, { ...input, actorId: 'ou_other', text: rotation.text }), true);
     assert.equal(sends.length, 1);
     await links.receive(rotated, { ...input, eventId: 'om_rotated', text: rotation.text });
@@ -165,6 +171,15 @@ test('pairing a legacy Feishu connection keeps its existing project private mess
     await links.confirm({ kind: 'feishu', id: pair.id });
     assert.equal(replies, 1);
     assert.equal(await links.receive(legacy, projectMessage), false);
+    const path = join(directory, 'feishu.json');
+    const record = JSON.parse(await readFile(path, 'utf8'));
+    record.pairing = { id: pair.id, text: pair.text, step: 'test', expiresAt: Date.now() - 1 };
+    await writeFile(path, JSON.stringify(record));
+    const restarted = await createChannelLinks({ config: [legacy], directory, signal: abort.signal,
+      channels: { async sendTest() { assert.fail('expired pairing must never send'); } } });
+    assert.equal(restarted.snapshot('feishu').step, 'error');
+    assert.equal(await restarted.receive(legacy, { actorId: 'ou_owner', conversationId: 'oc_owner', eventId: 'om_expired',
+      text: pair.text.split(' ')[1] }), true);
   } finally {
     abort.abort();
     await rm(directory, { recursive: true });
@@ -200,7 +215,7 @@ test('legacy WeChat rotation proves the same private user and keeps the connecti
     const [candidate] = started;
     assert.equal(candidate.id, original.id);
     assert.equal(candidate.accountId, 'platform-bot');
-    const input = { actorId: 'owner', conversationId: 'owner', eventId: 'wx-test', text: pair.text };
+    const input = { actorId: 'owner', conversationId: 'owner', eventId: 'wx-test', text: ' ' + pair.text.split(' ')[1].toLowerCase() + ' ' };
     assert.equal(await links.receive(candidate, { ...input, conversationId: 'different' }), true);
     assert.equal(links.snapshot('wechat').step, 'test');
     links.health(candidate, 'reconnect');

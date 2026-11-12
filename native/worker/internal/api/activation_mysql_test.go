@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"workbench-native/internal/activation"
 	"workbench-native/internal/core"
 )
 
@@ -48,7 +49,7 @@ func TestMySQLActivationCodeHasOneWinnerAndCanBeRetried(t *testing.T) {
 	}
 	issued := request("/activation/codes", "owner", "activation-fixture", nil)
 	var code struct{ Code string }
-	if issued.Code != 200 || json.Unmarshal(issued.Body.Bytes(), &code) != nil || !activationCode.MatchString(code.Code) {
+	if issued.Code != 200 || json.Unmarshal(issued.Body.Bytes(), &code) != nil || !activation.CodePattern.MatchString(code.Code) {
 		t.Fatalf("invalid issuance status=%d", issued.Code)
 	}
 	digest := sha256.Sum256([]byte(code.Code))
