@@ -61,6 +61,12 @@ func (m modelBridge) hostCallLimited(ctx context.Context, path string, input, ou
 		case http.StatusUnauthorized, http.StatusForbidden:
 			return core.ErrDenied
 		case http.StatusConflict:
+			if path == "/dispatch" {
+				var detail struct{ Code string }
+				if json.NewDecoder(io.LimitReader(res.Body, 2048)).Decode(&detail) == nil && detail.Code == "project_expert_required" {
+					return core.ErrProjectExpertRequired
+				}
+			}
 			return core.ErrConflict
 		}
 		return fmt.Errorf("Harness host returned %d", res.StatusCode)

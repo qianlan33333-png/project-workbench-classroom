@@ -69,7 +69,7 @@ func seedResourceGrants(ctx context.Context, tx *sql.Tx, r Resource) error {
 		if _, err := tx.ExecContext(ctx, "INSERT IGNORE INTO wb_grants(resource_id,project_id,section_id) VALUES(?,?,'*')", r.ID, project); err != nil {
 			return err
 		}
-		if r.Relation != BusinessPolicyRelation {
+		if r.Relation != BusinessPolicyRelation && r.Relation != OperationsExpertRelation {
 			managers[project] = true
 		}
 	}
@@ -372,6 +372,10 @@ func (s *Store) CheckLibraryPersonal(ctx context.Context, p Principal) error {
 }
 
 func (s *Store) snapshotWriteAllowed(ctx context.Context, q resourceQuery, p Principal, r Resource) error {
+	if r.Relation == OperationsExpertRelation && !p.IsOwner() {
+		return ErrDenied
+	}
+
 	if r.Relation == VaultRelation {
 		return ErrDenied
 	}

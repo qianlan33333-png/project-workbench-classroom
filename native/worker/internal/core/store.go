@@ -72,6 +72,15 @@ func (s *Store) Migrate(ctx context.Context) error {
 			}
 		}
 	}
+	var expertColumn int
+	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='wb_sessions' AND column_name='expert_ref'`).Scan(&expertColumn); e != nil {
+		return e
+	}
+	if expertColumn == 0 {
+		if _, e := s.DB.ExecContext(ctx, `ALTER TABLE wb_sessions ADD COLUMN expert_ref VARCHAR(180) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''`); e != nil {
+			return e
+		}
+	}
 	var unsafe int
 	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND LEFT(table_name,3)='wb_' AND ((character_set_name='ascii' AND collation_name<>'ascii_bin') OR (column_name='item_id' AND collation_name<>'utf8mb4_0900_bin'))`).Scan(&unsafe); e != nil {
 		return e
@@ -262,6 +271,9 @@ func (s *Store) Resources(ctx context.Context, p Principal) ([]Resource, error) 
 		}
 		if e = json.Unmarshal(raw, &r); e != nil {
 			return nil, e
+		}
+		if r.Relation == OperationsExpertRelation {
+			continue
 		}
 		r.CurrentVersion = version
 		r.Revision = revision

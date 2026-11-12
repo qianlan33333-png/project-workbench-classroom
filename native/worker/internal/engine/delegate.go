@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	"time"
@@ -42,6 +43,14 @@ func (a *Activities) DispatchProject(ctx context.Context, id string) error {
 		return failure(e)
 	}
 	if e = a.Host.Dispatch(ctx, r); e != nil {
+		if errors.Is(e, core.ErrProjectExpertRequired) && r.Operation == "dispatch" && r.NotifySession != "" {
+			event := core.RunEvent{ID: id + "-expert-required", SessionID: r.NotifySession, RunID: id,
+				Kind: "project.expert-required", Text: "目标项目有多个可用专家。请设置项目默认专家后再派发。", Details: map[string]any{"projectId": r.Principal.ProjectID}}
+			if err := a.Store.Emit(ctx, event); err != nil {
+				return failure(err)
+			}
+			return failure(core.ErrConflict)
+		}
 		return failure(e)
 	}
 	if r.Operation == "incoming" {

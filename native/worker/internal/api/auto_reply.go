@@ -339,7 +339,7 @@ func (a *Server) startIncoming(ctx context.Context, message core.StoredMessage) 
 	if message.Principal.Kind == "personal" {
 		goal = message.Text + "\n\n这是已绑定本人渠道的新消息，请由 SuperAgent 处理；需要回复本人时使用当前消息的connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。"
 	}
-	run := core.Run{ID: message.ID, Principal: message.Principal, Operation: "incoming", Title: "客户新消息", Goal: goal, OriginMessage: message.ID, Sources: append([]core.Ref{}, message.Knowledge...)}
+	run := core.Run{ID: message.ID, Principal: message.Principal, Operation: "incoming", Title: "客户新消息", Goal: goal, OriginMessage: message.ID, ExpertRef: message.ExpertRef, Sources: append([]core.Ref{}, message.Knowledge...)}
 	for _, ref := range message.Context {
 		run.Sources = append(run.Sources, ref.Ref)
 	}

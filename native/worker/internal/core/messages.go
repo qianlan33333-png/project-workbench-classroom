@@ -55,6 +55,7 @@ type StoredMessage struct {
 	RouteRevision      int64      `json:"routeRevision,omitempty"`
 	SettingsRevision   int64      `json:"settingsRevision,omitempty"`
 	ExpertSkill        string     `json:"expertSkill,omitempty"`
+	ExpertRef          string     `json:"expertRef,omitempty"`
 	Knowledge          []Ref      `json:"knowledge,omitempty"`
 	ID                 string     `json:"id"`
 	DecisionID         string     `json:"decisionId,omitempty"`
@@ -156,6 +157,13 @@ func (s *Store) PutRoute(ctx context.Context, p Principal, v MessageRoute) error
 	if e = checkTransportAccess(v.Principal, transport); e != nil {
 		return e
 	}
+	var reply ReplySettings
+	if v.Principal.Kind == "project" {
+		reply, e = scanJSON[ReplySettings](tx.QueryRowContext(ctx, `SELECT body FROM wb_settings WHERE id=? FOR SHARE`, "reply-"+v.Principal.ProjectID))
+		if e != nil && !IsMissing(e) {
+			return e
+		}
+	}
 	inserted, e := tx.ExecContext(ctx, `INSERT IGNORE INTO wb_sessions(id,project_id,kind) VALUES(?,?,?)`, v.Principal.SessionID, v.Principal.ProjectID, v.Principal.Kind)
 	if e != nil {
 		return e
@@ -215,6 +223,19 @@ func (s *Store) PutRoute(ctx context.Context, p Principal, v MessageRoute) error
 		}
 		_, e = tx.ExecContext(ctx, `UPDATE wb_message_routes SET body=? WHERE id=?`, jsonText(v), v.ID)
 	} else if IsMissing(e) {
+		if reply.ConnectionID == v.ConnectionID {
+			value, err := readExpertDefault(ctx, tx, v.Principal.ProjectID)
+			if err != nil {
+				return err
+			}
+			ref := value.Ref
+			if ref == "" && expertName.MatchString(reply.ExpertSkill) {
+				ref = "legacy:" + reply.ExpertSkill
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE wb_sessions SET expert_ref=? WHERE id=? AND expert_ref=''`, ref, v.Principal.SessionID); err != nil {
+				return err
+			}
+		}
 		if v.Revision == 0 {
 			v.Revision = 1
 		}
@@ -319,6 +340,15 @@ func (s *Store) AcceptMessage(ctx context.Context, v IncomingMessage) (StoredMes
 		message.Context = contextRefs
 		message.Knowledge = knowledge
 		message.ExpertSkill = skill
+		if route.Principal.Kind == "project" && skill != "" {
+			if e = tx.QueryRowContext(ctx, `SELECT expert_ref FROM wb_sessions WHERE id=? AND project_id=? AND kind='project'`,
+				route.Principal.SessionID, route.Principal.ProjectID).Scan(&message.ExpertRef); e != nil {
+				return message, e
+			}
+			if message.ExpertRef != "" {
+				message.ExpertSkill = ExpertName(message.ExpertRef)
+			}
+		}
 		message.State = "received"
 		if route.Principal.Kind == "project" && (!route.AutoReply || settingsRevision < 0) {
 			message.State = "paused"

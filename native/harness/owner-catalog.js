@@ -1,6 +1,6 @@
-import {readdir,realpath,readFile,stat,lstat,writeFile,rename,unlink} from 'node:fs/promises';
+import {readdir,realpath,readFile,stat,lstat} from 'node:fs/promises';
 import {join,sep} from 'node:path';
-import {createHash,randomUUID} from 'node:crypto';
+import {createHash} from 'node:crypto';
 import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem';
 
 // Use the exact upstream project/user/bundled discovery and parser. Do not
@@ -20,29 +20,21 @@ export function ownerSkillCatalog(ctx){
     const header=raw.match(/^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n/)?.[0];
     if(header&&Buffer.byteLength(raw)<=128*1024)return {path,header,revision:digest(raw)};
   };
-  const list=async(cwd,name,edit)=>{
+  return async(cwd,name,scope)=>{
     const result=await provider.list({cwd,signal:abort.signal});
     const candidates=Array.isArray(result)?result:result.candidates;
     if(!Array.isArray(result)&&!result.complete)throw Error('专家目录暂未读取完整，请刷新重试');
     const byName=new Map();
-    for(const c of candidates)if(!byName.has(c.name)||byName.get(c.name).rank>c.rank)byName.set(c.name,c);
-    if(!name)return [...byName.values()].map(c=>({name:c.name,description:c.description})).sort((a,b)=>a.name.localeCompare(b.name));
+    for(const c of candidates){
+      const project=c.source==='project-dsh'||c.source==='project-agents';
+      if(scope==='shared'&&project||scope==='project'&&!project)continue;
+      if(!byName.has(c.name)||byName.get(c.name).rank>c.rank)byName.set(c.name,c);
+    }
+    if(!name)return [...byName.values()].map(c=>({name:c.name,description:c.description,source:c.source,metadata:c.metadata,invocation:c.invocation})).sort((a,b)=>a.name.localeCompare(b.name));
     const candidate=byName.get(name);if(!candidate)throw Error('该项目没有这个专家');
     const skill=await provider.get(candidate,{cwd,signal:abort.signal});
     if(!skill)throw Error('专家方法暂不可读');
     const writable=await editableFile(candidate,skill);
-    if(edit){
-      if(!writable)throw Object.assign(Error('此方法随安装发布，仅可阅读'),{status:403});
-      if(edit.revision!==writable.revision)throw Object.assign(Error('方法已更新，请重新打开并合并修改'),{status:409});
-      const text=edit.content;
-      if(typeof text!=='string'||!text.trim()||Buffer.byteLength(writable.header+text)>128*1024)
-        throw Object.assign(Error('请输入 128 KiB 以内的方法正文'),{status:400});
-      const temp=writable.path+'.'+randomUUID()+'.tmp';
-      try{await writeFile(temp,writable.header+text,{flag:'wx',mode:0o600});await rename(temp,writable.path)}
-      finally{await unlink(temp).catch(e=>{if(e.code!=='ENOENT')throw e})}
-      provider.observeHostMutation(writable.path);
-      return list(cwd,name);
-    }
     const references=[];
     if(skill.resourceBase?.kind==='directory'){
       const base=await realpath(skill.resourceBase.path);const folder=join(base,'references');
@@ -54,16 +46,6 @@ export function ownerSkillCatalog(ctx){
         bytes+=info.size;references.push({name,content:await readFile(path,'utf8')});
       }
     }
-    return{name:skill.name,description:skill.description,content:skill.content,references,revision:writable?.revision};
+    return{name:skill.name,description:skill.description,content:skill.content,references,source:skill.source,metadata:skill.metadata,invocation:skill.invocation,revision:writable?.revision};
   };
-  let pending=Promise.resolve();
-  list.save=(cwd,input)=>{
-    const result=pending.then(()=>{
-      if(typeof input.name!=='string'||!input.name)throw Object.assign(Error('请选择专家'),{status:400});
-      return list(cwd,input.name,input);
-    });
-    pending=result.catch(()=>{});
-    return result;
-  };
-  return list;
 }

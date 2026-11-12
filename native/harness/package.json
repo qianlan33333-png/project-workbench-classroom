@@ -46,6 +46,8 @@
     "superagent-delivery.js",
     "SUPERAGENT-LICENSE",
     "owner-catalog.js",
+    "expert-library.js",
+    "session-expert.js",
     "reply-evidence.js",
     "channel-context.js",
     "resource-documents.js",

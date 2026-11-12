@@ -20,6 +20,8 @@ import { zipSync } from 'fflate';
 import {directoryVault, notePath, renameVaultNote, searchVault, vaultArchiveEntries, vaultFolderPaths, vaultMediaMatches, vaultStructure, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
+import { expertLibrary, generalExpert, selectProjectExpert } from './expert-library.js';
+import { expertTurnProjection, installSessionExpert } from './session-expert.js';
 import { createActivation, installActivation, sameOrigin, setupBody, workbenchTitle as brandTitle } from "./activation.js";
 import { createSuperAgent } from './superagent.js';
 import { nativeLibraryCommand, activeLibraryCommand } from './library-command.js';
@@ -268,7 +270,66 @@ export async function apply(ctx, config) {
   await syncProjects();
   const delivery = await ctx.sessionProjections.register(deliveryProjection);
   const replyEvidence = await ctx.sessionProjections.register(replyEvidenceProjection);
+  const expertTurns = await ctx.sessionProjections.register(expertTurnProjection);
+  const expertManagement = config.expertManagement === true;
   const skillCatalog = ownerSkillCatalog(ctx);
+  const experts = expertLibrary({root: process.env.DSH_HOME, catalog: skillCatalog, personalPath, readRule, saveRule, call, projects: syncProjects});
+  const bundledMethods = new Set(['customer-reply', 'operations-onboarding', 'operations-profile', 'workbench-tool-development']);
+  async function expertChoices(project, reply, signal) {
+    const [skills, configured] = await Promise.all([
+      experts.listSkills(project.workspace, project.id),
+      call('/expert-default?projectId=' + encodeURIComponent(project.id), owner, undefined, signal),
+    ]);
+    const options = skills.filter(item => (!reply || item.invocation?.modelInvocable !== false) && (item.projectId === project.id || item.source === 'managed' ||
+      (!bundledMethods.has(item.name) && ['user-dsh', 'user-agents'].includes(item.source)) ||
+      (reply && item.name === 'customer-reply')));
+    let preferred = configured.expertId;
+    if (reply && !preferred) {
+      const old = await call('/reply-settings?projectId=' + encodeURIComponent(project.id), owner, undefined, signal);
+      preferred = options.find(item => item.name === old.expertSkill && item.projectId === project.id)?.id ||
+        options.find(item => item.name === old.expertSkill)?.id;
+    }
+    return {options, preferred, configured: configured.expertId};
+  }
+  async function bindProjectExpert(p, project, requested, signal) {
+    const current = await call('/session/expert', p, undefined, signal);
+    if (current.expertId && !requested) return current.expertId;
+    if (current.expertId && current.expertId !== requested) throw requestError('此会话已绑定其他专家，请新建会话', 409);
+    const choices = await expertChoices(project, false, signal);
+    const id = selectProjectExpert(choices.options, choices.preferred, requested);
+    return (await call('/session/expert', p, {expertId: id}, signal)).expertId;
+  }
+  // The native slash picker also reads persisted Sessions with no live Agent.
+  ctx.inject(['sessionSkillCatalog', 'sessionQuery'], scope => {
+    const service = scope.sessionSkillCatalog;
+    const original = service.list;
+    async function list(request, signal) {
+      if (ctx.agents.get(request.sessionId)) return original.call(this, request, signal);
+      let observation;
+      try { observation = await scope.sessionQuery.observeSession(request.sessionId); }
+      catch { return original.call(this, request, signal); }
+      try {
+        const cwd = observation.header.cwd;
+        if (!cwd || cwd === personalPath) return {skills: []};
+        const project = (await syncProjects(signal)).find(item => item.workspace === cwd);
+        if (!project) return {skills: []};
+        const p = {kind: 'project', projectId: project.id, sessionId: request.sessionId};
+        const {expertId} = await call('/session/expert', p, undefined, signal);
+        if (expertId) {
+          const method = await experts.runtime(expertId, project);
+          if (!method || method.invocation?.userInvocable === false) return {skills: []};
+          return {skills: [{name: method.name, description: method.description, modelInvocable: method.invocation?.modelInvocable !== false}]};
+        }
+        if (expertManagement) return {skills: []};
+        return {skills: (await skillCatalog(cwd)).filter(item => item.invocation?.userInvocable !== false)
+          .map(item => ({name: item.name, description: item.description, modelInvocable: item.invocation?.modelInvocable !== false}))};
+      } finally { observation[Symbol.dispose](); }
+    }
+    scope.effect(() => {
+      service.list = list;
+      return () => { if (service.list === list) service.list = original; };
+    }, 'workbench: persisted Session skill catalog');
+  });
   function requireSuperAgentSession(path, sessionId) {
     if (path === personalPath && sessionId !== superAgent.id) {
       throw requestError("本人工作请使用 SuperAgent 主会话", 403);
@@ -303,8 +364,8 @@ export async function apply(ctx, config) {
     if (p.kind === "personal") await call("/personal/session", p, {});
     installPersonalMemory(agent,p,call);
     if (p.kind === "personal") agent.ctx.on("system-prompt/assemble", async (_assembly, _context, next) => {
-      const files = await Promise.all([...ruleNames].map(readRule));
-      const text = files.filter(f => f.content.trim()).map(f => f.name + "\n" + f.content).join("\n\n");
+      const rule = await readRule("SOUL.md");
+      const text = rule.content.trim() ? rule.name + "\n" + rule.content : "";
       const result = await next();
       if (!text) return result;
       return { ...result, sections: [...result.sections, {
@@ -348,8 +409,27 @@ export async function apply(ctx, config) {
     );
     owned.set(agent.id, dispose);
     const extensions=[];
-    let workbenchMcp;
+    let workbenchMcp, removeExpert;
     try {
+      const project = {id: p.projectId, workspace: agent.session.header.cwd};
+      const locked = async signal => (await call('/session/expert', p, undefined, signal)).expertId;
+      removeExpert = installSessionExpert(agent, {
+        principal: p, readRule, projection: expertTurns, compatibility: !expertManagement, locked,
+        resolveExpert: id => experts.runtime(id, project),
+        async resolve(source, signal) {
+          let id;
+          if (boundary.objectSession && source?.kind === 'workbench-incoming') {
+            id = (await call('/session/expert?runId=' + encodeURIComponent(source.runId), p, undefined, signal)).expertId;
+          } else {
+            id = await locked(signal);
+            if (!id && expertManagement && !boundary.objectSession && source &&
+                ['user', 'workbench-delegation'].includes(source.kind) && p.sessionId !== 'operations-' + p.projectId) {
+              id = await bindProjectExpert(p, project, undefined, signal);
+            }
+          }
+          return id ? experts.runtime(id, project) : undefined;
+        },
+      });
       const namespaces=new Set(['workbench']),externalSources=new Map();
       // Optional standard MCP servers are owner-installed plugins. Customer
       // object Sessions intentionally receive only the fixed message tools.
@@ -390,6 +470,7 @@ export async function apply(ctx, config) {
       const mask = dispose;
       owned.set(agent.id, () => {
         mask();
+        removeExpert();
         for(const extension of extensions)extension.dispose();
         return mcpOwner.dispose();
       });
@@ -418,6 +499,7 @@ export async function apply(ctx, config) {
         text: "你在固定项目内工作。专家 Skill 负责判断，标准工具负责执行。资料仅通过已授权资源读取；内部业务需要查资料时可以用 resource_list 找库，如 access=none，说明需要哪个库的只读权限。客户对象会话只用配置的对客资料。批量传引用，不逐人塞入主对话。先选择板块与方法，再提交任务。状态、数据发布、内容生成和实际送达必须区分。",
       });
     } catch (e) {
+      removeExpert?.();
       for(const extension of extensions)extension.dispose();
       workbenchMcp?.dispose();
       dispose();
@@ -752,6 +834,48 @@ export async function apply(ctx, config) {
               }
               return;
             }
+            if (expertManagement && req.method === 'GET' && ['/expert-options', '/reply-experts'].includes(path)) {
+              const project = (await syncProjects()).find(item => item.id === u.searchParams.get('projectId'));
+              if (!project) throw requestError('项目不存在', 404);
+              const reply = path === '/reply-experts';
+              const choices = await expertChoices(project, reply);
+              if (reply) {
+                json(res, 200, choices);
+                return;
+              }
+              const sessionId = u.searchParams.get('sessionId');
+              let bound = '';
+              if (sessionId) {
+                const stored = await ctx.sessionPersistence.stat(sessionId);
+                const live = ctx.agents.get(sessionId);
+                if (!project.sessionIds.includes(sessionId) || (!stored && !live)) throw requestError('会话不存在', 404);
+                const p = {kind: 'project', projectId: project.id, sessionId};
+                bound = (await call('/session/expert', p)).expertId;
+              }
+              json(res, 200, {...choices, options: [generalExpert, ...choices.options], bound});
+              return;
+            }
+            if (expertManagement && req.method === 'POST' && path === '/expert-default') {
+              if (!sameOrigin(req)) throw requestError('origin rejected', 403);
+              const input = await body(req);
+              const [projects, reply, operations] = await Promise.all([syncProjects(), call('/reply-projects'), call('/operations/projects')]);
+              const project = projects.find(item => item.id === input.projectId);
+              if (!project || operations.includes(project.id)) throw requestError('项目不可配置此专家', 404);
+              const isReply = reply.some(item => item.projectId === project.id);
+              const {options} = await expertChoices(project, isReply);
+              if (!options.some(item => item.id === input.expertId) && (isReply || input.expertId !== generalExpert.id))
+                throw requestError('该项目无法使用此专家', 403);
+              const legacyRefs = {};
+              if (isReply) {
+                const slugs = await call('/expert-default/legacy?projectId=' + encodeURIComponent(project.id));
+                for (const slug of slugs) {
+                  const ref = await experts.resolveLegacy('legacy:' + slug, project);
+                  if (ref) legacyRefs[slug] = ref;
+                }
+              }
+              json(res, 200, await call(path, owner, {projectId:project.id, expertId:input.expertId, expected:input.expected, legacyRefs}));
+              return;
+            }
             if(req.method==='GET'&&path==='/reply-experts'){
               const project=(await syncProjects()).find(p=>p.id===u.searchParams.get('projectId'));
               if(!project)throw requestError('项目不存在',404);
@@ -778,7 +902,7 @@ export async function apply(ctx, config) {
             if (req.method === "GET" && path === "/project-list") {
               const [projects, reply, operations] = await Promise.all([syncProjects(), call("/reply-projects"), call("/operations/projects")]);
               const special = new Set(reply.map(p => p.projectId));
-              json(res, 200, { personalWorkspaceId: personalWorkspace.id, personalSessionId: superAgent.id,
+              json(res, 200, { expertManagement, personalWorkspaceId: personalWorkspace.id, personalSessionId: superAgent.id,
                 projects: projects.map(({workspace, ...p}) => ({ ...p, type: operations.includes(p.id) ? "auto-operations" : special.has(p.id) ? "auto-reply" : "ordinary" })) });
               return;
             }
@@ -786,7 +910,15 @@ export async function apply(ctx, config) {
               json(res, 200, await Promise.all([...ruleNames].map(readRule))); return;
             }
             if (req.method === "GET" && path === "/experts") {
-              json(res, 200, await skillCatalog(personalPath, u.searchParams.get("name") || undefined)); return;
+              const id = u.searchParams.get('id');
+              if (expertManagement) {
+                json(res, 200, id ? await experts.detail(id) : await experts.list());
+              } else {
+                const name = u.searchParams.get("name") || undefined;
+                const result = await skillCatalog(personalPath, name);
+                json(res, 200, name ? {...result,revision:undefined} : result);
+              }
+              return;
             }
             if (req.method === "GET" && path === "/mcp-catalog") {
               json(res, 200, [{ name: "workbench", label: "工作台工具", configured: true },
@@ -801,14 +933,12 @@ export async function apply(ctx, config) {
               const input = await body(req);
               if (path === "/today-rules") { json(res, 200, await saveRule(input)); return; }
               if (path === "/experts") {
-                const saved = await skillCatalog.save(personalPath, input);
-                const ids = await call("/operations/projects");
-                for (const project of (await syncProjects()).filter(p => ids.includes(p.id))) {
-                  const selected = await skillCatalog(project.workspace, saved.name);
-                  await call("/operations/method", owner, {projectId: project.id, expert: selected.name, instructions: selected.content});
+                if (expertManagement) {
+                  const output = await experts.save(input);
+                  json(res, 200, output);
+                  return;
                 }
-                json(res, 200, saved);
-                return;
+                throw requestError('专家编辑将在配置发布后开放', 409);
               }
               if (path === "/mcp-test") {
                 const builtin = input.name === "workbench";
@@ -897,6 +1027,10 @@ export async function apply(ctx, config) {
               const input = await body(req);
               if(path==="/reply-settings"&&!(await call("/reply-projects")).some(p=>p.projectId===input.projectId))
                 throw requestError("请在创建时选择自动化应答专项", 409);
+              if (path === '/reply-settings') {
+                const existing = await call('/reply-settings?projectId=' + encodeURIComponent(input.projectId));
+                input.expertSkill = existing.expertSkill;
+              }
               json(res, 200, await call(path, owner, input));
               return;
             }
@@ -923,8 +1057,21 @@ export async function apply(ctx, config) {
               }
               const w=ctx.workspaceRegistry.list().find(w=>w.id===input.workspaceId);
               if(!w)throw Error('Workspace unavailable');
-              const id=input.sessionId||randomUUID();
+              if (input.newSessionId !== undefined && (!expertManagement || input.sessionId ||
+                  typeof input.newSessionId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(input.newSessionId)))
+                throw requestError('无效的新会话编号');
+              const id=input.sessionId||input.newSessionId||randomUUID();
+              const project = {id: idOf(w.path), workspace: w.path};
+              let requested = input.expertId;
+              if (expertManagement && w.path !== personalPath && !input.sessionId) {
+                const choices = await expertChoices(project, false);
+                requested = selectProjectExpert(choices.options, choices.preferred, requested);
+              }
               const agent=await ensureSession(id,w.path);
+              if (expertManagement && w.path !== personalPath && !id.startsWith('object-') && (requested || input.text)) {
+                await bindProjectExpert(identity(agent), project, requested);
+              }
+              if (!input.sessionId) await w.attachSession(id);
               if(id.startsWith('object-')){
                 while(true){
                   const before=delivery.stateOf(agent.session).through;
@@ -1029,6 +1176,9 @@ export async function apply(ctx, config) {
 
         if(incoming&&!isOwner){const admission=await call('/messages/admit?runId='+encodeURIComponent(input.id));if(!admission.allowed){if(!admission.terminal)throw requestError('Earlier customer message pending',503);json(res,200,{accepted:true,sessionId:agent.id});return}}
         unusedIncoming='';
+        if (expertManagement && !incoming && !delivery.stateOf(agent.session).dispatches.includes(input.id)) {
+          await bindProjectExpert(identity(agent), {id: idOf(w.path), workspace: w.path});
+        }
         if(!delivery.stateOf(agent.session).dispatches.includes(input.id)) {
           const instruction = incoming ? '' : '这是一项已经由 SuperAgent 派发到本项目的任务。当前会话就是目标项目会话，派发已完成。请执行原话中的目标业务，不要重复调用 task_delegate。\n\n本人原话：\n';
           const text = instruction + input.goal + '\n\n本次已绑定的资料引用：' +
@@ -1044,7 +1194,7 @@ export async function apply(ctx, config) {
         }
         if (!await ctx.sessions.flush(agent.session)) throw Error('Project task was not persisted');
         json(res,200,{accepted:true,sessionId:agent.id});
-      }catch(e){json(res,e.status||(e instanceof SyntaxError?400:503),{error:e.status?e.message:'Host delivery unavailable'}) }finally{
+      }catch(e){json(res,e.status||(e instanceof SyntaxError?400:503),{error:e.status?e.message:'Host delivery unavailable',code:e.code==='project_expert_required'?e.code:undefined}) }finally{
         // A denied/queued message must not leave a newly restored idle Agent
         // resident until the idle timer, especially during an offline backlog.
         const handle=unusedIncoming&&agentHandles.get(unusedIncoming);

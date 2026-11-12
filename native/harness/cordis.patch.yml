@@ -27,16 +27,13 @@
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: workbench
-        name: 工作台专家
+        name: 工作台
         plugins:
           - name: '@deepseek-ai/dsh-persona'
             config:
               prefix: 你是个人工作台的执行助理。使用专家 Skill 判断，使用标准工具读取资料和执行工作；只根据真实结果汇报。
               complete: false
           - name: '@deepseek-ai/dsh-time-context'
-          - name: '@deepseek-ai/dsh-skill-filesystem'
-            config:
-              agentsHome: !!js process.env.DSH_HOME + '/agents'
           - name: '@deepseek-ai/dsh-tool-skill'
           - name: cordis:group
             group: true
@@ -48,6 +45,7 @@
     - id: personal-workbench
       name: '@local/personal-workbench'
       config:
+        expertManagement: false
         workerUrl: !!js process.env.WORKBENCH_WORKER_URL || 'http://127.0.0.1:7381'
         bridgePort: !!js Number(process.env.WORKBENCH_BRIDGE_PORT || 7382)
         personalWorkspace: !!js process.env.WORKBENCH_PERSONAL_WORKSPACE

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"github.com/google/uuid"
@@ -20,25 +21,26 @@ import (
 
 // Arguments of this single fixed sequence, not a user-defined workflow graph.
 type OperationsCycleInput struct {
-	Principal           core.Principal            `json:"principal"`
-	Sources             []core.ResourceSelection  `json:"sources"`
-	CleanDestination    string                    `json:"cleanDestination"`
-	ProfileDirectory    string                    `json:"profileDirectory,omitempty"`
-	IndependentProfiles bool                      `json:"independentProfiles,omitempty"`
-	Strategies          core.Ref                  `json:"strategies"`
-	History             core.Ref                  `json:"history"`
-	HistorySource       *core.ResourceSelection   `json:"historySource,omitempty"`
-	StrategySource      *core.ResourceSelection   `json:"strategySource,omitempty"`
-	MethodSource        *core.ResourceSelection   `json:"methodSource,omitempty"`
-	StrategyKeys        []string                  `json:"strategyKeys,omitempty"`
-	Limit               int                       `json:"limit,omitempty"`
-	SelectedDestination string                    `json:"selectedDestination"`
-	DraftDestination    string                    `json:"draftDestination"`
-	AdditionalBatch     *OperationsCycleBatch     `json:"additionalBatch,omitempty"`
-	MethodRef           core.RecordRef            `json:"methodRef"`
-	MethodRefs          map[string]core.RecordRef `json:"methodRefs,omitempty"`
-	Section             string                    `json:"section"`
-	Resume              bool                      `json:"resume,omitempty"`
+	Principal           core.Principal                       `json:"principal"`
+	Sources             []core.ResourceSelection             `json:"sources"`
+	CleanDestination    string                               `json:"cleanDestination"`
+	ProfileDirectory    string                               `json:"profileDirectory,omitempty"`
+	IndependentProfiles bool                                 `json:"independentProfiles,omitempty"`
+	Strategies          core.Ref                             `json:"strategies"`
+	History             core.Ref                             `json:"history"`
+	HistorySource       *core.ResourceSelection              `json:"historySource,omitempty"`
+	StrategySource      *core.ResourceSelection              `json:"strategySource,omitempty"`
+	MethodSource        *core.ResourceSelection              `json:"methodSource,omitempty"`
+	StrategyKeys        []string                             `json:"strategyKeys,omitempty"`
+	Limit               int                                  `json:"limit,omitempty"`
+	SelectedDestination string                               `json:"selectedDestination"`
+	DraftDestination    string                               `json:"draftDestination"`
+	AdditionalBatch     *OperationsCycleBatch                `json:"additionalBatch,omitempty"`
+	MethodRef           core.RecordRef                       `json:"methodRef"`
+	MethodRefs          map[string]core.RecordRef            `json:"methodRefs,omitempty"`
+	Section             string                               `json:"section"`
+	ExpertOverrides     map[string]map[string]core.RecordRef `json:"expertOverrides,omitempty"`
+	Resume              bool                                 `json:"resume,omitempty"`
 }
 type OperationsCycleBatch struct {
 	Strategy            string `json:"strategy"`
@@ -54,6 +56,25 @@ func (in OperationsCycleInput) Batch(strategy string) (OperationsCycleBatch, boo
 		return *in.AdditionalBatch, true
 	}
 	return OperationsCycleBatch{}, false
+}
+
+// MethodsForBatch combines the refreshed original contract with the versions
+// fixed by the trusted cycle checkpoint.
+func (in OperationsCycleInput) MethodsForBatch(strategy string, source core.Ref) map[string]core.RecordRef {
+	methods := make(map[string]core.RecordRef, len(in.MethodRefs))
+	for key, method := range in.MethodRefs {
+		method.Ref = source
+		if override, ok := in.ExpertOverrides[strategy][key]; ok {
+			method = override
+		}
+		methods[key] = method
+	}
+	return methods
+}
+
+type operationsCycleStart struct {
+	Stamp           string                               `json:"stamp"`
+	ExpertOverrides map[string]map[string]core.RecordRef `json:"expertOverrides"`
 }
 
 type OperationCall struct {
@@ -138,17 +159,47 @@ func (a *Activities) OperationsCreateCycle(ctx context.Context, id string, in Op
 	if e := a.Store.SaveRun(ctx, r); e != nil {
 		return "", failure(e)
 	}
-	frozen := in
-	frozen.Resume = false
-	b, _ := json.Marshal(frozen)
-	var input map[string]any
-	_ = json.Unmarshal(b, &input)
-	if _, e := a.Store.FreezeCheckpoint(ctx, r, "operations-cycle", core.Checkpoint{Input: input}); e != nil {
+	checkpoint, e := a.Store.Checkpoint(ctx, r, "operations-cycle")
+	if core.IsMissing(e) {
+		frozen := in
+		frozen.Resume = false
+		frozen.ExpertOverrides = nil
+		var body []byte
+		e = a.Store.DB.QueryRowContext(ctx, "SELECT body FROM wb_settings WHERE id=?", "operations-"+in.Principal.ProjectID).Scan(&body)
+		if e == nil {
+			var settings struct {
+				ExpertOverrides map[string]map[string]core.RecordRef `json:"expertOverrides"`
+			}
+			if e = json.Unmarshal(body, &settings); e != nil {
+				return "", failure(e)
+			}
+			frozen.ExpertOverrides = settings.ExpertOverrides
+		} else if !errors.Is(e, sql.ErrNoRows) {
+			return "", failure(e)
+		}
+		b, _ := json.Marshal(frozen)
+		var input map[string]any
+		_ = json.Unmarshal(b, &input)
+		checkpoint, e = a.Store.FreezeCheckpoint(ctx, r, "operations-cycle", core.Checkpoint{Input: input})
+	}
+	if e != nil {
+		return "", failure(e)
+	}
+	var frozen OperationsCycleInput
+	b, _ := json.Marshal(checkpoint.Input)
+	if e = json.Unmarshal(b, &frozen); e != nil {
 		return "", failure(e)
 	}
 	var at time.Time
-	e := a.Store.DB.QueryRowContext(ctx, `SELECT created_at FROM wb_runs WHERE id=?`, id).Scan(&at)
-	return at.UTC().Format(time.RFC3339Nano), e
+	if e = a.Store.DB.QueryRowContext(ctx, `SELECT created_at FROM wb_runs WHERE id=?`, id).Scan(&at); e != nil {
+		return "", e
+	}
+	stamp := at.UTC().Format(time.RFC3339Nano)
+	if len(frozen.ExpertOverrides) == 0 {
+		return stamp, nil
+	}
+	start, e := json.Marshal(operationsCycleStart{Stamp: stamp, ExpertOverrides: frozen.ExpertOverrides})
+	return string(start), e
 }
 
 func OperationsCycle(ctx workflow.Context, in OperationsCycleInput) (err error) {
@@ -168,6 +219,16 @@ func OperationsCycle(ctx workflow.Context, in OperationsCycleInput) (err error) 
 	var stamp string
 	if err = workflow.ExecuteActivity(ctx, "OperationsCreateCycle", id, in).Get(ctx, &stamp); err != nil {
 		return err
+	}
+	// The activity result stays a string so histories produced by the original
+	// worker replay the same command sequence and use the original methods.
+	in.ExpertOverrides = nil
+	if strings.HasPrefix(stamp, "{") {
+		var start operationsCycleStart
+		if err = json.Unmarshal([]byte(stamp), &start); err != nil {
+			return err
+		}
+		stamp, in.ExpertOverrides = start.Stamp, start.ExpertOverrides
 	}
 	invoke := func(name string, args map[string]any) (json.RawMessage, error) {
 		var out json.RawMessage
@@ -312,12 +373,11 @@ func OperationsCycle(ctx workflow.Context, in OperationsCycleInput) (err error) 
 			methodRef := ref(in.MethodSource.ResourceID, stepID(clean, "sync/"+in.MethodSource.ResourceID))
 			methodRef.Section = in.MethodSource.Sections[0]
 			methodRefInput.Ref = methodRef
-			methods := map[string]core.RecordRef{}
-			for key, item := range in.MethodRefs {
-				item.Ref = methodRef
-				methods[key] = item
+			strategy := ""
+			if len(strategyKeys) == 1 {
+				strategy = strategyKeys[0]
 			}
-			methodRefsInput = methods
+			methodRefsInput = in.MethodsForBatch(strategy, methodRef)
 		}
 		if len(methodRefsInput) > 0 {
 			generateArgs["methodRefs"] = methodRefsInput

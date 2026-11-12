@@ -19,17 +19,18 @@ import (
 const onboardingTitle = "新人前 7 天承接"
 
 type operationsConfig struct {
-	Cycle       *engine.OperationsCycleInput `json:"cycle,omitempty"`
-	ReadSource  bool                         `json:"readSource,omitempty"`
-	ProjectID   string                       `json:"projectId"`
-	Input       core.Ref                     `json:"input"`
-	Eligibility core.Ref                     `json:"eligibility"`
-	Check       string                       `json:"check"`
-	Knowledge   core.Ref                     `json:"knowledge"`
-	Transport   string                       `json:"transport"`
-	Staff       string                       `json:"staffId"`
-	Profile     operationsSchedule           `json:"profile"`
-	Strategy    operationsSchedule           `json:"strategy"`
+	ExpertOverrides map[string]map[string]core.RecordRef `json:"expertOverrides,omitempty"`
+	Cycle           *engine.OperationsCycleInput         `json:"cycle,omitempty"`
+	ReadSource      bool                                 `json:"readSource,omitempty"`
+	ProjectID       string                               `json:"projectId"`
+	Input           core.Ref                             `json:"input"`
+	Eligibility     core.Ref                             `json:"eligibility"`
+	Check           string                               `json:"check"`
+	Knowledge       core.Ref                             `json:"knowledge"`
+	Transport       string                               `json:"transport"`
+	Staff           string                               `json:"staffId"`
+	Profile         operationsSchedule                   `json:"profile"`
+	Strategy        operationsSchedule                   `json:"strategy"`
 }
 
 type operationsSchedule struct {
@@ -95,6 +96,8 @@ func (a *Server) saveOperations(ctx context.Context, cfg operationsConfig) error
 
 func (a *Server) operationsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /operations/projects", a.operationsProjects)
+	mux.HandleFunc("GET /operations/experts/catalog", a.operationsExpertsCatalog)
+	mux.HandleFunc("POST /operations/experts/save", a.operationsExpertSave)
 	mux.HandleFunc("POST /operations/register", a.registerOperations)
 	mux.HandleFunc("POST /operations/setup", a.setupOperations)
 	mux.HandleFunc("POST /operations/schedule", a.saveOperationsSchedule)

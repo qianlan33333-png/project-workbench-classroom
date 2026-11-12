@@ -394,7 +394,11 @@ func TestRealTemporalOperationsBatchUsesOneConfirmedManifest(t *testing.T) {
 	refFor := func(name, version string) core.Ref {
 		return core.Ref{ResourceID: id + "-" + name, Version: version, Section: "text"}
 	}
-	clean := core.Run{ID: uuid.NewString(), Principal: p, Operation: "data_refresh", ExplicitInputs: true, Title: "fixture refresh",
+	cycleID := uuid.NewString()
+	cycleChild := func(suffix string) string {
+		return uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+cycleID+suffix)).String()
+	}
+	clean := core.Run{ID: cycleChild("-data"), Principal: p, Operation: "data_refresh", ExplicitInputs: true, Title: "fixture refresh",
 		Destination: id + "-clean", Operations: &core.OperationsSpec{Refresh: []core.ResourceSelection{rawSource, historySource, strategySource, methodSource}}}
 	must(s.SaveRun(ctx, clean))
 	stamp := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
@@ -418,23 +422,31 @@ func TestRealTemporalOperationsBatchUsesOneConfirmedManifest(t *testing.T) {
 	method := core.RecordRef{ID: "method", Ref: fromCycle("methods")}
 	publish(method.Ref, fixture)
 	const strategy = "hxc:ongoing"
-	selected := refFor("selected", uuid.NewString())
+	selected := refFor("selected", cycleChild("-select"))
 	must(s.SaveRun(ctx, core.Run{ID: selected.Version, Principal: p, Operation: "strategy_select", ExplicitInputs: true, Title: "fixture selection",
 		Sources: inputs, Destination: selected.ResourceID, Operations: &core.OperationsSpec{AsOf: stamp, StrategyKeys: []string{strategy}}}))
 	publish(selected, core.Record{ID: fixture.ID, Fields: map[string]any{"selected": true, "crmSlot": "fixture-slot",
 		"profile": map[string]any{"customer_id": "102"}, "actions": []any{map[string]any{"strategy_key": strategy}}}})
-	draft := refFor("drafts", uuid.NewString())
+	draft := refFor("drafts", cycleChild("-generate-0"))
 	generated := core.Run{ID: draft.Version, Principal: p, Operation: "generate", ExplicitInputs: true, Title: "fixture draft",
 		Sources: []core.Ref{selected}, Destination: draft.ResourceID, MethodPointer: "/actions/0/generation/skill_key",
 		MethodRefs: map[string]core.RecordRef{"method": method}}
 	must(s.SaveRun(ctx, generated))
 	publish(draft, core.Record{ID: fixture.ID, Fields: map[string]any{"text": `{"status":"draft","text":"保存这份稿件"}`}})
 	must(s.RecordItem(ctx, generated.ID, core.ItemResult{ID: fixture.ID, State: "succeeded"}))
-	cfg.Cycle = &engine.OperationsCycleInput{StrategyKeys: []string{strategy}, Sources: []core.ResourceSelection{rawSource}, HistorySource: &historySource,
+	cfg.Cycle = &engine.OperationsCycleInput{Principal: p, StrategyKeys: []string{strategy}, Sources: []core.ResourceSelection{rawSource}, HistorySource: &historySource,
 		StrategySource: &strategySource, MethodSource: &methodSource, MethodRefs: generated.MethodRefs, Section: "text",
 		CleanDestination: clean.Destination, SelectedDestination: selected.ResourceID, DraftDestination: draft.ResourceID}
 	must(api.saveOperations(ctx, cfg))
-	request := CRMPushInput{OperationKey: "test-review", Review: &core.OperationsDrafts{Selection: selected, Drafts: []core.Ref{draft}}}
+	cycleRun := core.Run{ID: cycleID, Principal: p, Operation: "operations_cycle", Title: "cycle fixture", ExplicitInputs: true}
+	must(s.SaveRun(ctx, cycleRun))
+	raw, err := json.Marshal(cfg.Cycle)
+	must(err)
+	var input map[string]any
+	must(json.Unmarshal(raw, &input))
+	_, err = s.FreezeCheckpoint(ctx, cycleRun, "operations-cycle", core.Checkpoint{Input: input})
+	must(err)
+	request := CRMPushInput{OperationKey: cycleID + "-crm", Review: &core.OperationsDrafts{Selection: selected, Drafts: []core.Ref{draft}}}
 	inline := generated
 	inline.ID, inline.MethodRefs = uuid.NewString(), nil
 	must(s.SaveRun(ctx, inline))
@@ -443,6 +455,11 @@ func TestRealTemporalOperationsBatchUsesOneConfirmedManifest(t *testing.T) {
 		t.Fatalf("unbound method entered original strategy review: %v", err)
 	}
 	request.Review.Drafts[0] = draft
+	alternate := request
+	alternate.OperationKey = "alternate-review"
+	if _, _, err := api.prepareLocalOperations(ctx, p, alternate); !errors.Is(err, core.ErrDenied) {
+		t.Fatalf("drafts entered review without their cycle: %v", err)
+	}
 	_, prepared, err := api.prepareLocalOperations(ctx, p, request)
 	must(err)
 	must(tc.GetWorkflow(ctx, prepared.RunID, "").Get(ctx, nil))

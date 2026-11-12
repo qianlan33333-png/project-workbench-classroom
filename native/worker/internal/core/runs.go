@@ -23,6 +23,7 @@ type Method struct {
 	FixedOutputPointer string         `json:"fixedOutputPointer,omitempty"`
 }
 type Run struct {
+	ExpertRef      string               `json:"expertRef,omitempty"`
 	Methods        map[string]Method    `json:"methods,omitempty"`
 	MethodRefs     map[string]RecordRef `json:"methodRefs,omitempty"`
 	MethodPointer  string               `json:"methodPointer,omitempty"`

@@ -2,8 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -100,6 +104,82 @@ func (a *Server) strategyTools(s *mcp.Server, p core.Principal) {
 	})
 }
 
+// The scheduled generator is admitted only with the MethodRefs chosen by
+// the persisted cycle, before any page can occupy the deterministic run ID.
+func (a *Server) validateOperationsGeneration(ctx context.Context, p core.Principal, in BatchInput) error {
+	if p != operationsPrincipal(p.ProjectID) {
+		return nil
+	}
+	key, page, matched := strings.Cut(in.OperationKey, "-generate-")
+	if !matched {
+		return nil
+	}
+	id, suffix := operationsReviewParent(key + "-crm")
+	n, err := strconv.Atoi(page)
+	if id == "" || err != nil || n < 0 || n >= 3 || len(in.Sources) != 1 {
+		return core.ErrDenied
+	}
+	cycle, err := a.frozenOperationsCycle(ctx, p, id)
+	if err != nil {
+		return err
+	}
+	ref := in.Sources[0]
+	selected, err := a.Store.Run(ctx, p, ref.Version)
+	if err != nil || selected.Operation != "strategy_select" || selected.Operations == nil || len(selected.Operations.StrategyKeys) != 1 ||
+		selected.ID != uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+id+suffix+"-select")).String() {
+		return core.ErrDenied
+	}
+	strategy := selected.Operations.StrategyKeys[0]
+	batch, ok := operationsCycleBranch(cycle, suffix, strategy)
+	if !ok || ref.ResourceID != batch.SelectedDestination || ref.Section != cycle.Section ||
+		in.Destination != batch.DraftDestination || selected.Destination != ref.ResourceID ||
+		in.MethodPointer != "/actions/0/generation/skill_key" || in.MethodRef != nil {
+		return core.ErrDenied
+	}
+	cleanID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+id+"-data")).String()
+	original := core.Ref{ResourceID: cycle.MethodSource.ResourceID, Section: cycle.MethodSource.Sections[0],
+		Version: uuid.NewSHA1(uuid.NameSpaceURL, []byte(cleanID+"/sync/"+cycle.MethodSource.ResourceID)).String()}
+	if !maps.Equal(in.MethodRefs, cycle.MethodsForBatch(strategy, original)) {
+		return core.ErrDenied
+	}
+	after := ""
+	for i := 0; i < n; i++ {
+		info, err := a.Store.SelectionInfo(ctx, p, ref, &core.Selection{After: after, Limit: 2000})
+		if err != nil {
+			return err
+		}
+		if info.NextAfter == "" {
+			return core.ErrDenied
+		}
+		after = info.NextAfter
+	}
+	if in.Selection == nil || in.Selection.Limit != 2000 || in.Selection.After != after || len(in.Selection.RecordIDs) != 0 {
+		return core.ErrDenied
+	}
+	return nil
+}
+
+func (a *Server) frozenOperationsCycle(ctx context.Context, p core.Principal, id string) (engine.OperationsCycleInput, error) {
+	var cycle engine.OperationsCycleInput
+	parent, err := a.Store.Run(ctx, p, id)
+	if err != nil || parent.Operation != "operations_cycle" || parent.Principal != p {
+		return cycle, core.ErrDenied
+	}
+	checkpoint, err := a.Store.Checkpoint(ctx, parent, "operations-cycle")
+	if err != nil {
+		return cycle, err
+	}
+	data, err := json.Marshal(checkpoint.Input)
+	if err != nil {
+		return cycle, err
+	}
+	if err = json.Unmarshal(data, &cycle); err != nil || cycle.Principal != p ||
+		cycle.MethodSource == nil || len(cycle.MethodSource.Sections) != 1 {
+		return cycle, core.ErrDenied
+	}
+	return cycle, nil
+}
+
 func (a *Server) prepareLocalOperations(ctx context.Context, p core.Principal, in CRMPushInput) (*mcp.CallToolResult, RunRef, error) {
 	if p.Kind != "project" || !core.ValidID(in.OperationKey) || in.Review == nil || len(in.Review.Drafts) == 0 || len(in.Review.Drafts) > 3 {
 		return nil, RunRef{}, core.ErrInvalid
@@ -112,12 +192,16 @@ func (a *Server) prepareLocalOperations(ctx context.Context, p core.Principal, i
 	if e != nil || selected.Operation != "strategy_select" || selected.Operations == nil || len(selected.Operations.StrategyKeys) != 1 || selected.Destination != in.Review.Selection.ResourceID {
 		return nil, RunRef{}, core.ErrInvalid
 	}
-	cycle := cfg.Cycle
-	if cycle == nil {
+	parentID, suffix := operationsReviewParent(in.OperationKey)
+	if parentID == "" {
 		return nil, RunRef{}, core.ErrDenied
 	}
+	cycle, e := a.frozenOperationsCycle(ctx, p, parentID)
+	if e != nil {
+		return nil, RunRef{}, e
+	}
 	strategy := selected.Operations.StrategyKeys[0]
-	batch, allowed := cycle.Batch(strategy)
+	batch, allowed := operationsCycleBranch(cycle, suffix, strategy)
 	if !allowed || in.Review.Selection.ResourceID != batch.SelectedDestination || in.Review.Selection.Section != cycle.Section ||
 		selected.Operations.Limit != 0 || len(selected.Sources) != 3 || len(cycle.Sources) != 1 ||
 		cycle.StrategySource == nil || cycle.HistorySource == nil || cycle.MethodSource == nil {
@@ -126,7 +210,7 @@ func (a *Server) prepareLocalOperations(ctx context.Context, p core.Principal, i
 	// Bind the scheduled inputs once when the draft enters the review queue.
 	// Later confirmation and delivery use the saved draft alone.
 	clean, e := a.Store.Run(ctx, p, selected.Sources[0].Version)
-	if e != nil || clean.Operation != "data_refresh" || clean.Operations == nil || clean.Destination != cycle.CleanDestination ||
+	if e != nil || clean.Operation != "data_refresh" || clean.ID != uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+parentID+"-data")).String() || clean.Operations == nil || clean.Destination != cycle.CleanDestination ||
 		clean.Operations.Independent != cycle.IndependentProfiles ||
 		!slices.EqualFunc(clean.Operations.Refresh, []core.ResourceSelection{cycle.Sources[0], *cycle.HistorySource, *cycle.StrategySource, *cycle.MethodSource},
 			func(a, b core.ResourceSelection) bool {
@@ -155,14 +239,29 @@ func (a *Server) prepareLocalOperations(ctx context.Context, p core.Principal, i
 		return nil, RunRef{}, core.ErrDenied
 	}
 	methodSource := cycleRef(cycle.MethodSource.ResourceID)
+	methodSource.Section = cycle.MethodSource.Sections[0]
+
+	key := parentID + suffix
+	if selected.ID != uuid.NewSHA1(uuid.NameSpaceURL, []byte(p.SessionID+"/"+key+"-select")).String() {
+		return nil, RunRef{}, core.ErrDenied
+	}
+	methods := cycle.MethodsForBatch(strategy, methodSource)
+	for i, draft := range in.Review.Drafts {
+		want := uuid.NewSHA1(uuid.NameSpaceURL, []byte(fmt.Sprintf("%s/%s-generate-%d", p.SessionID, key, i))).String()
+		if draft.Version != want {
+			return nil, RunRef{}, core.ErrDenied
+		}
+	}
 	for _, ref := range in.Review.Drafts {
 		generated, e := a.Store.Run(ctx, p, ref.Version)
 		if e != nil || ref.ResourceID != batch.DraftDestination || ref.Section != cycle.Section ||
-			generated.MethodPointer != "/actions/0/generation/skill_key" || len(generated.MethodRefs) != len(cycle.MethodRefs) {
+			generated.Operation != "generate" || generated.Destination != ref.ResourceID ||
+			!slices.Equal(generated.Sources, []core.Ref{in.Review.Selection}) ||
+			generated.MethodPointer != "/actions/0/generation/skill_key" || len(generated.MethodRefs) != len(methods) {
 			return nil, RunRef{}, core.ErrDenied
 		}
-		for key, method := range cycle.MethodRefs {
-			if generated.MethodRefs[key] != (core.RecordRef{ID: method.ID, Ref: methodSource}) {
+		for key, method := range methods {
+			if generated.MethodRefs[key] != method {
 				return nil, RunRef{}, core.ErrDenied
 			}
 		}
@@ -177,4 +276,31 @@ func (a *Server) prepareLocalOperations(ctx context.Context, p core.Principal, i
 	}
 	run := core.Run{ID: id, Principal: p, Operation: "operations_package", Title: "原策略整批稿件", Quiet: true, ExplicitInputs: true, Destination: cfg.Input.ResourceID, Sources: refs, Operations: &core.OperationsSpec{Review: in.Review}, Shared: map[string]any{"local": true, "day": at.Format("2006-01-02"), "strategy": strategy, "scene": "原策略运营", "package": "weekpkg-" + id, "week": fmt.Sprintf("%04d-W%02d", year, week)}}
 	return a.submitOperation(ctx, p, run)
+}
+
+func operationsCycleBranch(cycle engine.OperationsCycleInput, suffix, strategy string) (engine.OperationsCycleBatch, bool) {
+	if suffix == "-additional" {
+		if batch := cycle.AdditionalBatch; batch != nil && batch.Strategy == strategy {
+			return *batch, true
+		}
+		return engine.OperationsCycleBatch{}, false
+	}
+	if len(cycle.StrategyKeys) != 1 || cycle.StrategyKeys[0] != strategy {
+		return engine.OperationsCycleBatch{}, false
+	}
+	return cycle.Batch(strategy)
+}
+
+// A review consumes only the deterministic children of its trusted cycle.
+func operationsReviewParent(key string) (string, string) {
+	for _, suffix := range []string{"-additional", ""} {
+		id, ok := strings.CutSuffix(key, suffix+"-crm")
+		if !ok {
+			continue
+		}
+		if _, err := uuid.Parse(id); err == nil {
+			return id, suffix
+		}
+	}
+	return "", ""
 }

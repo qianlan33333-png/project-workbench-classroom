@@ -48,6 +48,7 @@ func principal(ctx context.Context) core.Principal {
 func (a *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	a.configRoutes(mux)
+	a.expertRoutes(mux)
 	a.activationRoutes(mux)
 	a.personalRoutes(mux)
 	a.messageRoutes(mux)
@@ -323,6 +324,9 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 		p := bound
 		if p.Kind != "project" {
 			return nil, RunRef{}, core.ErrDenied
+		}
+		if e := a.validateOperationsGeneration(ctx, p, in); e != nil {
+			return nil, RunRef{}, e
 		}
 		selection, e := core.BoundedSelection(in.Selection)
 		if e != nil {
