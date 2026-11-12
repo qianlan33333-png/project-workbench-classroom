@@ -160,11 +160,17 @@ test('pairing a legacy Feishu connection keeps its existing project private mess
   try {
     const projectMessage = { actorId: 'ou_project', conversationId: 'oc_project', eventId: 'om_project', text: 'existing project question' };
     assert.equal(await links.receive(legacy, projectMessage), false);
+    assert.equal(await links.receive(legacy, { ...projectMessage, text: '链接工作台 123456ABCDEF' }), false);
     await links.begin({ kind: 'feishu', method: 'verify' });
     for (let i = 0; i < 100 && links.snapshot('feishu').step === 'starting'; i++) await delay(5);
     const pair = links.snapshot('feishu');
     assert.equal(pair.step, 'test');
     assert.equal(await links.receive(legacy, projectMessage), false);
+    const unknownCode = pair.text.endsWith('123456ABCDEF') ? '123456ABCDEE' : '123456ABCDEF';
+    const unrelatedCommand = '链接工作台 ' + unknownCode;
+    assert.equal(await links.receive(legacy, { ...projectMessage, text: unrelatedCommand }), false);
+    assert.equal(await links.receive(legacy, { ...projectMessage, actorId: 'ou_owner', conversationId: 'oc_owner',
+      text: unrelatedCommand }), true);
     assert.equal(await links.receive(legacy, { ...projectMessage, text: pair.text }), true);
     assert.equal(replies, 0);
     await links.receive(legacy, { actorId: 'ou_owner', conversationId: 'oc_owner', eventId: 'om_owner', text: pair.text });

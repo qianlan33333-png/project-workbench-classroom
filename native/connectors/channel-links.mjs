@@ -285,23 +285,23 @@ export async function createChannelLinks({ config, channels, directory, workerCa
     const text = typeof message.text === 'string' ? message.text.trim() : '';
     const commandCode = pairingCommand.exec(text)?.[1];
     const code = (commandCode || (barePairingCode.test(text) ? text : '')).toUpperCase();
-    const isPairingMessage = Boolean(commandCode || code && providers.some(provider => {
+    const knownCode = Boolean(code) && providers.some(provider => {
       const known = records[provider];
       return pairingCode(known?.pairing) === code || known?.previousPairingCodes?.includes(code);
-    }));
-    if (!record) return isPairingMessage;
+    });
+    if (!record) return knownCode;
     const candidate = resolve(record);
     const current = connectionOf(kind);
-    if (connection !== candidate) return isPairingMessage || !config.includes(connection) || Boolean(connection.receiptOnly);
+    if (connection !== candidate) return knownCode || !config.includes(connection) || Boolean(connection.receiptOnly);
     const pair = record.pairing;
     const operational = record.legacy || record.verified || record.staged && current?.id === connection.id;
     if (typeof message.actorId !== 'string' || !message.actorId || !message.conversationId || !message.eventId || typeof message.text !== 'string') {
-      return isPairingMessage || !operational;
+      return knownCode || !operational;
     }
     const trusted = record.target || { actorId: connection.ownerId };
     const trustedMessage = (!trusted.actorId || trusted.actorId === message.actorId) &&
       (!trusted.conversationId || trusted.conversationId === message.conversationId);
-    if (!isPairingMessage) {
+    if (!knownCode && !(commandCode && trustedMessage)) {
       if (operational) return !trustedMessage && !staticConnections.has(connection.id);
       if (!record.retire || !trustedMessage) return true;
       // A confirmed switch can commit in MySQL even if its response was lost.

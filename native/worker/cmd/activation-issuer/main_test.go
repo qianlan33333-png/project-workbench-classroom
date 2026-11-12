@@ -15,7 +15,8 @@ func TestAdminGuardsPageAndIssueRequests(t *testing.T) {
 	handler := (&issuer{
 		origin: origin, adminPassword: password[:],
 		adminPage: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Authorization") != "" || r.Header.Get(codeHeader) != "" {
+			if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" ||
+				r.Header.Get(codeHeader) != "" || r.Header.Get(expiryHeader) != "" {
 				t.Error("untrusted headers reached the page renderer")
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -39,7 +40,9 @@ func TestAdminGuardsPageAndIssueRequests(t *testing.T) {
 			req := httptest.NewRequest(tt.method, "https://"+tt.host+tt.path, strings.NewReader("request=invalid"))
 			req.Header.Set("Origin", tt.origin)
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Cookie", "harness=fixture-session")
 			req.Header.Set(codeHeader, "untrusted")
+			req.Header.Set(expiryHeader, "untrusted")
 			if tt.auth {
 				req.SetBasicAuth("admin", "fixture-owner")
 			}

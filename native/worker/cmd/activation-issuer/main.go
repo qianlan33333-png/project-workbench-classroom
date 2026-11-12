@@ -32,9 +32,10 @@ import (
 )
 
 const (
-	adminPath  = "/activation-codes/"
-	redeemPath = "/workbench-activation/redeem"
-	codeHeader = "X-Workbench-Issued-Code"
+	adminPath    = "/activation-codes/"
+	redeemPath   = "/workbench-activation/redeem"
+	codeHeader   = "X-Workbench-Issued-Code"
+	expiryHeader = "X-Workbench-Issued-Expiry"
 )
 
 var issueRequestID = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -83,6 +84,11 @@ func run() error {
 	defer db.Close()
 	db.SetMaxOpenConns(5)
 	db.SetMaxIdleConns(2)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		return errors.New("activation database connection unavailable")
+	}
 
 	client := &issuer{
 		origin: origin, signingKey: key, adminPassword: password,
@@ -130,6 +136,7 @@ func sqlPageProxy(socket string) http.Handler {
 		},
 		ModifyResponse: func(response *http.Response) error {
 			response.Header.Del("Cache-Control")
+			response.Header.Del("Set-Cookie")
 			return nil
 		},
 	}
@@ -160,7 +167,9 @@ func (s *issuer) admin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Header.Del("Authorization")
+	r.Header.Del("Cookie")
 	r.Header.Del(codeHeader)
+	r.Header.Del(expiryHeader)
 	w.Header().Set("X-Frame-Options", "DENY")
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		s.adminPage.ServeHTTP(w, r)
@@ -194,6 +203,7 @@ func (s *issuer) admin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Header.Set(codeHeader, issued.Code)
+	r.Header.Set(expiryHeader, issued.ExpiresAt.Add(8*time.Hour).Format(time.DateTime))
 	r.Method, r.Body, r.ContentLength = http.MethodGet, nil, 0
 	r.TransferEncoding = nil
 	r.Header.Del("Content-Type")

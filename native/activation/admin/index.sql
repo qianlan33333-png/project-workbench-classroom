@@ -4,7 +4,7 @@ SELECT 'shell' AS component, '激活码管理' AS title, 'zh-CN' AS language,
 SET issued_code = sqlpage.header('X-Workbench-Issued-Code');
 SELECT 'code' AS component WHERE $issued_code IS NOT NULL;
 SELECT '激活码已生成' AS title, $issued_code AS contents,
-       '复制此码发给使用者。领取期限为 7 天。' AS description
+       CONCAT('领取截止 ', sqlpage.header('X-Workbench-Issued-Expiry'), '。复制此码发给使用者。') AS description
 WHERE $issued_code IS NOT NULL;
 
 SELECT 'datagrid' AS component;
@@ -39,8 +39,9 @@ SELECT 'alert' AS component,
            WHEN codes.expires_at <= UTC_TIMESTAMP() THEN '已过期'
            ELSE '待兑换'
        END AS title,
-       CASE WHEN codes.digest IS NOT NULL
-           THEN CONCAT('记录编号 ', LEFT(HEX(codes.digest), 12))
+       CASE WHEN codes.digest IS NOT NULL THEN CONCAT(
+           '记录编号 ', LEFT(HEX(codes.digest), 12), ' · 领取截止 ', codes.expires_at + INTERVAL 8 HOUR
+       )
        END AS description,
        'info' AS color
 FROM (SELECT $lookup_code AS code) AS lookup
@@ -50,7 +51,8 @@ WHERE lookup.code IS NOT NULL;
 SELECT 'title' AS component, '发码记录' AS contents, 2 AS level;
 SELECT 'text' AS component, '暂无发码记录。' AS contents
 WHERE NOT EXISTS (SELECT 1 FROM wb_activation_codes);
-SELECT 'table' AS component, TRUE AS sort, TRUE AS search
+SELECT 'table' AS component, TRUE AS sort, TRUE AS search, TRUE AS small,
+       '按编号或状态筛选' AS search_placeholder
 WHERE EXISTS (SELECT 1 FROM wb_activation_codes);
 SELECT LEFT(HEX(digest), 12) AS '记录编号',
        CASE
@@ -58,8 +60,7 @@ SELECT LEFT(HEX(digest), 12) AS '记录编号',
            WHEN expires_at <= UTC_TIMESTAMP() THEN '已过期'
            ELSE '待兑换'
        END AS '状态',
-       CAST(expires_at - INTERVAL 7 DAY + INTERVAL 8 HOUR AS CHAR) AS '生成时间',
-       CAST(expires_at + INTERVAL 8 HOUR AS CHAR) AS '领取截止',
-       COALESCE(CAST(claimed_at + INTERVAL 8 HOUR AS CHAR), '—') AS '兑换时间'
+       DATE_FORMAT(expires_at - INTERVAL 7 DAY + INTERVAL 8 HOUR, '%Y-%m-%d %H:%i') AS '生成时间',
+       COALESCE(DATE_FORMAT(claimed_at + INTERVAL 8 HOUR, '%Y-%m-%d %H:%i'), '—') AS '兑换时间'
 FROM wb_activation_codes
 ORDER BY expires_at DESC, digest;
