@@ -26,7 +26,7 @@ function key(value) {
   return value.normalize('NFC').toLowerCase();
 }
 
-function notePath(value) {
+export function notePath(value) {
   return typeof value === 'string' && noteExtension.test(value) &&
     !/[\\\u0000-\u001f]/.test(value) &&
     value.split('/').every(segment => segment && !segment.startsWith('.'));
@@ -320,6 +320,22 @@ export function vaultFolderPaths(documents, stored = []) {
     }
   }
   return [...folders].sort();
+}
+
+export function vaultArchiveEntries(documents, folders) {
+  const entries = Object.create(null);
+  const archivePath = name => name.split('/').every(part => part && !part.startsWith('.') &&
+    !/[<>:"\\|?*\u0000-\u001f\u007f]/u.test(part) && !/[. ]$/u.test(part) &&
+    !/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part));
+  const seen = new Set();
+  const add = (name, data, directory = false) => {
+    if (!archivePath(name) || seen.has(key(name))) throw structureError('来源包含无法安全导出的路径：' + name,422);
+    seen.add(key(name));
+    entries[name + (directory ? '/' : '')] = data;
+  };
+  for (const folder of folders) add(folder,new Uint8Array(),true);
+  for (const doc of documents) add(doc.path,Buffer.from(doc.text));
+  return entries;
 }
 
 function structureError(message, status = 400) {

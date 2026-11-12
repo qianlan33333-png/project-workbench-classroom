@@ -16,7 +16,7 @@ import { installPersonalMemory } from './personal-memory.js';
 import { replyEvidenceProjection } from './reply-evidence.js';
 import { resourceDocuments } from './resource-documents.js';
 import { zipSync } from 'fflate';
-import {directoryVault, renameVaultNote, searchVault, vaultFolderPaths, vaultStructure, vaultView} from './vault-markdown.js';
+import {directoryVault, notePath, renameVaultNote, searchVault, vaultArchiveEntries, vaultFolderPaths, vaultStructure, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
 import { createActivation, installActivation, sameOrigin, setupBody, workbenchTitle as brandTitle } from "./activation.js";
@@ -162,6 +162,7 @@ export async function apply(ctx, config) {
       if (external.external) notes = external.notes;
     }
     signal.throwIfAborted();
+    notes = notes?.filter(note => notePath(note.path));
     const originalCenter = (resource.vaultOrigin?.resourceId ?? resource.id) === 'context-center-config';
     return {notes, version, editable, originalCenter, folders:vaultFolderPaths(notes ?? [],storedFolders ?? [])};
   }
@@ -624,16 +625,7 @@ export async function apply(ctx, config) {
               }
               signal.throwIfAborted();
               if (path === '/vault-export') {
-                const files = Object.create(null);
-                for (const folder of folders) files[folder + '/'] = new Uint8Array();
-                for (const note of notes) files[note.path] = Buffer.from(note.text);
-                // Refuse legacy names that could resolve outside an extracted ZIP on Windows.
-                for (const name of Object.keys(files)) {
-                  if (/[:\\\u0000-\u001f]/u.test(name) || name.split('/').some(part => part === '.' || part === '..')) {
-                    throw requestError('来源包含无法安全导出的路径：' + name, 422);
-                  }
-                }
-                const archive = zipSync(files, {level:0});
+                const archive = zipSync(vaultArchiveEntries(notes,folders), {level:0});
                 res.writeHead(200, {'content-type':'application/zip','cache-control':'no-store'}).end(archive);
                 return;
               }

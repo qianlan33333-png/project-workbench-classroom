@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {directoryVault, renameVaultNote, searchVault, vaultFolderPaths, vaultStructure, vaultView} from './vault-markdown.js';
+import {directoryVault, notePath, renameVaultNote, searchVault, vaultArchiveEntries, vaultFolderPaths, vaultStructure, vaultView} from './vault-markdown.js';
+
+test('archive paths stay relative and portable even when a source supplies unexpected names', () => {
+  for (const path of ['/absolute.md','a/../escape.md','a//nested.md','C:/drive.md','AUX/data.md']) {
+    assert.throws(()=>vaultArchiveEntries([{path,text:'note'}],[]),{status:422});
+  }
+  assert.equal(notePath('/absolute.md'),false);
+  assert.equal(notePath('a/../escape.md'),false);
+  assert.throws(()=>vaultArchiveEntries([{path:'Note.md',text:''},{path:'note.md',text:''}],[]),{status:422});
+  assert.deepEqual(Object.keys(vaultArchiveEntries([{path:'中文/笔记.md',text:'笔记'}],['中文','空目录'])),
+    ['中文/','空目录/','中文/笔记.md']);
+});
 
 test('folder movement preserves empty branches and rewrites links to the moved subtree', () => {
   const docs = [
