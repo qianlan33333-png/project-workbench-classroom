@@ -161,34 +161,30 @@ function redirect(res, location) {
 }
 
 export function installActivation(ctx, activation) {
+  const connection = ctx.connection;
+  const originalAdmit = connection.admit;
   ctx.effect(() => {
-    const connection = ctx.connection;
     const original = connection.authorizeIndex;
-    const originalAdmitConnection = connection.admitConnection;
     const gate = function (req, res) {
       if (!original.call(this, req, res)) return false;
       if (activation.active) return true;
       redirect(res, '/activation');
       return false;
     };
-    const admitConnection = function (req) {
-      return activation.active ? originalAdmitConnection.call(this, req) : { rejection: 403 };
+    const admit = function (req) {
+      return activation.active ? originalAdmit.call(this, req) : { rejection: 403 };
     };
     connection.authorizeIndex = gate;
-    connection.admitConnection = admitConnection;
+    connection.admit = admit;
     return () => {
       if (connection.authorizeIndex === gate) connection.authorizeIndex = original;
-      if (connection.admitConnection === admitConnection) connection.admitConnection = originalAdmitConnection;
+      if (connection.admit === admit) connection.admit = originalAdmit;
     };
   }, 'workbench: activation entry');
-  ctx.on('connection/request', (_req, res, next) => {
-    if (activation.active) return next();
-    res.writeHead(403, { 'cache-control': 'no-store' }).end('Activation required');
-  });
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact', path: '/activation',
     handler: async (req, res) => {
-      const admission = ctx.connection.admit(req);
+      const admission = originalAdmit.call(connection, req);
       if ('rejection' in admission || admission.peer !== ctx.connection.browserPeer) {
         res.writeHead('rejection' in admission ? admission.rejection : 403).end();
         return;

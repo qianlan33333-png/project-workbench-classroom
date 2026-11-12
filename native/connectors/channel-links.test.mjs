@@ -13,6 +13,7 @@ test('private-chat pairing sends one test reply and only enables the owner route
   const sends = [];
   const started = [];
   const config = [];
+  let retirementDenied = false;
   const channels = {
     startOne(connection, signal) {
       started.push(connection);
@@ -26,6 +27,7 @@ test('private-chat pairing sends one test reply and only enables the owner route
   const workerCall = async (path, data) => {
     if (path === '/personal/settings') return { sessionId: 'fixture-superagent' };
     writes.push({ path, data });
+    if (path === '/transports/retire-personal' && retirementDenied) throw Object.assign(Error('project uses this channel'), { status: 403 });
   };
   const setup = () => createChannelLinks({
     config, channels, directory, workerCall, signal: abort.signal, endpoint: 'http://127.0.0.1:7383/mcp',
@@ -57,6 +59,10 @@ test('private-chat pairing sends one test reply and only enables the owner route
     assert.equal(writes.find(w => w.path === '/message-routes')?.data.principal.sessionId, 'fixture-superagent');
     assert.equal(await links.receive(connection, { ...input, actorId: 'ou_other', text: 'unbound chat' }), true);
     assert.equal(await links.receive(connection, { ...input, text: 'normal owner message' }), false);
+    const secondary = { kind: 'feishu', id: 'secondary', enabled: true, receive: true };
+    config.push(secondary);
+    assert.equal(await links.receive(secondary, { ...input, text: 'independent channel' }), false);
+    assert.equal(links.manages(secondary), false);
 
     links.health(connection, 'reconnect');
     await links.begin({ kind: 'feishu', method: 'existing', appId: 'cli_fixture', appSecret: 'rotated-app-secret' });
@@ -64,7 +70,7 @@ test('private-chat pairing sends one test reply and only enables the owner route
     const rotated = started.at(-1);
     assert.notEqual(rotated, connection);
     assert.equal(rotated.id, connection.id, 'worker dedupe, cursor, notification and delivery all use this ID');
-    assert.deepEqual(config, [connection], 'production send still uses the established credentials before confirmation');
+    assert.deepEqual(config, [connection, secondary], 'production send still uses the established credentials before confirmation');
     const writesBeforeRotation = writes.length;
     assert.equal(await links.receive(rotated, { ...input, text: 'normal owner message' }), false);
     assert.equal(await links.receive(rotated, { ...input, actorId: 'ou_other', text: rotation.text }), true);
@@ -72,9 +78,9 @@ test('private-chat pairing sends one test reply and only enables the owner route
     await links.receive(rotated, { ...input, eventId: 'om_rotated', text: rotation.text });
     assert.equal(sends.at(-1).connection, rotated);
     await assert.rejects(links.confirm({ kind: 'feishu', id: pairing.id }), { status: 409 });
-    assert.deepEqual(config, [connection]);
+    assert.deepEqual(config, [connection, secondary]);
     await links.confirm({ kind: 'feishu', id: rotation.id });
-    assert.deepEqual(config, [rotated]);
+    assert.deepEqual(config, [rotated, secondary]);
     assert.equal(writes.length, writesBeforeRotation, 'existing worker transport, route and destination require no changes');
 
     links.health(rotated, 'reconnect');
@@ -86,8 +92,15 @@ test('private-chat pairing sends one test reply and only enables the owner route
     assert.equal(await links.receive(other, { ...input, text: 'unconfirmed app message' }), true);
     await links.receive(other, { actorId: 'ou_other', conversationId: 'oc_other', eventId: 'om_other', text: switched.text });
     await assert.rejects(links.confirm({ kind: 'feishu', id: rotation.id }), { status: 409 });
-    assert.deepEqual(config, [rotated]);
+    assert.deepEqual(config, [rotated, secondary]);
     assert.equal(writes.length, writesBeforeRotation);
+
+    retirementDenied = true;
+    await assert.rejects(links.confirm({ kind: 'feishu', id: switched.id }), { status: 409 });
+    assert.deepEqual(config, [rotated, secondary], 'Worker rejection leaves the old channel operational');
+    assert.equal(writes.filter(w => w.path === '/message-routes').at(-1).data.enabled, false);
+    assert.equal(await links.receive(rotated, { ...input, text: 'still operating after Worker rejection' }), false);
+    retirementDenied = false;
 
     const restartedConfig = [];
     const restarted = await createChannelLinks({ config: restartedConfig, channels, directory, workerCall,
@@ -98,6 +111,51 @@ test('private-chat pairing sends one test reply and only enables the owner route
     assert.equal(restartedConfig.find(c => c.id === rotated.id)?.receiptOnly, true);
     assert.equal(restartedConfig.find(c => c.id === other.id)?.receiptOnly, undefined);
     assert.deepEqual(writes.at(-1), { path: '/transports/retire-personal', data: { id: rotated.id, replacement: other.id } });
+  } finally {
+    abort.abort();
+    await rm(directory, { recursive: true });
+  }
+});
+
+test('legacy WeChat rotation proves the same private user and keeps the connection ID', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'workbench-wechat-rotation-'));
+  const abort = new AbortController();
+  const original = { kind: 'wechat', id: 'legacy-wechat', ownerId: 'owner', token: 'old-token', enabled: true, receive: true };
+  const config = [original];
+  const started = [];
+  const links = await createChannelLinks({ config, directory, signal: abort.signal, endpoint: 'http://127.0.0.1:7383/mcp',
+    wechatLink: async () => ({ ownerId: 'owner', accountId: 'platform-bot', token: 'new-token' }),
+    workerCall: async path => {
+      assert.equal(path, '/notification-targets', 'no Worker route or transport rewrite during rotation');
+      return [{ connectionId: original.id, target: { actorId: 'owner', conversationId: 'owner' } }];
+    },
+    channels: {
+      startOne(connection, signal) {
+        started.push(connection);
+        return new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+      },
+      async sendTest() { return { state: 'accepted', receipt: 'wechat-proof' }; },
+    },
+  });
+  try {
+    links.health(original, 'reconnect');
+    await links.begin({ kind: 'wechat', method: 'scan' });
+    for (let i = 0; i < 100 && links.snapshot('wechat').step === 'starting'; i++) await delay(5);
+    const pair = links.snapshot('wechat');
+    assert.equal(pair.step, 'test');
+    const [candidate] = started;
+    assert.equal(candidate.id, original.id);
+    assert.equal(candidate.accountId, 'platform-bot');
+    const input = { actorId: 'owner', conversationId: 'owner', eventId: 'wx-test', text: pair.text };
+    assert.equal(await links.receive(candidate, { ...input, conversationId: 'different' }), true);
+    assert.equal(links.snapshot('wechat').step, 'test');
+    links.health(candidate, 'reconnect');
+    assert.equal(links.snapshot('wechat').step, 'error');
+    assert.deepEqual((await links.status()).wechat, { state: 'reconnect', canScan: true });
+    links.health(candidate, 'ready');
+    await links.receive(candidate, input);
+    await links.confirm({ kind: 'wechat', id: pair.id });
+    assert.deepEqual(config, [candidate]);
   } finally {
     abort.abort();
     await rm(directory, { recursive: true });

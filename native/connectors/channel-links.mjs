@@ -15,9 +15,10 @@ function error(message, status = 400) {
   return Object.assign(new Error(message), { status, public: true });
 }
 
-export async function createChannelLinks({ config, channels, directory, workerCall, endpoint, signal }) {
+export async function createChannelLinks({ config, channels, directory, workerCall, endpoint, signal, wechatLink = linkWechat }) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const providers = Object.keys(labels);
+  const staticConnections = new Map(config.map(connection => [connection.id, connection]));
   const originals = Object.fromEntries(providers.map(kind => [kind, config.find(c => c.kind === kind && c.enabled)]));
   const records = {};
   const attempts = {};
@@ -49,7 +50,7 @@ export async function createChannelLinks({ config, channels, directory, workerCa
     else config[index] = connection;
   }
 
-  const resolve = record => record?.legacy ? originals[record.connection.kind] : record?.connection;
+  const resolve = record => record?.legacy ? staticConnections.get(record.connection.id) : record?.connection;
   const active = kind => records[kind]?.previous || (records[kind]?.staged ? undefined : records[kind]);
   const connectionOf = kind => resolve(active(kind)) || originals[kind];
   const receiverOf = record => resolve(record);
@@ -105,7 +106,13 @@ export async function createChannelLinks({ config, channels, directory, workerCa
   function chatStatus(kind) {
     const record = records[kind];
     const connection = connectionOf(kind);
-    if (record?.staged || record?.retire) return { state: 'pending' };
+    if (record?.retire) return { state: 'pending' };
+    if (record?.staged) {
+      const pair = record.pairing;
+      const retry = pair?.step === 'error' || pair?.step === 'test' &&
+        (health.get(record.connection.id) === 'reconnect' || pair.expiresAt < Date.now());
+      return retry ? { state: 'reconnect', canScan: true } : { state: 'pending' };
+    }
     if (!connection) return { state: 'unlinked' };
     if (health.get(connection.id) === 'reconnect') return { state: 'reconnect', canScan: true };
     if (record?.verified && health.get(connection.id) === 'ready') return { state: 'linked' };
@@ -126,10 +133,10 @@ export async function createChannelLinks({ config, channels, directory, workerCa
     const established = connectionOf(kind);
     const sameAccount = established && (kind === 'feishu'
       ? established.appId === credentials.appId
-      : established.ownerId === credentials.ownerId && (established.accountId
-        ? established.accountId === credentials.accountId : established.token === credentials.token));
+      : established.ownerId === credentials.ownerId && (!established.accountId || established.accountId === credentials.accountId));
     const target = (legacy || sameAccount) && (current?.target || await boundTarget(established));
-    if ((legacy || sameAccount) && (!target || credentials.ownerId && credentials.ownerId !== target.actorId)) {
+    if ((legacy || sameAccount) && (!target || credentials.ownerId && credentials.ownerId !== target.actorId ||
+        kind === 'wechat' && target.conversationId !== target.actorId)) {
       throw error('该渠道的原本人会话无法核对，请检查当前绑定。', 409);
     }
     const connection = legacy ? { kind, id: credentials.id } : {
@@ -145,7 +152,10 @@ export async function createChannelLinks({ config, channels, directory, workerCa
     if (old?.staged) await stopReceiver(receiverOf(old));
     if (sameAccount && !legacy) await stopReceiver(established);
     if (established && established.id !== connection.id) startReceiver(established);
-    if (!legacy) startReceiver(connection);
+    if (!legacy) {
+      health.delete(connection.id);
+      startReceiver(connection);
+    }
   }
 
   function pairing(id) {
@@ -158,8 +168,12 @@ export async function createChannelLinks({ config, channels, directory, workerCa
     const current = attempt.view;
     const record = records[key];
     const { receipt: _receipt, expiresAt, ...visible } = current.step === 'pairing' ? record?.pairing || { step: 'error' } : current;
-    if (record?.retire && visible.step === 'linked') visible.step = 'received';
-    if (visible.step === 'test' && expiresAt < Date.now()) return { id: attempt.id, step: 'error', error: '测试口令已过期，请重新验证。' };
+    if (visible.step === 'test') {
+      if (expiresAt < Date.now()) return { id: attempt.id, step: 'error', error: '测试口令已过期，请重新验证。' };
+      if (record?.staged && health.get(record.connection.id) === 'reconnect') {
+        return { id: attempt.id, step: 'error', error: '渠道暂时无法连接，请重新扫码或检查应用凭证。' };
+      }
+    }
     const appId = visible.step === 'test' && key === 'feishu' && resolve(record)?.appId;
     return { id: attempt.id, ...visible,
       ...(appId ? { botURL: 'https://applink.feishu.cn/client/bot/open?appId=' + encodeURIComponent(appId) } : {}) };
@@ -232,7 +246,7 @@ export async function createChannelLinks({ config, channels, directory, workerCa
           }
           await stage(kind, { appId: credential.client_id, appSecret: credential.client_secret, ownerId: credential.user_info?.open_id }, attempt.id);
         } else {
-          const credential = await linkWechat({
+        const credential = await wechatLink({
             signal: flowSignal,
             update: ({ step, qr }) => {
               if (qr) void showQR(qr, step).catch(() => {});
@@ -259,7 +273,7 @@ export async function createChannelLinks({ config, channels, directory, workerCa
     if (!record) return false;
     const candidate = resolve(record);
     const current = connectionOf(kind);
-    if (connection !== candidate) return connection !== current;
+    if (connection !== candidate) return !config.includes(connection) || Boolean(connection.receiptOnly);
     const pair = record.pairing;
     const operational = record.legacy || record.verified || record.staged && current?.id === connection.id;
     if (typeof message.actorId !== 'string' || !message.actorId || !message.conversationId || typeof message.text !== 'string') return !operational;
@@ -293,8 +307,22 @@ export async function createChannelLinks({ config, channels, directory, workerCa
   async function finishRetirement(kind) {
     const record = records[kind];
     if (!record.retire) return;
-    await workerCall('/transports/retire-personal', { id: record.retire, replacement: record.connection.id });
-    await save(kind, { ...record, retire: undefined });
+    try {
+      await workerCall('/transports/retire-personal', { id: record.retire, replacement: record.connection.id });
+    } catch (failure) {
+      if (failure.status !== 403) throw failure;
+      await save(kind, { ...record, retire: undefined });
+      throw error('原渠道仍有其他用途，无法替换。原连接仍可使用。', 409);
+    }
+    const old = record.previous;
+    const former = resolve(old);
+    await save(kind, { ...record, staged: undefined, previous: undefined, retire: undefined, verified: true,
+      retired: [...(record.retired || []), old], pairing: { ...record.pairing, step: 'linked' } });
+    configure(record.connection);
+    if (former) {
+      configure({ ...former, receiptOnly: true });
+      await stopReceiver(former);
+    }
   }
 
   async function confirm({ kind, id }) {
@@ -306,7 +334,8 @@ export async function createChannelLinks({ config, channels, directory, workerCa
     if (committing.has(kind) || attempts[kind]?.busy) throw error('正在保存链接，请稍后重试。', 409);
     committing.add(kind);
     try {
-      if (pair.step === 'linked') {
+      if (pair.step === 'linked') return { id, step: 'linked' };
+      if (record.retire) {
         await finishRetirement(kind);
         return { id, step: 'linked' };
       }
@@ -317,17 +346,14 @@ export async function createChannelLinks({ config, channels, directory, workerCa
         const { sessionId } = await workerCall('/personal/settings');
         await workerCall('/transports', { id: connection.id, kind, name: labels[kind], endpoint, tokenEnv: 'WORKBENCH_CONNECTOR_TOKEN', enabled: true, projects: [] });
         await workerCall('/message-routes', { id: connection.id, connectionId: connection.id,
-          ...record.target, principal: { kind: 'personal', sessionId }, enabled: true, autoReply: true });
+          ...record.target, principal: { kind: 'personal', sessionId }, enabled: !replaces, autoReply: true });
       }
-      await save(kind, { ...record, staged: undefined, previous: undefined, verified: true,
-        ...(replaces ? { retire: old.connection.id, retired: [...(record.retired || []), old] } : {}),
-        pairing: { ...pair, step: 'linked' } });
-      if (!record.legacy) configure(connection);
       if (replaces) {
-        const former = resolve(old);
-        configure({ ...former, receiptOnly: true });
-        await stopReceiver(former);
+        await save(kind, { ...record, retire: old.connection.id });
         await finishRetirement(kind);
+      } else {
+        await save(kind, { ...record, staged: undefined, previous: undefined, verified: true, pairing: { ...pair, step: 'linked' } });
+        if (!record.legacy) configure(connection);
       }
     } finally { committing.delete(kind); }
     return { id, step: 'linked' };
@@ -354,7 +380,10 @@ export async function createChannelLinks({ config, channels, directory, workerCa
       catch { throw error('飞书读取失败，请检查授权、数据权限或输入。', 409); }
     },
     health(connection, state) { health.set(connection.id, state); },
-    manages(connection) { return originals[connection.kind]?.id === connection.id; },
+    manages(connection) {
+      return connectionOf(connection.kind)?.id === connection.id ||
+        (records[connection.kind]?.retired?.some(entry => entry.connection.id === connection.id) ?? false);
+    },
     start() {
       for (const kind of providers) {
         const connection = connectionOf(kind);

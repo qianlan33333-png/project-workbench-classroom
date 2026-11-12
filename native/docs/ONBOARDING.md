@@ -29,7 +29,7 @@ Host、Worker 和渠道服务共用现有 `WORKBENCH_CONNECTOR_TOKEN`。如修�
 - 飞书与微信均通过本人私聊发送界面上的测试口令。收到测试回复后点击「已收到回复」，渠道才绑定到该实例的 SuperAgent。已有手工部署的渠道可走「验证私聊」。
 - 飞书 CLI 使用同一应用、同一本人身份。使用内置的官方 CLI 进行用户授权，已授权项可以先用。SuperAgent 的 `feishu_cli_read` 工具提供有限的只读操作。授权详情里的缺项来自平台读回结果。
 - 微信扫码后按手机提示确认。如果微信显示配对码，在浮窗提交配对码。二维码过期可重新发起。
-- 同一飞书应用或已知的同一微信机器人重新验证后沿用原连接，通知配置、接收游标和回执继续使用原连接标识。历史微信配置可补录从平台取得的 `accountId`，以便换令牌时匹配同一机器人。切换到新账号时，旧连接保留回执查询，已选旧通知地址会移除，可在设置中选择新地址。
+- 同一飞书应用或同一微信账号重新验证后沿用原连接，通知配置、接收游标和回执继续使用原连接标识。微信同时核对平台机器人 ID 和本人标识。历史配置只有本人标识时，扫码身份必须与 Worker 已保存的本人私聊一致，并用该私聊完成测试；新记录会保存平台机器人 ID。切换到新账号时，旧连接保留回执查询，已选旧通知地址会移除，可在设置中选择新地址。
 - 飞书 CLI 读取会记录本人来源，模型改写的派发指令不能把该来源带进项目。省略改写指令时，仍可直接派发本人原始要求。
 
 参考 [飞书 Channel SDK](https://github.com/larksuite/channel-sdk-node/blob/main/README.zh.md)、[打开机器人会话](https://open.larkoffice.com/document/develop-an-echo-bot/introduction) 和 [腾讯微信扫码实现](https://github.com/Tencent/openclaw-weixin/blob/main/src/auth/login-qr.ts)。

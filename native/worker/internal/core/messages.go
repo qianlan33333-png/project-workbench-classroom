@@ -106,8 +106,12 @@ func (s *Store) Transport(ctx context.Context, p Principal, id string) (Transpor
 	if e != nil {
 		return v, e
 	}
+	return v, checkTransportAccess(p, v)
+}
+
+func checkTransportAccess(p Principal, v Transport) error {
 	if !v.Enabled {
-		return v, ErrDenied
+		return ErrDenied
 	}
 	if p.Kind == "project" {
 		allowed := false
@@ -117,10 +121,10 @@ func (s *Store) Transport(ctx context.Context, p Principal, id string) (Transpor
 			}
 		}
 		if !allowed {
-			return v, ErrDenied
+			return ErrDenied
 		}
 	}
-	return v, nil
+	return nil
 }
 func (s *Store) PutRoute(ctx context.Context, p Principal, v MessageRoute) error {
 	if !p.IsOwner() {
@@ -137,9 +141,6 @@ func (s *Store) PutRoute(ctx context.Context, p Principal, v MessageRoute) error
 			return e
 		}
 	}
-	if _, e := s.Transport(ctx, v.Principal, v.ConnectionID); e != nil {
-		return e
-	}
 	if e := v.Principal.Validate(); e != nil {
 		return e
 	}
@@ -148,6 +149,13 @@ func (s *Store) PutRoute(ctx context.Context, p Principal, v MessageRoute) error
 		return e
 	}
 	defer tx.Rollback()
+	transport, e := scanJSON[Transport](tx.QueryRowContext(ctx, `SELECT body FROM wb_transports WHERE id=? FOR SHARE`, v.ConnectionID))
+	if e != nil {
+		return e
+	}
+	if e = checkTransportAccess(v.Principal, transport); e != nil {
+		return e
+	}
 	inserted, e := tx.ExecContext(ctx, `INSERT IGNORE INTO wb_sessions(id,project_id,kind) VALUES(?,?,?)`, v.Principal.SessionID, v.Principal.ProjectID, v.Principal.Kind)
 	if e != nil {
 		return e

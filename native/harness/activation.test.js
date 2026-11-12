@@ -12,28 +12,28 @@ test('activation denies both Harness HTTP and WebSocket admission until a grant 
   const connection = {
     authorizeIndex: () => true,
     admitConnection(req) { return this.admit(req); },
+    requestRejection(req) { return this.admit(req).rejection; },
     admit: req => req.authenticated ? { peer } : { rejection: 401 },
+    browserPeer: peer,
   };
-  const original = connection.admitConnection;
+  const original = connection.admit;
   const disposers = [];
-  let requestHook;
+  let activationPage;
   installActivation({
     connection, effect: install => disposers.push(install()),
-    on: (event, handler) => { assert.equal(event, 'connection/request'); requestHook = handler; },
-    webServer: { register: () => () => {} },
+    webServer: { register: route => { activationPage = route.handler; } },
   }, activation);
   const request = { authenticated: true };
-  let response;
-  const res = { writeHead(status) { response = status; return this; }, end() {} };
   assert.deepEqual(connection.admitConnection(request), { rejection: 403 });
-  requestHook(request, res, () => assert.fail('locked HTTP reached the business API'));
-  assert.equal(response, 403);
+  assert.deepEqual(connection.admit(request), { rejection: 403 });
+  assert.equal(connection.requestRejection(request), 403);
+  assert.equal(typeof activationPage, 'function');
   activation.active = true;
   assert.deepEqual(connection.admitConnection(request), { peer });
   assert.deepEqual(connection.admitConnection({}), { rejection: 401 });
-  assert.equal(requestHook(request, res, () => 'upstream'), 'upstream');
+  assert.equal(connection.requestRejection(request), undefined);
   disposers[0]();
-  assert.equal(connection.admitConnection, original);
+  assert.equal(connection.admit, original);
 });
 
 test('activation retries the same installation and restores a valid grant offline', async () => {

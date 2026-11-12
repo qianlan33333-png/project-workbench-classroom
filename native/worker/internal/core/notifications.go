@@ -106,7 +106,7 @@ func (s *Store) RetirePersonalTransport(ctx context.Context, p Principal, id, re
 		return ErrDenied
 	}
 	var personal, other int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(IF(connection_id=? AND JSON_EXTRACT(body,'$.enabled')=TRUE
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(IF(connection_id=?
 		AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.principal.kind'))='personal',1,NULL)),
 		COUNT(IF(JSON_UNQUOTE(JSON_EXTRACT(body,'$.principal.kind'))<>'personal',1,NULL))
 		FROM wb_message_routes WHERE connection_id IN (?,?)`, replacement, id, replacement).Scan(&personal, &other); err != nil {
@@ -114,6 +114,10 @@ func (s *Store) RetirePersonalTransport(ctx context.Context, p Principal, id, re
 	}
 	if personal != 1 || other != 0 {
 		return ErrDenied
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE wb_message_routes SET body=JSON_SET(body,'$.enabled',CAST('true' AS JSON))
+		WHERE connection_id=? AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.principal.kind'))='personal'`, replacement); err != nil {
+		return err
 	}
 	old.Enabled = false
 	if _, err = tx.ExecContext(ctx, `UPDATE wb_transports SET body=? WHERE id=?`, jsonText(old), id); err != nil {

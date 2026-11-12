@@ -16,17 +16,17 @@ func TestMySQLPersonalChannelSwitchPreservesDeliveryReceipts(t *testing.T) {
 		}
 	}
 	oldID, nextID, otherID := id+"-old", id+"-next", id+"-other"
-	makeChannel := func(connection, kind string) NotificationTarget {
+	makeChannel := func(connection, kind string, routeEnabled bool) NotificationTarget {
 		must(s.PutTransport(ctx, owner, Transport{
 			ID: connection, Kind: kind, Name: connection, Enabled: true,
 			Endpoint: "http://127.0.0.1:7383/mcp", TokenEnv: "WORKBENCH_CONNECTOR_TEST",
 		}))
 		must(s.PutRoute(ctx, owner, MessageRoute{ID: connection, ConnectionID: connection,
-			ActorID: connection, ConversationID: connection, Principal: personal, Enabled: true}))
+			ActorID: connection, ConversationID: connection, Principal: personal, Enabled: routeEnabled}))
 		return NotificationTarget{ConnectionID: connection, Target: map[string]string{"actorId": connection, "conversationId": connection}}
 	}
-	former := makeChannel(oldID, "feishu")
-	other := makeChannel(otherID, "wechat")
+	former := makeChannel(oldID, "feishu", true)
+	other := makeChannel(otherID, "wechat", true)
 	must(s.PutNotificationSettings(ctx, owner, NotificationSettings{
 		Enabled: true, SessionID: personal.SessionID, Targets: []NotificationTarget{former, other},
 	}))
@@ -49,9 +49,30 @@ func TestMySQLPersonalChannelSwitchPreservesDeliveryReceipts(t *testing.T) {
 	if err := s.RetirePersonalTransport(ctx, owner, oldID, otherID); !errors.Is(err, ErrDenied) {
 		t.Fatalf("cross-provider switch accepted: %v", err)
 	}
-	makeChannel(nextID, "feishu")
+	makeChannel(nextID, "feishu", false)
+	old, err := s.Transport(ctx, personal, oldID)
+	must(err)
+	old.Projects = []string{id + "-project"}
+	must(s.PutTransport(ctx, owner, old))
+	if err = s.RetirePersonalTransport(ctx, owner, oldID, nextID); !errors.Is(err, ErrDenied) {
+		t.Fatalf("project channel retired: %v", err)
+	}
+	_, err = s.Transport(ctx, personal, oldID)
+	must(err)
+	staged, err := s.Route(ctx, nextID)
+	must(err)
+	if staged.Enabled {
+		t.Fatal("failed retirement activated the staged route")
+	}
+	old.Projects = nil
+	must(s.PutTransport(ctx, owner, old))
 	must(s.RetirePersonalTransport(ctx, owner, oldID, nextID))
 	must(s.RetirePersonalTransport(ctx, owner, oldID, nextID))
+	active, err := s.Route(ctx, nextID)
+	must(err)
+	if !active.Enabled {
+		t.Fatal("replacement route was not activated")
+	}
 	after, err := s.NotificationSettings(ctx)
 	must(err)
 	if !after.Enabled || after.After != before.After || len(after.Targets) != 1 || after.Targets[0].ConnectionID != otherID {
