@@ -3,8 +3,10 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +20,91 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"workbench-native/internal/core"
 )
+
+func TestMySQLVaultAgentRenameFencesLinkUpdates(t *testing.T) {
+	dsn := os.Getenv("WORKBENCH_TEST_DSN")
+	if dsn == "" {
+		t.Skip("isolated MySQL not configured")
+	}
+	if !strings.Contains(dsn, "/workbench_native_acceptance") {
+		t.Fatal("isolated database required")
+	}
+	ctx := context.Background()
+	store, err := core.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(store.Migrate(ctx))
+	id := "vault-" + uuid.NewString()
+	owner := core.Principal{Kind: "owner", SessionID: id + "-owner"}
+	project := core.Principal{Kind: "project", ProjectID: id + "-project", SessionID: id + "-session"}
+	root := t.TempDir()
+	r, err := store.CreateVault(ctx, owner, root, id, "链接隔离测试")
+	must(err)
+	from, to := "旧/规则.md", "新/说明.md"
+	body, link := "原正文", "[[旧/规则]]"
+	base, err := store.SaveVault(ctx, owner, root, id, r.CurrentVersion, []core.VaultChange{{Path: from, Text: &body}, {Path: "入口.md", Text: &link}})
+	must(err)
+	in := core.LibraryChange{ResourceID: id, ItemID: fmt.Sprintf("%x", sha256.Sum256([]byte(from))),
+		Action: "update", OperationKey: "rename", Fields: map[string]any{"title": to, "markdown": "改后正文"}}
+	count := 0
+	rewrite := func(_ context.Context, request core.VaultRenameRequest) ([]core.VaultChange, error) {
+		count++
+		if request.From != from || request.To != to || request.Text != "改后正文" || request.Version != base.Version {
+			t.Fatalf("unexpected linker request: %+v", request)
+		}
+		text, updated := request.Text, "[[新/说明]]"
+		return []core.VaultChange{{Path: from}, {Path: to, Text: &text, Create: true}, {Path: "入口.md", Text: &updated}}, nil
+	}
+	must(store.PutProject(ctx, owner, core.Project{ID: project.ProjectID, Name: "链接测试项目"}))
+	grant := func(mode string) {
+		access := core.ResourceAccess{ProjectID: project.ProjectID, Mode: mode}
+		if mode != "none" {
+			access.Sections = []string{"text"}
+		}
+		_, e := store.SetResourceGrant(ctx, owner, id, access)
+		must(e)
+	}
+	grant("manage")
+	if _, err = store.ChangeVaultItem(ctx, project, root, in, func(ctx context.Context, request core.VaultRenameRequest) ([]core.VaultChange, error) {
+		grant("none")
+		return rewrite(ctx, request)
+	}); !errors.Is(err, core.ErrDenied) {
+		t.Fatalf("revocation did not prevent commit: %v", err)
+	}
+	grant("manage")
+	if _, err = store.ChangeVaultItem(ctx, project, root, in, func(ctx context.Context, request core.VaultRenameRequest) ([]core.VaultChange, error) {
+		changed, e := store.SaveVault(ctx, owner, root, id, base.Version, []core.VaultChange{{Path: "并发.md", Text: &body}})
+		must(e)
+		defer func() { base = changed }()
+		return rewrite(ctx, request)
+	}); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("new base version did not prevent commit: %v", err)
+	}
+	got, err := store.ChangeVaultItem(ctx, project, root, in, rewrite)
+	must(err)
+	again, err := store.ChangeVaultItem(ctx, project, root, in, nil)
+	must(err)
+	if again != got || count != 3 {
+		t.Fatalf("retry reran the linker or changed receipt: %+v %+v %d", got, again, count)
+	}
+	for name, expected := range map[string]string{to: "改后正文", "入口.md": "[[新/说明]]", "并发.md": body} {
+		raw, err := os.ReadFile(filepath.Join(root, id, got.Version, name))
+		if err != nil || string(raw) != expected {
+			t.Fatalf("unexpected published file %q: %q %v", name, raw, err)
+		}
+	}
+	if _, err = os.Stat(filepath.Join(root, id, got.Version, from)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old path still exists: %v", err)
+	}
+}
 
 func TestMySQLVaultCreateSaveAndExistingAccess(t *testing.T) {
 	dsn := os.Getenv("WORKBENCH_TEST_DSN")

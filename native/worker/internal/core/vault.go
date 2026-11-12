@@ -476,15 +476,80 @@ func insertVaultSnapshot(ctx context.Context, tx *sql.Tx, snapshot Snapshot, rec
 	return nil
 }
 
-func (s *Store) ChangeVaultItem(ctx context.Context, p Principal, root string, in LibraryChange) (LibraryReceipt, error) {
+type VaultRenameRequest struct {
+	ResourceID string `json:"resourceId"`
+	Version    string `json:"version"`
+	From       string `json:"from"`
+	To         string `json:"to"`
+	Text       string `json:"text"`
+}
+
+type VaultLinkRewriter func(context.Context, VaultRenameRequest) ([]VaultChange, error)
+
+func (s *Store) ChangeVaultItem(ctx context.Context, p Principal, root string, in LibraryChange, rewrite VaultLinkRewriter) (LibraryReceipt, error) {
 	out := LibraryReceipt{ResourceID: in.ResourceID, Action: in.Action, ItemID: in.ItemID}
 	if !ValidID(in.OperationKey) {
 		return out, ErrInvalid
 	}
 	version := Digest([]string{p.SessionID, in.ResourceID, in.OperationKey})
-	v, err := s.saveVault(ctx, p, root, in.ResourceID, "", version, Digest(in), nil, func(records []Record) ([]VaultChange, string, error) {
+	previous := ""
+	build := func(records []Record) ([]VaultChange, string, error) {
 		return vaultItemChanges(records, in)
-	})
+	}
+	if _, setsTitle := in.Fields["title"]; in.Action == "update" && setsTitle {
+		if err := s.CheckResourceWrite(ctx, p, in.ResourceID); err != nil {
+			return out, err
+		}
+		attempt, err := s.Snapshot(ctx, in.ResourceID, version)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return out, err
+		}
+		if attempt.State != "published" {
+			r, err := s.Resource(ctx, in.ResourceID)
+			if err != nil {
+				return out, err
+			}
+			previous = r.CurrentVersion
+			fields, err := scanJSON[map[string]any](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_records
+				WHERE resource_id=? AND version=? AND item_id=?`, in.ResourceID, previous, in.ItemID))
+			if errors.Is(err, sql.ErrNoRows) {
+				// The same operation may have committed since the first receipt lookup.
+				if retry, readErr := s.Snapshot(ctx, in.ResourceID, version); readErr != nil || retry.State != "published" {
+					return out, ErrConflict
+				}
+			} else if err != nil {
+				return out, err
+			} else {
+				changes, itemID, err := vaultItemChanges([]Record{{ID: in.ItemID, Fields: fields}}, in)
+				if err != nil {
+					return out, err
+				}
+				if len(changes) == 2 {
+					if rewrite == nil {
+						return out, errors.New("语料链接更新服务暂不可用")
+					}
+					to, from := changes[0], changes[1]
+					changes, err = rewrite(ctx, VaultRenameRequest{ResourceID: in.ResourceID, Version: previous,
+						From: from.Path, To: to.Path, Text: *to.Text})
+					if err != nil {
+						return out, err
+					}
+					var deleted, created bool
+					for _, change := range changes {
+						deleted = deleted || change.Path == from.Path && change.Text == nil
+						created = created || change.Path == to.Path && change.Text != nil && change.Create
+					}
+					if !deleted || !created || len(changes) > 10001 {
+						return out, ErrInvalid
+					}
+				}
+				build = func([]Record) ([]VaultChange, string, error) { return changes, itemID, nil }
+			}
+		}
+	}
+	// The linker runs outside the transaction. The original base version and
+	// current permissions are checked again under the resource row lock.
+	v, err := s.saveVault(ctx, p, root, in.ResourceID, previous, version, Digest(in), nil, build)
 	if err != nil {
 		return out, err
 	}

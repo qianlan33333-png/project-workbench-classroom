@@ -13,6 +13,28 @@ test('archive paths stay relative and portable even when a source supplies unexp
     ['中文/','空目录/','中文/笔记.md']);
 });
 
+test('Markdown and Obsidian media links become explicit preview controls', () => {
+  const raw=['![[assets/图.png|图示]]','![相对图](../assets/图.png)','![[assets/报告.pdf#page=2]]',
+    '[远程 PDF](https://example.invalid/report.pdf#page=4)','`![[assets/not-a-link.png]]`',
+    '![越界](../../outside.png)','![恶意](javascript:fake.png)'].join('\n\n');
+  const {document}=vaultView([{path:'目录/笔记.md',text:raw}]);
+  assert.equal(document.text,raw);
+  assert.equal(document.media.length,4);
+  assert.deepEqual(document.media.map(ref=>ref.asset),['assets/图.png','assets/图.png','assets/报告.pdf',undefined]);
+  assert.deepEqual(document.media.map(ref=>ref.page),[undefined,undefined,2,4]);
+  assert.equal(document.media[3].href,'https://example.invalid/report.pdf#page=4');
+  assert.match(document.html,/href="#wb-vault-media\/2"/);
+  assert.doesNotMatch(document.html,/<img|javascript:|https:\/\//);
+});
+
+test('moving a note keeps its relative image and PDF references aimed at the same files', () => {
+  const before={path:'资料/旧.md',text:'![图](./图.png)\n\n![[./手册.pdf#page=2|手册]]\n\n![图2][img]\n\n[img]: ../图2.jpg'};
+  const to='归档/2026/新.md';
+  const moved=renameVaultNote([before],before.path,to).find(item=>item.path===to);
+  const original=vaultView([before]).document.media;
+  assert.deepEqual(vaultView([moved]).document.media,original);
+});
+
 test('folder movement preserves empty branches and rewrites links to the moved subtree', () => {
   const docs = [
     {path:'客户/旧目录/服务.md',text:'## 规则\n\n[[./备注#正文]]'},

@@ -129,6 +129,13 @@ window.__ModuleLoader__.load({
       .wb-vault-edit-layout[data-mode=split]{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
       .wb-vault-preview{min-width:0;max-height:62vh;overflow:auto;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:12px}
       .wb-vault-export{display:inline-block;font-size:13px;color:var(--dsw-alias-label-link,#1768d8);margin-top:16px}
+      [role=dialog]:has(.wb-vault-media){width:min(720px,calc(100vw - 24px));max-width:calc(100vw - 24px)}
+      .wb-vault-media{width:100%;min-width:0;padding-block:4px}
+      .wb-vault-media img{display:block;max-width:100%;max-height:70vh;margin-inline:auto;object-fit:contain}
+      .wb-vault-pdf-pages{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:8px}
+      .wb-vault-pdf-viewport{overflow:auto;max-height:64vh;min-width:0;scrollbar-gutter:stable}
+      .wb-vault-pdf-viewport canvas{display:block;max-width:100%;margin-inline:auto}
+      .wb-vault-media-source{display:inline-block;margin-top:10px}
       .wb-vault-tree details button,.wb-vault-tree>button{background:transparent;border:0;padding:5px 8px;width:100%;text-align:left;overflow-wrap:anywhere}
       .wb-vault-tree button:hover,.wb-vault-tree button[aria-current=true]{background:var(--dsw-alias-interactive-bg-hover)}
       .wb-vault-body{padding:28px clamp(18px,4%,40px) 36px;overflow:auto;min-width:0;overflow-wrap:anywhere;font-size:17px;line-height:1.65}
@@ -403,6 +410,91 @@ window.__ModuleLoader__.load({
       return h("div",{ref:element,className:"wb-vault-editor"});
     }
 
+    async function vaultPdfData(url,signal) {
+      const response=await fetch(url,{signal,credentials:url.startsWith("/")?"same-origin":"omit",referrerPolicy:"no-referrer"});
+      if(!response.ok)throw Error(response.status===404?"找不到附件。":"无法读取 PDF。");
+      const limit=24*1024*1024;
+      if(Number(response.headers.get("content-length"))>limit)throw Error("PDF 超过 24 MiB。");
+      const reader=response.body.getReader(),chunks=[];
+      let size=0;
+      try{
+        for(;;){
+          const {done,value}=await reader.read();
+          if(done)break;
+          size+=value.length;
+          if(size>limit)throw Error("PDF 超过 24 MiB。");
+          chunks.push(value);
+        }
+      }finally{await reader.cancel().catch(()=>{});}
+      const data=new Uint8Array(size);
+      let offset=0;
+      for(const chunk of chunks){data.set(chunk,offset);offset+=chunk.length;}
+      return data;
+    }
+
+    // Mozilla PDF.js display API, using the bundled browser worker and fonts.
+    function VaultPdf({url,initialPage}) {
+      const [pdf,setPdf]=useState(),[page,setPage]=useState(1),[problem,setProblem]=useState(""),[rendered,setRendered]=useState(false);
+      const viewport=useRef(null),canvas=useRef(null);
+      const [width,setWidth]=useState(0);
+      useEffect(()=>{
+        const abort=new AbortController();
+        let task;
+        const base="/workbench-api/vault-pdf/";
+        Promise.all([import(base+"build/pdf.min.mjs"),vaultPdfData(url,abort.signal)]).then(async([pdfjs,data])=>{
+          if(abort.signal.aborted)return;
+          pdfjs.GlobalWorkerOptions.workerSrc=base+"build/pdf.worker.min.mjs";
+          task=pdfjs.getDocument({data,isEvalSupported:false,enableXfa:false,
+            cMapUrl:base+"cmaps/",cMapPacked:true,standardFontDataUrl:base+"standard_fonts/",wasmUrl:base+"wasm/",iccUrl:base+"iccs/"});
+          const document=await task.promise;
+          if(abort.signal.aborted)return;
+          setPage(Math.max(1,Math.min(initialPage||1,document.numPages)));
+          setPdf(document);
+        }).catch(error=>{if(!abort.signal.aborted)setProblem(error instanceof TypeError?"来源站未允许库内加载此 PDF。":error.message);});
+        return()=>{abort.abort();task?.destroy().catch(()=>{});};
+      },[url,initialPage]);
+      useEffect(()=>{
+        const el=viewport.current;
+        const resize=new ResizeObserver(()=>setWidth(el.clientWidth));
+        resize.observe(el);
+        return()=>resize.disconnect();
+      },[]);
+      useEffect(()=>{
+        if(!pdf||!width)return;
+        let cancelled=false,render;
+        setRendered(false);
+        setProblem("");
+        pdf.getPage(page).then(sheet=>{
+          if(cancelled)return;
+          const natural=sheet.getViewport({scale:1});
+          const view=sheet.getViewport({scale:Math.min(width/natural.width,2,Math.sqrt(4e6/(natural.width*natural.height)))});
+          const ratio=Math.min(window.devicePixelRatio||1,2,Math.sqrt(4e6/(view.width*view.height)));
+          const target=canvas.current;
+          target.width=Math.max(1,Math.floor(view.width*ratio));target.height=Math.max(1,Math.floor(view.height*ratio));
+          target.style.width=Math.floor(view.width)+"px";
+          render=sheet.render({canvas:target,viewport:view,transform:[ratio,0,0,ratio,0,0]});
+          return render.promise.then(()=>{if(!cancelled){setRendered(true);viewport.current.scrollTop=0;}});
+        }).catch(()=>{if(!cancelled)setProblem("无法绘制这一页 PDF。");});
+        return()=>{cancelled=true;render?.cancel();};
+      },[pdf,page,width]);
+      return h(React.Fragment,null,
+        pdf&&h("div",{className:"wb-vault-pdf-pages"},
+          button("上一页",()=>setPage(page-1),{disabled:page<=1}),
+          h("span",{role:"status"},`第 ${page} / ${pdf.numPages} 页`),
+          button("下一页",()=>setPage(page+1),{disabled:page>=pdf.numPages})),
+        problem?alert(problem):!rendered&&h("p",{role:"status",className:"wb-muted"},"正在加载 PDF…"),
+        h("div",{ref:viewport,className:"wb-vault-pdf-viewport"},h("canvas",{ref:canvas,hidden:!rendered,"aria-label":`PDF 第 ${page} 页`})));
+    }
+
+    function VaultMediaPreview({media,close}) {
+      const [imageFailed,setImageFailed]=useState(false);
+      return h(UI.Modal,{open:true,title:media.label,closeLabel:"关闭",onClose:close},
+        h("div",{className:"wb-page wb-vault-media"},
+          media.type==="application/pdf"?h(VaultPdf,{url:media.url,initialPage:media.page}):
+            imageFailed?alert("找不到图片或来源暂不可用。"):h("img",{src:media.url,alt:media.label,referrerPolicy:"no-referrer",onError:()=>setImageFailed(true)}),
+          media.href&&h("a",{href:media.href,target:"_blank",rel:"noopener noreferrer",className:"wb-vault-media-source"},"打开原文件")));
+    }
+
     function VaultPanel({data,load,refresh,save,rename,structure,preview,download,archive,copy,openCopy,close}) {
       const [search,setSearch]=useState(""),[matches,setMatches]=useState();
       const [treeOpen,setTreeOpen]=useState(false),[draft,setDraft]=useState(),[saving,setSaving]=useState(false);
@@ -415,6 +507,7 @@ window.__ModuleLoader__.load({
       const [refreshNeeded,setRefreshNeeded]=useState(false);
       const [collapsed,setCollapsed]=useState(()=>new Set()),[reverse,setReverse]=useState(false),[searchFolder,setSearchFolder]=useState("");
       const [tabs,setTabs]=useState([]),[editMode,setEditMode]=useState("edit"),[draftPreview,setDraftPreview]=useState();
+      const [media,setMedia]=useState();
       // Same opt-in and idle-save behavior as the upstream editing workspace.
       const [autosave,setAutosave]=useState(()=>{
         try{return localStorage.getItem("wb-vault-autosave")==="true";}catch{return false;}
@@ -520,7 +613,22 @@ window.__ModuleLoader__.load({
         finally{if(request===navigation.current)setOpening(false);}
       };
       const follow=e=>{
-        const href=e.target.closest?.("a")?.getAttribute("href");
+        const link=e.target.closest?.("a");
+        const href=link?.getAttribute("href");
+        const attachment=href?.match(/^#wb-vault-media\/(\d+)$/);
+        if(attachment){
+          e.preventDefault();
+          const reading=note?.media??[];
+          const fromDraft=Boolean(link.closest(".wb-vault-preview"));
+          const item=(fromDraft?draftPreview?.media:reading)?.[Number(attachment[1])];
+          if(!item)return;
+          const id=fromDraft?reading.findIndex(ref=>ref.asset===item.asset&&ref.type===item.type):Number(attachment[1]);
+          if(!item.href&&id<0){setProblem("保存笔记后可查看这个附件。");return;}
+          const params={resourceId:data.resource.id,version:data.version,note:note?.path,id};
+          if(data.projectId)params.projectId=data.projectId;
+          setMedia({...item,url:item.href??"/workbench-api"+query("/vault-media",params)});
+          return;
+        }
         const target=href?.match(/^#wb-vault\/([^/]+)\/([^/]*)$/);
         if(!target)return;
         e.preventDefault();
@@ -795,7 +903,8 @@ window.__ModuleLoader__.load({
         menu?.path&&h(VaultNoteActions,{floating:true,menu,actions:entryActions(menu),close:closeMenu}),
         mutation&&h(VaultMutationModal,{dialog:mutation,folders,busy:saving,error:mutationError,
           onChange:value=>setMutation({...mutation,value}),onClose:()=>setMutation(undefined),onSubmit:submitMutation}),
-        copyOpen&&h(VaultCopyModal,{data,close:()=>setCopyOpen(false),copy,openCopy}));
+        copyOpen&&h(VaultCopyModal,{data,close:()=>setCopyOpen(false),copy,openCopy}),
+        media&&h(VaultMediaPreview,{media,close:()=>setMedia(undefined)}));
     }
 
     function ResourcePage() {

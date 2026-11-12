@@ -4,7 +4,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 // The owner selects a registered resource, not an endpoint or arbitrary file.
 // Standard MCP Resources supplies the actual knowledge document catalogue.
-export async function resourceDocuments(config,call,projectId,resourceId,uri,{all=false,version,signal,identity}={}){
+export async function resourceDocuments(config,call,projectId,resourceId,uri,{all=false,version,signal,identity,asset}={}){
  const projectPrincipal=id=>({kind:'project',projectId:id,sessionId:'resource-view-'+createHash('sha256').update(id).digest('hex').slice(0,24)});
  const p=identity||projectPrincipal(projectId);
  const server=(config.toolServers||[]).find(s=>s.sources?.some(r=>r.resourceId===resourceId));
@@ -46,7 +46,7 @@ export async function resourceDocuments(config,call,projectId,resourceId,uri,{al
    if(Buffer.byteLength(content)>maxBytes)throw Error('资料超过查看预算，请通过已授权的检索工具读取片段');
    return content;
   };
-  let content,notes;
+  let content,notes,media;
   if(uri){if(!documents.some(d=>d.uri===uri))throw Error('资料不在该资源目录中');content=await read(uri)}
   if(all){
    notes=[];let total=0;
@@ -61,8 +61,18 @@ export async function resourceDocuments(config,call,projectId,resourceId,uri,{al
     notes.push({path:document.name,text});
    }
   }
+  if(asset){
+   const candidates=documents.filter(document=>document.name===asset);
+   if(candidates.length!==1)throw Object.assign(Error('附件不在当前资料目录中'),{status:404});
+   const result=await client.readResource({uri:candidates[0].uri},{signal});
+   const blobs=result.contents.filter(item=>typeof item.blob==='string');
+   if(blobs.length!==1||blobs[0].blob.length>32*1024*1024||!/^[A-Za-z0-9+/]*={0,2}$/.test(blobs[0].blob)){
+    throw Object.assign(Error('来源没有返回有效附件，或附件超过 24 MiB'),{status:422});
+   }
+   media=Buffer.from(blobs[0].blob,'base64');
+  }
   if(connector!==p)await call('/session/external-sources',connector,refs,signal);
   await call('/session/external-sources',p,refs,signal);
-  return{external:true,documents:documents.map(d=>({uri:d.uri,name:d.name,title:d.title})),content,notes,version:refs[0].version};
+  return{external:true,documents:documents.map(d=>({uri:d.uri,name:d.name,title:d.title})),content,notes,media,version:refs[0].version};
  }finally{await client.close()}
 }

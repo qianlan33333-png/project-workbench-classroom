@@ -18,6 +18,19 @@ type vaultSaveRequest struct {
 }
 
 func (a *Server) vaultRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /vault-media-file", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		ref := core.Ref{ResourceID: q.Get("resourceId"), Version: q.Get("version"), Section: q.Get("section")}
+		data, mime, err := a.Store.ReadVaultMedia(r.Context(), principal(r.Context()), ref, q.Get("asset"))
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		w.Header().Set("Content-Type", mime)
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(data)
+	})
 	mux.HandleFunc("GET /vault-folders", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		folders, err := a.Store.VaultFolders(r.Context(), principal(r.Context()), q.Get("resourceId"), q.Get("version"))

@@ -35,6 +35,10 @@ type modelBridge struct {
 }
 
 func (m modelBridge) hostCall(ctx context.Context, path string, input, output any) error {
+	return m.hostCallLimited(ctx, path, input, output, 2*1024*1024)
+}
+
+func (m modelBridge) hostCallLimited(ctx context.Context, path string, input, output any, limit int64) error {
 	b, e := json.Marshal(input)
 	if e != nil {
 		return e
@@ -61,7 +65,13 @@ func (m modelBridge) hostCall(ctx context.Context, path string, input, output an
 		}
 		return fmt.Errorf("Harness host returned %d", res.StatusCode)
 	}
-	return json.NewDecoder(io.LimitReader(res.Body, 2*1024*1024)).Decode(output)
+	return json.NewDecoder(io.LimitReader(res.Body, limit)).Decode(output)
+}
+
+func (m modelBridge) RewriteVaultLinks(ctx context.Context, input core.VaultRenameRequest) ([]core.VaultChange, error) {
+	var changes []core.VaultChange
+	err := m.hostCallLimited(ctx, "/vault-rewrite-links", input, &changes, 240*1024*1024)
+	return changes, err
 }
 func (m modelBridge) OwnerRequest(ctx context.Context, p core.Principal) (engine.OwnerRequest, error) {
 	var v engine.OwnerRequest

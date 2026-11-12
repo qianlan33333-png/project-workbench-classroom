@@ -175,6 +175,10 @@ func (a *Server) applyLibraryCommand(p core.Principal, match func(string) bool, 
 type documentHost interface {
 	LibraryDocuments(context.Context, core.Principal, string, string) (core.LibraryDocuments, error)
 }
+
+type vaultLinksHost interface {
+	RewriteVaultLinks(context.Context, core.VaultRenameRequest) ([]core.VaultChange, error)
+}
 type libraryDocumentInput struct {
 	ResourceID string `json:"resourceId"`
 	URI        string `json:"uri,omitempty"`
@@ -199,7 +203,11 @@ func (a *Server) libraryTools(s *mcp.Server, p core.Principal) {
 				return nil, core.LibraryReceipt{}, e
 			}
 			if r.Relation == core.VaultRelation {
-				v, err := a.Store.ChangeVaultItem(ctx, p, a.VaultRoot, in)
+				var rewrite core.VaultLinkRewriter
+				if host, ok := a.Host.(vaultLinksHost); ok {
+					rewrite = host.RewriteVaultLinks
+				}
+				v, err := a.Store.ChangeVaultItem(ctx, p, a.VaultRoot, in, rewrite)
 				return nil, v, err
 			}
 			v, e := a.Store.ChangeLibraryItem(ctx, p, in)

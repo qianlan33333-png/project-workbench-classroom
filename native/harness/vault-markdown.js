@@ -144,6 +144,60 @@ function nodeText(node) {
   return descendants(node, []).map(child => child.value ?? child.alt ?? '').join('');
 }
 
+const mediaExtensions = new Map(Object.entries({pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',
+  gif:'image/gif',webp:'image/webp',bmp:'image/bmp',avif:'image/avif'}));
+
+export function vaultMediaType(name) {
+  return mediaExtensions.get(path.extname(name).slice(1).toLowerCase());
+}
+
+export function vaultMediaMatches(data, type) {
+  const starts = (...bytes) => bytes.every((value,index)=>data[index]===value);
+  const ascii = (offset,value) => data.subarray(offset,offset+value.length).toString('ascii')===value;
+  switch (type) {
+    case 'application/pdf': return ascii(0,'%PDF-');
+    case 'image/png': return starts(137,80,78,71,13,10,26,10);
+    case 'image/jpeg': return starts(255,216,255);
+    case 'image/gif': return ascii(0,'GIF87a')||ascii(0,'GIF89a');
+    case 'image/webp': return ascii(0,'RIFF')&&ascii(8,'WEBP');
+    case 'image/bmp': return ascii(0,'BM');
+    case 'image/avif': return ascii(4,'ftyp')&&(ascii(8,'avif')||ascii(8,'avis'));
+    default: return false;
+  }
+}
+
+// Adapted from the MIT Obsidian Web Gateway's wikilink and asset dispatch.
+// Browser URLs and registered attachment paths use separate read routes.
+function mediaReference(node, from, definitions) {
+  const wiki = node.type==='wikilink';
+  const reference = node.type==='imageReference'||node.type==='linkReference';
+  if (!wiki&&!reference&&!['image','link','definition'].includes(node.type)) return;
+  const value = wiki ? node.path + (node.heading ? '#'+node.heading : '') : reference ? definitions.get(node.identifier) : node.url;
+  if (!value || typeof value !== 'string' || value.length>4096 || /[\u0000-\u001f\u007f]/u.test(value)) return;
+  const [target,fragment=''] = value.split('#',2);
+  let name,href,asset;
+  try {
+    if (/^[a-z][a-z0-9+.-]*:|^\/\//i.test(target)) {
+      if (!/^https:\/\//i.test(target)) return;
+      const url = new URL(value);
+      if (url.username||url.password) return;
+      href=url.href;
+      name=decodeURIComponent(url.pathname);
+    } else {
+      name=decodeURIComponent(target);
+      if (!name||name.startsWith('/')||name.includes('\\')) return;
+      const relative = !wiki || name.startsWith('./') || name.startsWith('../');
+      asset=relative?path.normalize(path.join(path.dirname(from),name)):path.normalize(name);
+      if (asset.length>1024||asset.split('/').some(part=>!part||part.startsWith('.')||/[<>:"\\|?*\u0000-\u001f\u007f]/u.test(part))) return;
+    }
+  } catch { return; }
+  const type=vaultMediaType(name);
+  if (!type) return;
+  const label=node.alt||node.alias||nodeText(node)||path.basename(name);
+  const page=/^(?:.*&)?page=(\d+)(?:&|$)/i.exec(fragment)?.[1];
+  return {label,type,...(asset?{asset}:{href}),...(page?{page:Math.min(Number(page),100000)}:{})};
+}
+
 function sourceInformation(tree) {
   const [title, description] = tree.children.filter(node => node.type !== 'yaml');
   if (title?.type !== 'heading' || title.depth !== 1 || !description) return;
@@ -189,12 +243,22 @@ export function vaultView(documents, selected, {originalCenter = false, includeB
     let properties;
     let linked = false;
     const outgoing = new Set();
+    const media = [];
     for (const node of nodes) {
       const {start, end} = node.position || {};
       if (start?.offset === undefined || end?.offset === undefined) continue;
+      if (source && start.offset < source.end) continue;
       if (node.type === 'yaml' && name === current) {
         properties = node.value;
         edits.push({start: start.offset, end: end.offset, replacement: ''});
+      }
+      if (name === current && node.type !== 'definition') {
+        const ref=mediaReference(node,name,definitions);
+        if (ref) {
+          const index=media.push(ref)-1;
+          edits.push({start:start.offset,end:end.offset,replacement:`[${labelText(ref.label)}](#wb-vault-media/${index})`});
+          continue;
+        }
       }
       if (node.type === 'image' && name === current) {
         edits.push({start: start.offset, end: end.offset, replacement: labelText(node.alt || '')});
@@ -217,7 +281,7 @@ export function vaultView(documents, selected, {originalCenter = false, includeB
       source: source?.display,
       outline: nodes.filter(node => node.type === 'heading' && node !== source?.title)
         .map(node => ({level:node.depth,text:nodeText(node)})),
-      outgoing: [...outgoing],
+      outgoing: [...outgoing], media,
       hasTitle: nodes.some(node => node.type === 'heading' && node.depth === 1 && node !== source?.title),
     };
   }
@@ -252,6 +316,29 @@ function markdownDestination(raw, labelEnd) {
   if (end > start) return {start, end, target: raw.slice(start, end)};
 }
 
+function rewriteMediaDestination(node, raw, from, asset) {
+  const url=relativeNote(from,asset).split('/').map(encodeURIComponent).join('/');
+  if (node.type==='wikilink') {
+    if (!node.path.startsWith('./')&&!node.path.startsWith('../')) return;
+    return raw.replace(/^(!?\[\[)[^#|\]]+/, (_,prefix)=>prefix+url);
+  }
+  let labelEnd;
+  if (node.type==='image') {
+    for (let i=2;i<raw.length;i++) {
+      if (raw[i]==='\\') {i++;continue;}
+      if (raw[i]===']'&&raw[i+1]==='(') {labelEnd=i;break;}
+    }
+    if (labelEnd===undefined) return;
+  } else if (node.type==='link') {
+    labelEnd=(node.children.at(-1)?.position?.end.offset ?? node.position.start.offset+1)-node.position.start.offset;
+  }
+  const destination=markdownDestination(raw,labelEnd);
+  if (!destination) return;
+  const hash=destination.target.indexOf('#');
+  const suffix=hash===-1?'':destination.target.slice(hash);
+  return raw.slice(0,destination.start)+'<'+url+suffix+'>'+raw.slice(destination.end);
+}
+
 export function renameVaultNote(documents, oldPath, newPath) {
   const docs = orderedNotes(documents);
   if (!docs.some(doc => doc.path === oldPath)) throw Object.assign(Error('笔记已移动或删除，请刷新语料库。'), {status:409});
@@ -264,21 +351,29 @@ export function renameVaultNote(documents, oldPath, newPath) {
 
 function rewriteMovedLinks(doc, from, before, after, moved) {
     const {nodes, definitions} = parseNote(doc.text);
-    const refs = new Set(nodes.filter(node => node.type === 'linkReference').map(node => node.identifier));
+    const refs = new Set(nodes.filter(node => node.type === 'linkReference' || node.type === 'imageReference').map(node => node.identifier));
     const defined = new Set();
     const edits = [];
     for (const node of nodes) {
       if (node.type === 'definition') {
         if (!refs.has(node.identifier) || defined.has(node.identifier)) continue;
         defined.add(node.identifier);
-      } else if (node.type !== 'wikilink' && node.type !== 'link') continue;
+      } else if (node.type !== 'wikilink' && node.type !== 'link' && node.type !== 'image') continue;
+      const {start, end} = node.position;
+      const raw = doc.text.slice(start.offset, end.offset);
+      if (path.dirname(from)!==path.dirname(doc.path)) {
+        const media=mediaReference(node,doc.path,definitions);
+        if (media?.asset) {
+          const replacement=rewriteMediaDestination(node,raw,from,media.asset);
+          if (replacement && replacement!==raw) edits.push({start:start.offset,end:end.offset,replacement});
+          continue;
+        }
+      }
       const original = resolveLink(node, doc.path, before.byPath, before.byName, definitions)?.note;
       if (!original) continue;
       const target = moved.get(original) ?? original;
       const explicit = node.type === 'wikilink' ? node.path : node.url.split('#', 1)[0];
       if ((!explicit || !moved.has(original)) && resolveLink(node, from, after.byPath, after.byName, definitions)?.note === target) continue;
-      const {start, end} = node.position;
-      const raw = doc.text.slice(start.offset, end.offset);
       let replacement;
       if (node.type === 'wikilink') {
         const candidates = [path.basename(target).replace(noteExtension, ''), target.replace(noteExtension, ''), target, relativeNote(from, target)];

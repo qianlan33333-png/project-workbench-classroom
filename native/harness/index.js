@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createRequire } from 'node:module';
 import { Readable } from "node:stream";
 import { timingSafeEqual, createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -16,12 +17,15 @@ import { installPersonalMemory } from './personal-memory.js';
 import { replyEvidenceProjection } from './reply-evidence.js';
 import { resourceDocuments } from './resource-documents.js';
 import { zipSync } from 'fflate';
-import {directoryVault, notePath, renameVaultNote, searchVault, vaultArchiveEntries, vaultFolderPaths, vaultStructure, vaultView} from './vault-markdown.js';
+import {directoryVault, notePath, renameVaultNote, searchVault, vaultArchiveEntries, vaultFolderPaths, vaultMediaMatches, vaultStructure, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
 import { createActivation, installActivation, sameOrigin, setupBody, workbenchTitle as brandTitle } from "./activation.js";
 import { createSuperAgent } from './superagent.js';
 import { nativeLibraryCommand, activeLibraryCommand } from './library-command.js';
+
+const requireLocal=createRequire(import.meta.url);
+const pdfViewerMember=/^(?:build\/pdf(?:\.worker)?\.min\.mjs|cmaps\/[\w.-]+\.bcmap|standard_fonts\/[\w.-]+\.(?:pfb|ttf)|iccs\/[\w.-]+\.icc|wasm\/[\w.-]+\.(?:wasm|mjs|js))$/;
 
 export const inject = [
   "agents",
@@ -164,7 +168,42 @@ export async function apply(ctx, config) {
     signal.throwIfAborted();
     notes = notes?.filter(note => notePath(note.path));
     const originalCenter = (resource.vaultOrigin?.resourceId ?? resource.id) === 'context-center-config';
-    return {notes, version, editable, originalCenter, folders:vaultFolderPaths(notes ?? [],storedFolders ?? [])};
+    return {resource, notes, version, editable, originalCenter, folders:vaultFolderPaths(notes ?? [],storedFolders ?? [])};
+  }
+
+  async function loadVaultMedia(params,signal) {
+    const {resourceId,version,note,projectId,id}=Object.fromEntries(params);
+    if (!version||!note||!/^\d{1,5}$/.test(id??'')) throw requestError('缺少附件位置');
+    const vault=await loadVault(resourceId,version,projectId,signal);
+    const selected=vault.notes&&vaultView(vault.notes,note,{includeBacklinks:false,originalCenter:vault.originalCenter}).document;
+    const ref=selected?.media[Number(id)];
+    if (!ref?.asset) throw requestError('笔记中没有此附件',404);
+    const source=vault.resource.vaultOrigin;
+    const sourceID=source?.resourceId??resourceId;
+    const sourceVersion=source?.version??version;
+    const sourceResource=source ? (await call('/resources',owner,undefined,signal)).find(r=>r.id===sourceID) : vault.resource;
+    if (!sourceResource?.connectionId) throw requestError('此附件未登记在语料来源中',404);
+    const connection=(await call('/connections',owner,undefined,signal)).find(item=>item.id===sourceResource.connectionId);
+    if (!connection) throw requestError('语料来源已不可用',404);
+    const identity=projectId?{kind:'project',projectId,sessionId:'resource-view-'+createHash('sha256').update(projectId).digest('hex').slice(0,24)}:owner;
+    const authorizeView=()=>call('/session/external-sources',identity,[{resourceId,version,section:vault.resource.sections[0].id}],signal);
+    if (projectId) {
+      if (!(await syncProjects(signal)).some(project=>project.id===projectId)) throw requestError('项目不存在',404);
+      await authorizeView();
+    }
+    let data;
+    if (connection.kind==='directory') {
+      const query=new URLSearchParams({resourceId:sourceID,version:sourceVersion,section:sourceResource.sections[0].id,asset:ref.asset});
+      const res=await fetch(new URL('/vault-media-file?'+query,worker),{headers:headers(identity),signal});
+      if (!res.ok) throw requestError(res.status===404?'附件在当前来源中找不到':'无法读取来源附件',res.status);
+      data=Buffer.from(await res.arrayBuffer());
+    } else {
+      const result=await resourceDocuments(config,call,projectId,sourceID,undefined,{version:sourceVersion,signal,identity,asset:ref.asset});
+      data=result.media;
+    }
+    if (!data||data.length>24*1024*1024||!vaultMediaMatches(data,ref.type)) throw requestError('附件格式不匹配或无法预览',422);
+    if (projectId) await authorizeView();
+    return {data,type:ref.type};
   }
 
   const activation = process.env.WORKBENCH_ACTIVATION_REQUIRED === "1"
@@ -534,6 +573,25 @@ export async function apply(ctx, config) {
               res.end(script);
               return;
             }
+            if (req.method === 'GET' && path.startsWith('/vault-pdf/')) {
+              const member=path.slice('/vault-pdf/'.length);
+              if (!pdfViewerMember.test(member)) throw requestError('预览文件不存在',404);
+              const pdfRoot=dirname(requireLocal.resolve('pdfjs-dist/package.json'));
+              const file=await readFile(join(pdfRoot,member));
+              const type=/\.m?js$/.test(member)?'text/javascript; charset=utf-8':member.endsWith('.wasm')?'application/wasm':'application/octet-stream';
+              res.writeHead(200,{'content-type':type,'x-content-type-options':'nosniff','cache-control':'private, max-age=3600'}).end(file);
+              return;
+            }
+            if (req.method === 'GET' && path === '/vault-media') {
+              if (admission.peer!==ctx.connection.browserPeer) throw requestError('请在本人工作台网页查看',403);
+              const disconnect=new AbortController();
+              res.once('close',()=>disconnect.abort());
+              const signal=AbortSignal.any([disconnect.signal,AbortSignal.timeout(40000)]);
+              const {data,type}=await loadVaultMedia(u.searchParams,signal);
+              res.writeHead(200,{'content-type':type,'x-content-type-options':'nosniff','cache-control':'private, no-store',
+                'cross-origin-resource-policy':'same-origin','content-security-policy':"sandbox; default-src 'none'"}).end(data);
+              return;
+            }
             if (path === "/channel-links" || path.startsWith("/channel-links/")) {
               if (admission.peer !== ctx.connection.browserPeer) { json(res, 403, { error: "仅本人网页可管理渠道" }); return; }
               if (req.method === "POST" && !sameOrigin(req)) { json(res, 403, { error: "origin rejected" }); return; }
@@ -671,7 +729,7 @@ export async function apply(ctx, config) {
                 docs.push({path:input.note,text:input.text});
                 const view = vaultView(docs,input.note,{originalCenter:vault.originalCenter, includeBacklinks:false});
                 if (!view.document) throw requestError('无效的笔记路径');
-                json(res, 200, {html:view.document.html, hasTitle:view.document.hasTitle});
+                json(res, 200, {html:view.document.html, hasTitle:view.document.hasTitle, media:view.document.media});
               } else if (path === '/vault-rename') {
                 if (!vault.editable || !vault.notes) throw requestError('语料库只读', 403);
                 const {from, to} = input;
@@ -904,6 +962,21 @@ export async function apply(ctx, config) {
     }
     if(req.method==='GET'&&req.url==='/health'){json(res,200,{ready:true});return;}
     if (!activation.active) { json(res, 403, { error: "请先激活工作台" }); return; }
+    if (req.method==='POST' && req.url==='/vault-rewrite-links') {
+      try {
+        const {resourceId,version,from,to,text}=await body(req);
+        if (![resourceId,version,from,to,text].every(value=>typeof value==='string') || !/^[a-f0-9]{64}$/.test(version) ||
+            !from||!to||to.length>1024||Buffer.byteLength(text)>240*1024) throw requestError('无效的笔记路径或正文');
+        const disconnect=new AbortController();
+        res.once('close',()=>disconnect.abort());
+        const signal=AbortSignal.any([disconnect.signal,AbortSignal.timeout(90000)]);
+        const vault=await loadVault(resourceId,version,undefined,signal);
+        if (!vault.editable||!vault.notes) throw requestError('语料库只读',403);
+        const notes=vault.notes.map(note=>note.path===from?{...note,text}:note);
+        json(res,200,renameVaultNote(notes,from,to));
+      } catch(error) { if(!res.destroyed)json(res,error.status??503,{error:error.message}); }
+      return;
+    }
     if(req.method==='POST'&&req.url==='/resource-document') {
       try {
         const {principal:p,resourceId,uri}=await body(req);
