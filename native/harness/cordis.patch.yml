@@ -45,7 +45,7 @@
     - id: personal-workbench
       name: '@local/personal-workbench'
       config:
-        expertManagement: false
+        expertManagement: true
         workerUrl: !!js process.env.WORKBENCH_WORKER_URL || 'http://127.0.0.1:7381'
         bridgePort: !!js Number(process.env.WORKBENCH_BRIDGE_PORT || 7382)
         personalWorkspace: !!js process.env.WORKBENCH_PERSONAL_WORKSPACE
