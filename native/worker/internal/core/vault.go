@@ -26,6 +26,35 @@ type VaultChange struct {
 	Create bool    `json:"create,omitempty"`
 }
 
+type VaultOrigin struct {
+	ResourceID string `json:"resourceId"`
+	Version    string `json:"version"`
+}
+
+type VaultCopy struct {
+	ID      string        `json:"id"`
+	Name    string        `json:"name"`
+	Origin  VaultOrigin   `json:"origin"`
+	Changes []VaultChange `json:"changes"`
+}
+
+type VaultCopyPathsError struct{ Paths []string }
+
+func (e *VaultCopyPathsError) Error() string { return "部分笔记无法复制，请调整选择。" }
+
+type vaultPathConflict struct{ first, second string }
+
+func (e *vaultPathConflict) Error() string {
+	return fmt.Sprintf("%q 与 %q 的路径冲突", e.first, e.second)
+}
+func (e *vaultPathConflict) Unwrap() error { return ErrInvalid }
+
+type vaultInitial struct {
+	origin    *VaultOrigin
+	notes     map[string]string
+	operation string
+}
+
 func validVaultID(id string) bool {
 	if !strings.HasPrefix(id, "vault-") {
 		return false
@@ -51,54 +80,106 @@ func validVaultPath(name string) bool {
 }
 
 func (s *Store) CreateVault(ctx context.Context, p Principal, root, id, name string) (Resource, error) {
-	return s.createVault(ctx, p, root, id, name, "")
+	return s.createVault(ctx, p, root, id, name, "", vaultInitial{})
 }
 
 func (s *Store) CreateVaultLibrary(ctx context.Context, p Principal, root, commandID string, in LibraryInput) (ResourceDiscovery, error) {
 	if in.Kind != "corpus" || len(in.Columns) != 0 {
 		return ResourceDiscovery{}, ErrInvalid
 	}
-	r, err := s.createVault(ctx, p, root, libraryID("vault", p.SessionID+"/"+commandID), in.Name, in.Description)
+	r, err := s.createVault(ctx, p, root, libraryID("vault", p.SessionID+"/"+commandID), in.Name, in.Description, vaultInitial{})
 	if err != nil {
 		return ResourceDiscovery{}, err
 	}
 	return ResourceDiscovery{ID: r.ID, Name: r.Name, Kind: r.Kind, Description: r.Description, Access: "manage", Version: r.CurrentVersion, Editable: true, Sections: r.Sections}, nil
 }
 
-func (s *Store) createVault(ctx context.Context, p Principal, root, id, name, description string) (Resource, error) {
+func (s *Store) CopyVault(ctx context.Context, p Principal, root string, input VaultCopy) (Resource, error) {
+	if !p.IsOwner() {
+		return Resource{}, ErrDenied
+	}
+	if !ValidID(input.Origin.ResourceID) || !ValidID(input.Origin.Version) || input.ID == input.Origin.ResourceID ||
+		len(input.Changes) == 0 || len(input.Changes) > 10000 {
+		return Resource{}, ErrInvalid
+	}
+	source, err := s.Resource(ctx, input.Origin.ResourceID)
+	if err != nil {
+		return Resource{}, err
+	}
+	if source.Relation == VaultRelation {
+		return Resource{}, ErrDenied
+	}
+	snapshot, err := s.Snapshot(ctx, input.Origin.ResourceID, input.Origin.Version)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Resource{}, err
+	}
+	if snapshot.State != "published" {
+		return Resource{}, ErrConflict
+	}
+	var invalid []string
+	for _, change := range input.Changes {
+		if !validVaultPath(change.Path) || change.Text == nil || !utf8.ValidString(*change.Text) || len(*change.Text) > 240*1024 {
+			invalid = append(invalid, change.Path)
+		}
+	}
+	if len(invalid) > 0 {
+		return Resource{}, &VaultCopyPathsError{Paths: invalid}
+	}
+	notes, err := applyVaultChanges(nil, input.Changes)
+	var collision *vaultPathConflict
+	if errors.As(err, &collision) {
+		return Resource{}, &VaultCopyPathsError{Paths: []string{collision.first, collision.second}}
+	}
+	if err != nil {
+		return Resource{}, err
+	}
+	input.Name = strings.TrimSpace(input.Name)
+	operation := Digest(struct {
+		Name   string
+		Origin VaultOrigin
+		Notes  map[string]string
+	}{input.Name, input.Origin, notes})
+	return s.createVault(ctx, p, root, input.ID, input.Name, "", vaultInitial{origin: &input.Origin, notes: notes, operation: operation})
+}
+
+func (s *Store) createVault(ctx context.Context, p Principal, root, id, name, description string, initial vaultInitial) (Resource, error) {
 	if !p.IsOwner() {
 		if err := s.CheckLibraryPersonal(ctx, p); err != nil {
 			return Resource{}, err
 		}
 	}
 	name = strings.TrimSpace(name)
+	description = strings.TrimSpace(description)
 	if !filepath.IsAbs(root) || !validVaultID(id) || name == "" ||
 		utf8.RuneCountInString(name) > 100 || strings.ContainsFunc(name, unicode.IsControl) {
 		return Resource{}, ErrInvalid
 	}
-	if existing, err := s.Resource(ctx, id); err == nil {
-		if existing.Relation != VaultRelation || existing.Name != name || existing.Description != strings.TrimSpace(description) {
+	version := Digest(id)
+	existingVault := func(existing Resource) (Resource, error) {
+		if existing.Relation != VaultRelation {
 			return Resource{}, ErrConflict
 		}
+		if initial.operation == "" {
+			if existing.VaultOrigin != nil || existing.Name != name || existing.Description != description {
+				return Resource{}, ErrConflict
+			}
+		} else {
+			snapshot, err := s.Snapshot(ctx, id, version)
+			if err != nil || snapshot.VaultOperation != initial.operation {
+				return Resource{}, ErrConflict
+			}
+		}
 		return existing, nil
+	}
+	if existing, err := s.Resource(ctx, id); err == nil {
+		return existingVault(existing)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Resource{}, err
 	}
-	r := Resource{ID: id, Name: name, Description: strings.TrimSpace(description), Kind: "corpus", NativeEditable: true, Relation: VaultRelation, Sections: []Section{
+	r := Resource{ID: id, Name: name, Description: description, Kind: "corpus", NativeEditable: true, Relation: VaultRelation, VaultOrigin: initial.origin, Sections: []Section{
 		{ID: vaultSection, Name: "笔记", Fields: []string{"name", "text", "sha256"}},
 	}}
 	if err := r.Validate(); err != nil {
-		return Resource{}, err
-	}
-	version := Digest(id)
-	if err := os.MkdirAll(root, 0700); err != nil {
-		return Resource{}, err
-	}
-	parent := filepath.Join(root, id)
-	if err := makeVaultDirectory(parent); err != nil {
-		return Resource{}, err
-	}
-	if err := makeVaultDirectory(filepath.Join(parent, version)); err != nil {
 		return Resource{}, err
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -113,19 +194,38 @@ func (s *Store) createVault(ctx context.Context, p Principal, root, id, name, de
 		r.ID, jsonText(r), version); err != nil {
 		_ = tx.Rollback()
 		if existing, readErr := s.Resource(ctx, id); readErr == nil {
-			if existing.Relation != VaultRelation || existing.Name != name || existing.Description != strings.TrimSpace(description) {
-				return Resource{}, ErrConflict
-			}
-			return existing, nil
+			return existingVault(existing)
 		}
 		return Resource{}, err
 	}
-	snapshot := Snapshot{ResourceID: id, Version: version, Sections: r.Sections}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO wb_snapshots
-		(resource_id,version,previous_version,state,body,published_at) VALUES(?,?,'','published',?,UTC_TIMESTAMP(6))`,
-		id, version, jsonText(snapshot)); err != nil {
+	if err = os.MkdirAll(root, 0700); err != nil {
 		return Resource{}, err
 	}
+	parent := filepath.Join(root, id)
+	if err = makeVaultDirectory(parent); err != nil {
+		return Resource{}, err
+	}
+	target := filepath.Join(parent, version)
+	keepFiles := false
+	if _, err = os.Lstat(target); errors.Is(err, os.ErrNotExist) {
+		defer func() {
+			if !keepFiles {
+				_ = os.RemoveAll(target)
+				_ = os.Remove(parent)
+			}
+		}()
+	} else if err != nil {
+		return Resource{}, err
+	}
+	records, fingerprint, err := writeVaultVersion(ctx, parent, version, initial.notes)
+	if err != nil {
+		return Resource{}, err
+	}
+	snapshot := Snapshot{ResourceID: id, Version: version, Sections: r.Sections, SourceWatermark: fingerprint, VaultOperation: initial.operation}
+	if err = insertVaultSnapshot(ctx, tx, snapshot, records); err != nil {
+		return Resource{}, err
+	}
+	keepFiles = true
 	if err = tx.Commit(); err != nil {
 		return Resource{}, err
 	}
@@ -133,7 +233,25 @@ func (s *Store) createVault(ctx context.Context, p Principal, root, id, name, de
 }
 
 func (s *Store) SaveVault(ctx context.Context, p Principal, root, id, previous string, changes []VaultChange) (Snapshot, error) {
-	if len(previous) != 64 || !ValidID(previous) || len(changes) == 0 || len(changes) > 200 {
+	if len(changes) > 200 {
+		return Snapshot{}, ErrInvalid
+	}
+	return s.saveVaultChanges(ctx, p, root, id, previous, changes)
+}
+
+// SaveVaultRename applies the old path, new path, and affected Markdown in one version.
+func (s *Store) SaveVaultRename(ctx context.Context, p Principal, root, id, previous string, changes []VaultChange) (Snapshot, error) {
+	if !p.IsOwner() {
+		return Snapshot{}, ErrDenied
+	}
+	if len(changes) < 2 || len(changes) > 10001 {
+		return Snapshot{}, ErrInvalid
+	}
+	return s.saveVaultChanges(ctx, p, root, id, previous, changes)
+}
+
+func (s *Store) saveVaultChanges(ctx context.Context, p Principal, root, id, previous string, changes []VaultChange) (Snapshot, error) {
+	if len(previous) != 64 || !ValidID(previous) || len(changes) == 0 {
 		return Snapshot{}, ErrInvalid
 	}
 	version := Digest(struct {
@@ -243,17 +361,8 @@ func (s *Store) saveVault(ctx context.Context, p Principal, root, id, previous, 
 	}
 	snapshot := Snapshot{ResourceID: id, Version: version, Previous: previous,
 		Sections: r.Sections, SourceWatermark: fingerprint, VaultOperation: operation, VaultItemID: itemID}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO wb_snapshots
-		(resource_id,version,previous_version,state,body,record_count,published_at)
-		VALUES(?,?,?,'published',?,?,UTC_TIMESTAMP(6))`, id, version, previous, jsonText(snapshot), len(records)); err != nil {
+	if err = insertVaultSnapshot(ctx, tx, snapshot, records); err != nil {
 		return Snapshot{}, err
-	}
-	// Bound each insert even when Markdown expands substantially as JSON.
-	const batchSize = 16
-	for offset := 0; offset < len(records); offset += batchSize {
-		if err = insertSnapshotRecords(ctx, tx, id, version, records[offset:min(offset+batchSize, len(records))]); err != nil {
-			return Snapshot{}, err
-		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE wb_resources SET current_version=?,revision=revision+1 WHERE id=?`, version, id); err != nil {
 		return Snapshot{}, err
@@ -268,6 +377,22 @@ func (s *Store) saveVault(ctx context.Context, p Principal, root, id, previous, 
 		return Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func insertVaultSnapshot(ctx context.Context, tx *sql.Tx, snapshot Snapshot, records []Record) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO wb_snapshots
+		(resource_id,version,previous_version,state,body,record_count,published_at)
+		VALUES(?,?,?,'published',?,?,UTC_TIMESTAMP(6))`, snapshot.ResourceID, snapshot.Version, snapshot.Previous, jsonText(snapshot), len(records)); err != nil {
+		return err
+	}
+	// Bound each insert even when Markdown expands substantially as JSON.
+	const batchSize = 16
+	for offset := 0; offset < len(records); offset += batchSize {
+		if err := insertSnapshotRecords(ctx, tx, snapshot.ResourceID, snapshot.Version, records[offset:min(offset+batchSize, len(records))]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ChangeVaultItem(ctx context.Context, p Principal, root string, in LibraryChange) (LibraryReceipt, error) {
@@ -350,8 +475,11 @@ func applyVaultChanges(records []Record, changes []VaultChange) (map[string]stri
 	}
 	touched := make(map[string]bool, len(changes))
 	for _, change := range changes {
-		if !validVaultPath(change.Path) || touched[change.Path] {
+		if !validVaultPath(change.Path) {
 			return nil, ErrInvalid
+		}
+		if touched[change.Path] {
+			return nil, &vaultPathConflict{first: change.Path, second: change.Path}
 		}
 		touched[change.Path] = true
 		if _, exists := notes[change.Path]; change.Create && exists {
@@ -369,19 +497,20 @@ func applyVaultChanges(records []Record, changes []VaultChange) (map[string]stri
 			notes[change.Path] = *change.Text
 		}
 	}
-	seen := make(map[string]string, len(notes))
+	type pathOwner struct{ spelling, note string }
+	seen := make(map[string]pathOwner, len(notes))
 	var bytes int
 	for name, body := range notes {
 		bytes += len(body)
 		for key := name; key != "."; key = path.Dir(key) {
 			if _, isFile := notes[key]; key != name && isFile {
-				return nil, fmt.Errorf("%w: a Markdown file is also used as a folder", ErrInvalid)
+				return nil, &vaultPathConflict{first: key, second: name}
 			}
 			folded := norm.NFC.String(strings.ToLower(key))
-			if other, exists := seen[folded]; exists && other != key {
-				return nil, fmt.Errorf("%w: ambiguous Markdown path", ErrInvalid)
+			if other, exists := seen[folded]; exists && other.spelling != key {
+				return nil, &vaultPathConflict{first: other.note, second: name}
 			}
-			seen[folded] = key
+			seen[folded] = pathOwner{spelling: key, note: name}
 		}
 	}
 	if len(notes) > 10000 || bytes > 32*1024*1024 {

@@ -49,7 +49,8 @@
     "library-command.js",
     "vault-markdown.js",
     "vault-editor.bundle.js",
-    "vault-editor.LICENSES.txt"
+    "vault-editor.LICENSES.txt",
+    "OBSIDIAN-WEB-GATEWAY.LICENSE.txt"
   ],
   "dsh": {
     "bundle": {

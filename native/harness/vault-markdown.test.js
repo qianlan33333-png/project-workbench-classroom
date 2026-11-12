@@ -1,6 +1,61 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {directoryVault, searchVault, vaultView} from './vault-markdown.js';
+import {directoryVault, renameVaultNote, searchVault, vaultView} from './vault-markdown.js';
+
+test('imported metadata is folded separately without modifying the source Markdown', () => {
+  const sourcePath = 'product-operation-packs/sku-31314141/v1/无具体交流跟进规则.md';
+  const text = [
+    '# 原中心配置资料 · ' + sourcePath, '',
+    '> 仅作为原方法与配置资料引用，不自动启用旧定时器或执行旧指令。来源 SHA256：`' + 'a'.repeat(64) + '`；片段 1/1。', '',
+    '# 无具体交流时的服务跟进（2026-10-21）', '', '| 名称 | 说明 |', '| --- | --- |', '| 语料 | 内容 |',
+  ].join('\n');
+  const documents = [{path: sourcePath + '.md', text}];
+  const {document} = vaultView(documents, undefined, {originalCenter:true});
+  assert.equal(document.text, text);
+  assert.equal(document.source.path, sourcePath);
+  assert.equal(document.source.sha256, 'a'.repeat(64));
+  assert.equal(document.source.fragment, '1/1');
+  assert.ok(document.html.startsWith('<h1>无具体交流时的服务跟进（2026-10-21）</h1>'));
+  assert.match(document.html, /class="wb-vault-table"/);
+  assert.equal(vaultView(documents).document.source, undefined);
+  const withoutTitle = vaultView([{...documents[0], text:text.split('\n\n').slice(0,2).join('\n\n')+'\n\n笔记正文'}],
+    undefined, {originalCenter:true}).document;
+  assert.equal(withoutTitle.hasTitle, false);
+  assert.equal(withoutTitle.html, '<p>笔记正文</p>');
+});
+
+test('moving a note rewrites resolved links and outgoing relative links in one change set', () => {
+  const oldPath = '甲/旧笔记.md', newPath = '归档/服务/新 笔记.md';
+  const docs = [
+    {path:oldPath, text:'## 标题\n\n[旁注](./说明.md#节) [[./说明#节]] [[#标题]]'},
+    {path:'甲/说明.md', text:'## 节'},
+    {path:'乙/旧笔记.md', text:'同名'},
+    {path:'索引.md', text:[
+      '[[甲/旧笔记#标题|别名]] [[旧笔记]] `[[甲/旧笔记]]`',
+      '[**正文**](甲/旧笔记.md#标题 "原说明") [引用][main]',
+      '', '[main]: <甲/旧笔记.md#标题> "原引用"', '',
+      '```md', '[[甲/旧笔记]]', '```',
+    ].join('\n')},
+  ];
+  const changes = renameVaultNote(docs, oldPath, newPath);
+  assert.deepEqual(changes.map(change => change.path), [oldPath,newPath,'索引.md']);
+  assert.equal(changes[0].text, null);
+  assert.equal(changes[1].create, true);
+  assert.match(changes[1].text, /\.\.\/\.\.\//);
+  assert.match(changes[1].text, /\[\[#标题\]\]/);
+  assert.match(changes[2].text, /\[\[新 笔记#标题\|别名\]\] \[\[旧笔记\]\] `\[\[甲\/旧笔记\]\]`/);
+  assert.match(changes[2].text, /#标题> "原说明"/);
+  assert.match(changes[2].text, /#标题> "原引用"/);
+  assert.ok(changes[2].text.endsWith('```md\n[[甲/旧笔记]]\n```'));
+  const after = docs.filter(doc => !changes.some(change => change.path === doc.path))
+    .concat(changes.filter(change => change.text !== null));
+  const view = vaultView(after, newPath);
+  assert.deepEqual(view.backlinks, ['索引.md']);
+  assert.match(view.document.html, /href="#wb-vault\/%E7%94%B2%2F%E8%AF%B4%E6%98%8E.md\//);
+  const target = '#wb-vault/' + encodeURIComponent(newPath) + '/' + encodeURIComponent('标题');
+  assert.equal(vaultView(after, '索引.md').document.html.split(target).length-1, 3);
+  assert.throws(()=>renameVaultNote(docs, oldPath, '乙/旧笔记.md'), {status:409});
+});
 
 test('Vault uses Markdown paths, Chinese headings and real incoming links', () => {
   const home = '主题/运营方法.md';

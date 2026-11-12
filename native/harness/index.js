@@ -15,7 +15,7 @@ import { toolNamespace, namespaceOfTool } from './tool-namespace.js';
 import { installPersonalMemory } from './personal-memory.js';
 import { replyEvidenceProjection } from './reply-evidence.js';
 import { resourceDocuments } from './resource-documents.js';
-import {directoryVault, searchVault, vaultView} from './vault-markdown.js';
+import {directoryVault, renameVaultNote, searchVault, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
 import { createSuperAgent } from './superagent.js';
@@ -119,10 +119,43 @@ export async function apply(ctx, config) {
       body: data === undefined ? undefined : JSON.stringify(data),
       signal: signal ?? AbortSignal.timeout(30000),
     });
-    if (!response.ok)
+    if (!response.ok) {
+      if (path === '/vault-import' && response.status === 422) {
+        const error = await response.json();
+        throw Object.assign(requestError(error.error, 422), {invalidPaths:error.invalidPaths});
+      }
       throw requestError(`worker ${response.status}: ${(await response.text()).slice(0, 300)}`,response.status);
+    }
     return response.json();
   };
+  async function loadVault(resourceId, requestedVersion, projectId, signal) {
+    const read = path => call(path, owner, undefined, signal);
+    const resource = (await read('/resources')).find(item => item.id === resourceId);
+    if (!resource?.currentVersion) throw requestError('语料库不存在或尚未发布', 404);
+    const version = requestedVersion || resource.currentVersion;
+    const section = resource.sections.length === 1 && resource.sections.find(item =>
+      item.fields.includes('name') && (item.fields.includes('text') || item.fields.includes('markdown')));
+    const connection = resource.connectionId
+      ? (await read('/connections')).find(item => item.id === resource.connectionId)
+      : undefined;
+    const editable = resource.relation === 'obsidian-vault' && !resource.connectionId;
+    let notes;
+    if (editable || connection?.kind === 'directory') {
+      if (section) notes = await directoryVault(read, {...resource, currentVersion:version}, section.id);
+    } else {
+      if (projectId && !(await syncProjects(signal)).some(project => project.id === projectId)) {
+        throw requestError('项目不存在', 404);
+      }
+      const external = await resourceDocuments(config, call, projectId, resourceId, undefined, {
+        all:true, version, signal, identity:projectId ? undefined : owner,
+      });
+      if (external.external) notes = external.notes;
+    }
+    signal.throwIfAborted();
+    const originalCenter = (resource.vaultOrigin?.resourceId ?? resource.id) === 'context-center-config';
+    return {notes, version, editable, originalCenter};
+  }
+
   const projectCache=new Map();
   async function syncProjects(signal) {
     const projects = [];
@@ -503,31 +536,9 @@ export async function apply(ctx, config) {
               const disconnect = new AbortController();
               res.once("close", () => disconnect.abort());
               const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(30000)]);
-              const read = path => call(path, owner, undefined, signal);
               const resourceId = u.searchParams.get("resourceId");
-              const resource = (await read("/resources")).find(r => r.id === resourceId);
-              if (!resource?.currentVersion) throw requestError("语料库不存在或尚未发布", 404);
-              const version = u.searchParams.get("version") || resource.currentVersion;
-              let projectId;
-              const section = resource.sections.length === 1 && resource.sections.find(s => s.fields.includes("name") &&
-                (s.fields.includes("text") || s.fields.includes("markdown")));
-              const connection = resource.connectionId
-                ? (await read("/connections")).find(c => c.id === resource.connectionId)
-                : undefined;
-              const editable = resource.relation === "obsidian-vault" && !resource.connectionId;
-              let notes;
-              if (editable || connection?.kind === "directory") {
-                if (section) notes = await directoryVault(read, {...resource,currentVersion:version}, section.id);
-              } else {
-                projectId = u.searchParams.get("projectId") || undefined;
-                if (projectId && !(await syncProjects(signal)).some(project => project.id === projectId)) {
-                  throw requestError("项目不存在", 404);
-                }
-                const external = await resourceDocuments(config, call, projectId, resourceId, undefined, {
-                  all:true, version, signal, identity:projectId ? undefined : owner,
-                });
-                if (external.external) notes = external.notes;
-              }
+              const projectId = u.searchParams.get("projectId") || undefined;
+              const {notes, version, editable, originalCenter} = await loadVault(resourceId, u.searchParams.get("version"), projectId, signal);
               if (!notes || (!editable && notes.length === 0)) {
                 json(res, 200, {supported:false});
                 return;
@@ -538,9 +549,43 @@ export async function apply(ctx, config) {
                 return;
               }
               const requested = u.searchParams.get("note") ?? undefined;
-              const view = vaultView(notes, requested);
+              const view = vaultView(notes, requested, {originalCenter});
               if (requested && !view.document) throw requestError("笔记不存在", 404);
               json(res, 200, {supported:true, editable, projectId, version, ...view});
+              return;
+            }
+            if (req.method === 'POST' && (path === '/vault-copy' || path === '/vault-rename')) {
+              const origin = req.headers.origin;
+              if (!origin || new URL(origin).host !== req.headers.host) throw requestError('origin rejected', 403);
+              const input = await body(req);
+              const {resourceId, version, projectId} = input;
+              if (typeof resourceId !== 'string' || typeof version !== 'string' || !version) {
+                throw requestError('请选择语料库和资料版本');
+              }
+              const disconnect = new AbortController();
+              res.once('close', () => disconnect.abort());
+              const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(90000)]);
+              const vault = await loadVault(resourceId, version, projectId, signal);
+              if (path === '/vault-rename') {
+                if (!vault.editable || !vault.notes) throw requestError('语料库只读', 403);
+                const {from, to} = input;
+                if (typeof from !== 'string' || typeof to !== 'string' || to.length > 1024) throw requestError('无效的笔记路径');
+                const changes = renameVaultNote(vault.notes, from, to);
+                json(res, 200, await call('/vault-rename', owner, {resourceId, version, changes}, signal));
+              } else {
+                if (vault.editable || !vault.notes?.length) throw requestError('该来源不支持复制', 403);
+                const paths = searchVault(vault.notes, '').map(note => note.path);
+                const chosen = input.paths ?? paths.filter(item => /\.md$/i.test(item));
+                if (!Array.isArray(chosen) || !chosen.length || chosen.some(value => typeof value !== 'string') ||
+                    new Set(chosen).size !== chosen.length) throw requestError('请选择要复制的笔记');
+                const available = new Set(paths);
+                const missing = chosen.filter(item => !available.has(item));
+                if (missing.length) throw Object.assign(requestError('部分笔记已不在当前目录。', 422), {invalidPaths:missing});
+                const selection = new Set(chosen);
+                const changes = vault.notes.filter(note => selection.has(note.path))
+                  .map(note => ({path:note.path, text:note.text, create:true}));
+                json(res, 200, await call('/vault-import', owner, {id:input.id, name:input.name, origin:{resourceId, version}, changes}, signal));
+              }
               return;
             }
             if(req.method==='GET'&&path==='/reply-experts'){
@@ -731,7 +776,7 @@ export async function apply(ctx, config) {
             }
             json(res, 404, { error: "unknown operation" });
           } catch (e) {
-            if (!res.destroyed) json(res, e.status||(e instanceof SyntaxError?400:503), { error: e.message });
+            if (!res.destroyed) json(res, e.status||(e instanceof SyntaxError?400:503), { error: e.message, invalidPaths: e.invalidPaths });
           }
         },
       }),

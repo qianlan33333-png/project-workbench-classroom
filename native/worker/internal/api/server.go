@@ -191,7 +191,11 @@ func respond(w http.ResponseWriter, v any, e error) {
 	http.Error(w, e.Error(), status)
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024*1024))
+	return decodeLimited(w, r, v, 8*1024*1024)
+}
+
+func decodeLimited(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	d.DisallowUnknownFields()
 	if e := d.Decode(v); e != nil {
 		http.Error(w, "invalid request", 400)

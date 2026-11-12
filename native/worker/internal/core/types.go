@@ -64,6 +64,7 @@ type Resource struct {
 	Kind               string         `json:"kind,omitempty"`
 	Description        string         `json:"description,omitempty"`
 	NativeEditable     bool           `json:"nativeEditable,omitempty"`
+	VaultOrigin        *VaultOrigin   `json:"vaultOrigin,omitempty"`
 	JSONSource         *JSONSource    `json:"jsonSource,omitempty"`
 	MinRecords         int            `json:"minRecords,omitempty"`
 	MinRetainedPercent int            `json:"minRetainedPercent,omitempty"`

@@ -234,3 +234,109 @@ func TestMySQLVaultCreateSaveAndExistingAccess(t *testing.T) {
 		})
 	}
 }
+
+func TestMySQLVaultCopyPublishesAtomically(t *testing.T) {
+	dsn := os.Getenv("WORKBENCH_TEST_DSN")
+	if dsn == "" {
+		t.Skip("isolated MySQL not configured")
+	}
+	if !strings.Contains(dsn, "/workbench_native_acceptance") {
+		t.Fatal("isolated database required")
+	}
+	ctx := context.Background()
+	store, err := core.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(store.Migrate(ctx))
+	source := "source-" + uuid.NewString()
+	owner := core.Principal{Kind: "owner", SessionID: source + "-owner"}
+	reader := core.Principal{Kind: "project", ProjectID: source + "-reader", SessionID: source + "-session"}
+	must(store.PutProject(ctx, owner, core.Project{ID: reader.ProjectID, Name: "仅原库读权"}))
+	must(store.PutResource(ctx, owner, core.Resource{ID: source, Name: "原语料",
+		Sections: []core.Section{{ID: "text", Fields: []string{"name", "text"}}}}))
+	must(store.BeginSnapshot(ctx, owner, core.Snapshot{ResourceID: source, Version: "original"}))
+	markdown := "# 内容\n\n[[说明]]\r\n"
+	must(store.Stage(ctx, owner, source, "original", []core.Record{
+		{ID: "item", Fields: map[string]any{"name": "原目录/笔记.md", "text": markdown}},
+	}))
+	_, err = store.Publish(ctx, owner, source, "original", 1)
+	must(err)
+	_, err = store.SetResourceGrant(ctx, owner, source, core.ResourceAccess{
+		ProjectID: reader.ProjectID, Mode: "read", Sections: []string{"text"},
+	})
+	must(err)
+
+	root := t.TempDir()
+	input := core.VaultCopy{ID: "vault-" + uuid.NewString(), Name: "隔离副本", Origin: core.VaultOrigin{ResourceID: source, Version: "original"},
+		Changes: []core.VaultChange{{Path: "原目录/笔记.md", Text: &markdown}}}
+	_, err = store.CopyVault(ctx, reader, root, input)
+	if !errors.Is(err, core.ErrDenied) {
+		t.Fatalf("reader created a copy: %v", err)
+	}
+	invalid := input
+	invalid.Changes = append(append([]core.VaultChange{}, input.Changes...), core.VaultChange{Path: "另一个.txt", Text: &markdown})
+	_, err = store.CopyVault(ctx, owner, root, invalid)
+	var paths *core.VaultCopyPathsError
+	if !errors.As(err, &paths) || len(paths.Paths) != 1 || paths.Paths[0] != "另一个.txt" {
+		t.Fatalf("invalid paths were not reported: %v", err)
+	}
+	colliding := input
+	colliding.Changes = []core.VaultChange{{Path: "A/一.md", Text: &markdown}, {Path: "a/二.md", Text: &markdown}}
+	_, err = store.CopyVault(ctx, owner, root, colliding)
+	if !errors.As(err, &paths) || len(paths.Paths) != 2 || !strings.Contains(strings.Join(paths.Paths, ","), "/二.md") ||
+		!strings.Contains(strings.Join(paths.Paths, ","), "/一.md") {
+		t.Fatalf("colliding notes were not reported: %+v, %v", paths, err)
+	}
+	// Fail after the Markdown has been staged, while publishing the first version.
+	_, err = store.DB.ExecContext(ctx, "CREATE TRIGGER vault_copy_test_failure BEFORE INSERT ON wb_records FOR EACH ROW BEGIN "+
+		"IF NEW.resource_id = '"+input.ID+"' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'copy fixture failure'; END IF; END")
+	must(err)
+	defer store.DB.ExecContext(ctx, "DROP TRIGGER IF EXISTS vault_copy_test_failure")
+	_, err = store.CopyVault(ctx, owner, root, input)
+	if err == nil || !strings.Contains(err.Error(), "copy fixture failure") {
+		t.Fatalf("did not exercise a publish failure: %v", err)
+	}
+	if _, err = store.Resource(ctx, input.ID); !core.IsMissing(err) {
+		t.Fatalf("partially published copy: %v", err)
+	}
+	if _, err = os.Stat(filepath.Join(root, input.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged Markdown was left behind: %v", err)
+	}
+	_, err = store.DB.ExecContext(ctx, "DROP TRIGGER vault_copy_test_failure")
+	must(err)
+
+	copied, err := store.CopyVault(ctx, owner, root, input)
+	must(err)
+	retry, err := store.CopyVault(ctx, owner, root, input)
+	must(err)
+	if copied.CurrentVersion == "" || copied.CurrentVersion != retry.CurrentVersion || copied.VaultOrigin == nil || *copied.VaultOrigin != input.Origin {
+		t.Fatalf("copy retry or source version mismatch: %+v, %+v", copied, retry)
+	}
+	got, err := os.ReadFile(filepath.Join(root, input.ID, copied.CurrentVersion, filepath.FromSlash(input.Changes[0].Path)))
+	must(err)
+	if string(got) != markdown {
+		t.Fatalf("copied Markdown changed: %q", got)
+	}
+	_, err = store.Read(ctx, reader, core.Ref{ResourceID: input.ID, Version: copied.CurrentVersion, Section: "text"}, "", 1)
+	if !errors.Is(err, core.ErrDenied) {
+		t.Fatalf("the copy inherited the original grant: %v", err)
+	}
+	original, err := store.Resource(ctx, source)
+	must(err)
+	if original.CurrentVersion != input.Origin.Version {
+		t.Fatalf("source version changed during copy: %q", original.CurrentVersion)
+	}
+	input.Name = "同编号不同请求"
+	_, err = store.CopyVault(ctx, owner, root, input)
+	if !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("same id accepted different copy: %v", err)
+	}
+}
