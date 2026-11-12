@@ -1,0 +1,24 @@
+[Unit]
+Description=Workbench activation management (SQLPage)
+After=mysql.service
+
+[Service]
+User=workbench-activation
+Group=workbench-activation
+RuntimeDirectory=workbench-activation
+RuntimeDirectoryMode=0700
+EnvironmentFile=/etc/workbench-activation/sqlpage.env
+Environment=SQLPAGE_UNIX_SOCKET=/run/workbench-activation/sqlpage.sock
+Environment=SQLPAGE_WEB_ROOT=/opt/workbench-activation/admin
+Environment=SQLPAGE_CONFIGURATION_DIRECTORY=/opt/workbench-activation/sqlpage
+Environment=SQLPAGE_SITE_PREFIX=/activation-codes/
+Environment=SQLPAGE_ENVIRONMENT=production
+Environment=SQLPAGE_MAX_DATABASE_POOL_CONNECTIONS=2
+Environment=SQLPAGE_MAX_UPLOADED_FILE_SIZE=2048
+ExecStart=/opt/workbench-activation/sqlpage.bin
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

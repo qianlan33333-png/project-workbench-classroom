@@ -1,0 +1,16 @@
+[Unit]
+Description=Workbench activation issuer
+After=network.target mysql.service
+
+[Service]
+User=workbench-activation
+Group=workbench-activation
+EnvironmentFile=/etc/workbench-activation/issuer.env
+Environment=WORKBENCH_ACTIVATION_SQLPAGE_SOCKET=/run/workbench-activation/sqlpage.sock
+ExecStart=/opt/workbench-activation/activation-issuer
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

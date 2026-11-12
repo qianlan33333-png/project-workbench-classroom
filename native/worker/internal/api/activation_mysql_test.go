@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"workbench-native/internal/activation"
 	"workbench-native/internal/core"
 )
 
@@ -48,7 +49,7 @@ func TestMySQLActivationCodeHasOneWinnerAndCanBeRetried(t *testing.T) {
 	}
 	issued := request("/activation/codes", "owner", "activation-fixture", nil)
 	var code struct{ Code string }
-	if issued.Code != 200 || json.Unmarshal(issued.Body.Bytes(), &code) != nil || !activationCode.MatchString(code.Code) {
+	if issued.Code != 200 || json.Unmarshal(issued.Body.Bytes(), &code) != nil || !activation.CodePattern.MatchString(code.Code) {
 		t.Fatalf("invalid issuance status=%d", issued.Code)
 	}
 	digest := sha256.Sum256([]byte(code.Code))
@@ -75,7 +76,7 @@ func TestMySQLActivationCodeHasOneWinnerAndCanBeRetried(t *testing.T) {
 	if retry := redeem(first.instance); retry.Code != 200 || retry.Body.String() != first.response.Body.String() {
 		t.Fatal("winning installation did not receive the original issue time")
 	}
-	expiredCode := strings.Repeat("E", 32)
+	expiredCode := strings.ReplaceAll(uuid.NewString(), "-", "")
 	expiredDigest := sha256.Sum256([]byte(expiredCode))
 	if _, err := store.DB.ExecContext(ctx, "INSERT INTO wb_activation_codes(digest, expires_at) VALUES (?, UTC_TIMESTAMP()-INTERVAL 1 DAY)", expiredDigest[:]); err != nil {
 		t.Fatal(err)
