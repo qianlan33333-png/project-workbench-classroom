@@ -149,3 +149,13 @@ final result: passed
 未见需修复的 P0、P1 或 P2。手机抓图留有点击瞬间的浏览器触摸高亮，不影响菜单布局或选项。
 
 final result: passed
+
+# 专家明细编辑页 · Product Design 验收
+
+源：`exec-97b55c97-eaa8-4184-b4b8-3dba7c578186.png`（已选设计稿，1585 × 992）。候选：`.var/experts/documents-audit/candidate-editor-1440.png`、`candidate-editor-390.png`（1440 × 900、390 × 900 CSS 像素，DPR 1）。同图对照：`.var/experts/documents-audit/compare.png`。
+
+- 桌面全图及局部：保留工作台侧栏；明细内部是文档目录、左编辑、右预览。主文档固定显示，辅助页使用原生操作菜单，无源码模式栏。沿用原生字体和白底灰线，边距和面板宽度随实际内容区缩放，保留现有 Markdown 语法高亮。测试文案和草稿按钮与设计稿示例不同。
+- 手机：文档目录按需展开，编辑、预览分别占满内容区；保存动作在顶栏内换行，无横向溢出。验证了两字段创建、文档新建、插入引用、确认移除、撤销、保存和重新打开。
+- 预览采用实际 Markdown 渲染，链接删除后等待预览读回无链接；浏览器主旅程无页面异常。未见阻塞验收的视觉差异。
+
+final result: passed
