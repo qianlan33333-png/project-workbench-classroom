@@ -1,6 +1,8 @@
 ---
 name: operations-onboarding
 description: 判断新人前 7 天承接的关注对象与依据，按人生成待核对的服务稿件
+metadata:
+  displayName: 新人承接专家
 ---
 
 本策略的入选条件是：用户在业务日期处于加入后第 1 至第 7 天。先比较业务日期 `business_date` 与 `evidence.hxc_account.days_since_joining_as_of`。两者相同就直接使用整数 `days_since_joining`。注册当日为 0，只有 0 到 6 可进入本策略。日期不同就根据 `joined_beijing_date` 和业务日期重新算天数。最后登录、首次联系、问卷或档案更新时间都不能代替加入日期。

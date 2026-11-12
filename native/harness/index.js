@@ -282,7 +282,7 @@ export async function apply(ctx, config) {
     ]);
     const options = skills.filter(item => (!reply || item.invocation?.modelInvocable !== false) && (item.projectId === project.id || item.source === 'managed' ||
       (!bundledMethods.has(item.name) && ['user-dsh', 'user-agents'].includes(item.source)) ||
-      (reply && item.name === 'customer-reply')));
+      (reply ? item.name === 'customer-reply' : item.source === 'bundled' && item.name !== 'customer-reply')));
     let preferred = configured.expertId;
     if (reply && !preferred) {
       const old = await call('/reply-settings?projectId=' + encodeURIComponent(project.id), owner, undefined, signal);
@@ -1069,6 +1069,10 @@ export async function apply(ctx, config) {
               }
               const agent=await ensureSession(id,w.path);
               if (expertManagement && w.path !== personalPath && !id.startsWith('object-') && (requested || input.text)) {
+                if (input.sessionId && requested && !input.text && agent.status !== 'idle' &&
+                    !(await call('/session/expert', identity(agent))).expertId) {
+                  throw requestError('首轮正在绑定专家，请稍后再选择', 409);
+                }
                 await bindProjectExpert(identity(agent), project, requested);
               }
               if (!input.sessionId) await w.attachSession(id);

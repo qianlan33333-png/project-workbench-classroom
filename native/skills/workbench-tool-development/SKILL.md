@@ -1,6 +1,8 @@
 ---
 name: workbench-tool-development
 description: 为原生个人工作台扩展通用资源、专家方法或标准 MCP 工具；在新增工具、外部系统连接器、批量任务与自动应答能力时使用。
+metadata:
+  displayName: 工作台工具开发
 ---
 
 # 工作台扩展

@@ -1576,7 +1576,12 @@ window.__ModuleLoader__.load({
       useEffect(()=>{
         let request=0,alive=true;
         const read=()=>{const n=++request;api("/project-list").then(data=>{
-          if(alive&&n===request){rememberPersonal(data.personalSessionId);setState({data})}
+          if(alive&&n===request){
+            rememberPersonal(data.personalSessionId);
+            const hidden=new Set([data.personalWorkspaceId,...data.projects.filter(p=>p.type!=="ordinary").map(p=>p.workspaceId)]);
+            if(hidden.size!==replyWorkspaceIds.size||[...hidden].some(id=>!replyWorkspaceIds.has(id)))replyWorkspaceIds=hidden;
+            setState({data});
+          }
         }).catch(error=>{if(alive&&n===request)setState(previous=>({...previous,error:error.message}))});};
         read();
         const detach=onEvent("wb-project-list",read);
@@ -2486,6 +2491,12 @@ window.__ModuleLoader__.load({
 .wb-brand-mark{display:block;flex:none}.wb-more-anchor{width:100%}
 div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-hero]){display:none}
 [data-slot="settings.section"] [class$="_rowCard"]:has(button[aria-label*="(deepseek-official)"]) [class$="_editorRoute"]{display:none}
+.wb-expert-trigger{border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);display:inline-flex;align-items:center;gap:4px;max-width:min(100%,360px);min-height:28px;padding:0 8px;cursor:pointer;font:inherit;font-size:13px;font-weight:500;line-height:20px}
+.wb-expert-trigger:hover,.wb-expert-trigger[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover)}
+.wb-expert-trigger:disabled{opacity:.6;cursor:default}
+.wb-expert-trigger span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wb-expert-trigger svg{flex:none}
+.wb-expert-error{font-size:12px}
 .wb-session-projects{display:grid;gap:8px}
 .wb-session-projects button{text-align:left}
 .wb-more-trigger{display:flex;align-items:center;gap:10px;width:100%;min-height:36px;padding:0 12px;background:transparent;color:inherit;border:0;border-radius:8px;font:inherit;text-align:left;cursor:pointer}
@@ -2509,90 +2520,119 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
 @media(max-width:480px){.wb-link-row{flex-wrap:wrap;padding:8px 0}.wb-link-row strong{min-width:74px}.wb-link-panel{padding-bottom:8px}}
 `;
 
-    const showExpertPicker = "wb-session-expert";
-    function requestSessionExpert(project, sessionId) {
-      window.dispatchEvent(new CustomEvent(showExpertPicker,{detail:{project,sessionId}}));
-    }
-    function SessionExpertPicker({project,sessionId,close,open}) {
-      const [data,setData]=useState(),[chosen,setChosen]=useState(""),[error,setError]=useState(""),[busy,setBusy]=useState(false);
-      const [makeDefault,setMakeDefault]=useState(false);
-      const [newSessionId]=useState(()=>sessionId?undefined:crypto.randomUUID());
-      useEffect(()=>{
-        let live=true;
-        api(query("/expert-options",{projectId:project.id,sessionId:sessionId||""})).then(value=>{
-          if(!live)return;
-          setData(value);
-          setChosen(value.bound||value.preferred||(value.options.length<=2?value.options.at(-1).id:""));
-        }).catch(e=>{if(live)setError(e.message)});
-        return()=>{live=false};
-      },[project.id,sessionId]);
-      const submit=async event=>{
-        event.preventDefault();setBusy(true);setError("");
-        try {
-          if(makeDefault)await api("/expert-default",{projectId:project.id,expertId:chosen,expected:data.configured||""});
-          const session=await api("/session/start",{workspaceId:project.workspaceId,sessionId,newSessionId,expertId:chosen});
-          await open(session.sessionId);
-          close();
-        }catch(e){setError(e.message)}finally{setBusy(false)}
-      };
-      return h(UI.Modal,{open:true,className:"wb-expert-dialog",title:sessionId?"绑定会话专家":"新会话",closeLabel:"关闭",onClose:()=>{if(!busy)close()}},
-        h("div",{className:"wb-page wb-expert-modal"},h("p",{className:"wb-muted"},project.name),
-          alert(error),!data&&!error&&h("p",{role:"status"},"正在读取专家…"),
-          data&&h("form",{className:"wb-form",onSubmit:submit},
-            field("会话专家",h("select",{required:true,value:chosen,onChange:e=>setChosen(e.target.value)},
-              h("option",{value:""},"请选择专家"),
-              ...data.options.map(option=>h("option",{key:option.id,value:option.id},expertTitle(option)+(option.projectId?" · 项目":""))))),
-            chosen&&h("p",{className:"wb-muted"},data.options.find(option=>option.id===chosen)?.description),
-            !sessionId&&chosen!==data.preferred&&h("label",{className:"wb-check"},h("input",{type:"checkbox",checked:makeDefault,onChange:e=>setMakeDefault(e.target.checked)}),"设为项目默认专家"),
-            h("div",{className:"wb-actions"},button("取消",close,{disabled:busy}),
-              h("button",{type:"submit",className:"wb-primary",disabled:busy||!chosen},sessionId?"确认绑定":"开始会话")))));
-    }
-    function SessionExpertLabel({ctx,sessionId}) {
-      const {data}=useProjectList();
-      const [info,setInfo]=useState(),[error,setError]=useState("");
+    const SessionExpert = React.createContext(null);
+    const expertRequired = "请先选择会话专家";
+    function ExpertConversation({ctx, sessionId, children}) {
+      const {data,error:projectError}=useProjectList();
       const workspaceId=useSyncExternalStore(
         listener=>ctx.workspaces.list.subscribe(listener),
         ()=>ctx.workspaces.list.getSnapshot().items.find(item=>item.sessionIds.includes(sessionId))?.workspaceId||"");
-      const project=data?.projects.find(item=>item.type==="ordinary"&&(item.workspaceId===workspaceId||item.sessionIds.includes(sessionId)));
+      const project=data?.expertManagement&&data.projects.find(item=>item.type==="ordinary"&&(item.workspaceId===workspaceId||item.sessionIds.includes(sessionId)));
+      const key=project&&sessionId?project.id+":"+sessionId:"";
+      const loadingProject=!!sessionId&&!data;
+      const blank=useSyncExternalStore(
+        listener=>ctx.sessions.list.subscribe(listener),
+        ()=>ctx.sessions.list.getSnapshot().byId[sessionId]?.blank);
+      const [state,setState]=useState(),[busy,setBusy]=useState(""),[error,setError]=useState(""),[refresh,setRefresh]=useState(0);
+      const pending=useRef(false),newSession=useRef(),readSequence=useRef(0);
+      const info=state?.key===key?state.info:undefined;
+      const selected=info&&(info.bound||(info.preferred?
+        info.options.find(option=>option.id===info.preferred)?.id:info.options.length<=2?info.options.at(-1)?.id:""));
+      const read=()=>api(query("/expert-options",{projectId:project.id,sessionId}));
       useEffect(()=>{
-        let live=true;
-        const read=()=>{
-          if(!data?.expertManagement||!project)return;
-          api(query("/expert-options",{projectId:project.id,sessionId})).then(value=>{if(live){setInfo(value);setError("")}})
-            .catch(e=>{if(live)setError(e.message)});
-        };
-        setInfo(undefined);read();
-        const detach=onEvent("wb-session-expert-bound",read);
-        return()=>{live=false;detach()};
-      },[data?.expertManagement,project?.id,sessionId]);
-      if(!data?.expertManagement||!project||!info)return error?h("span",{className:"wb-muted",title:error},"专家暂不可读"):null;
-      const bound=info.options.find(option=>option.id===info.bound);
-      if(!info.bound)return button("绑定专家",()=>requestSessionExpert(project,sessionId),{className:"wb-inline"});
-      const name=bound?expertTitle(bound):info.bound.split(":").at(-1);
-      return button(responsiveLabel(name+" · 换专家","换专家"),()=>requestSessionExpert(project),{
-        className:"wb-inline",title:"已绑定 "+name+"。换专家将创建新会话","aria-label":"已绑定 "+name+"，换专家并新建会话"});
+        if(!key)return;
+        let live=true;const sequence=++readSequence.current;
+        read().then(value=>{
+          if(live&&sequence===readSequence.current){setState({key,info:value});setError("")}
+        }).catch(e=>{if(live&&sequence===readSequence.current)setError(e.message)});
+        return()=>{live=false};
+      },[key,blank,refresh]);
+      const reason=loadingProject?(projectError?"项目暂不可读":"正在读取会话项目…"):
+        key&&(!selected||busy)?(busy?"正在保存会话专家…":!info&&!error?"正在读取会话专家…":expertRequired):"";
+      useEffect(()=>{
+        if(!reason)return;
+        const blocks=ctx.get("conversation")?.blocks;
+        if(!blocks)return;
+        const store=blocks.storeFor(sessionId),block={reason};
+        const protect=()=>{if(store.getSnapshot()===undefined)blocks.set(sessionId,block)};
+        protect();
+        const detach=store.subscribe(protect);
+        return()=>{detach();if(store.getSnapshot()===block)blocks.set(sessionId,undefined)};
+      },[ctx,sessionId,reason]);
+      const choose=async id=>{
+        if(!info||pending.current||id===info.bound)return;
+        pending.current=true;setBusy(id);setError("");
+        const navigation=id==="set-default"?undefined:ctx.layout.beginNavigation();
+        try{
+          if(id==="set-default"){
+            const saved=await api("/expert-default",{projectId:project.id,expertId:info.bound,expected:info.configured||""});
+            readSequence.current++;
+            setState({key,info:{...info,configured:saved.expertId,preferred:saved.expertId}});
+          }else{
+            const current=info.bound?info:await read();
+            if(navigation.aborted)return;
+            readSequence.current++;
+            setState({key,info:current});
+            if(id===current.bound)return;
+            const changing=!!current.bound;
+            if(changing&&newSession.current?.expertId!==id)newSession.current={expertId:id,id:crypto.randomUUID()};
+            const result=await api("/session/start",{workspaceId:project.workspaceId,
+              ...(changing?{newSessionId:newSession.current.id}:{sessionId}),expertId:id});
+            if(changing){
+              await ctx.sessions.refresh();
+              if(!navigation.aborted&&ctx.layout.panelInfo.getSnapshot().activePanelId===null&&
+                ctx.uiWorkspace.selection.getSnapshot().sessionId===sessionId)ctx.uiWorkspace.openSession(result.sessionId);
+              newSession.current=undefined;
+            }else{
+              readSequence.current++;
+              setState({key,info:{...current,bound:id}});
+            }
+          }
+        }catch(e){
+          if(e.status===409){
+            const latest=await read().catch(()=>null);
+            if(latest){readSequence.current++;setState({key,info:latest})}
+          }
+          setError(e.message);
+        }finally{
+          pending.current=false;setBusy("");
+        }
+      };
+      const context=key?{info,selected,busy,error,choose,retry:()=>setRefresh(value=>value+1)}:
+        loadingProject?{error:projectError,retry:notifyProjects}:null;
+      return h(SessionExpert.Provider,{value:context},children);
+    }
+    function SessionExpertMenu() {
+      const session=React.useContext(SessionExpert);
+      const [open,setOpen]=useState(false);
+      if(!session)return null;
+      const {info,selected,busy,error,choose,retry}=session;
+      const name=info?.options.find(option=>option.id===selected);
+      const label=name?expertTitle(name):selected?.split(":").at(-1)||(info||error?"选择专家":"读取专家…");
+      const items=info?.options.map(option=>({id:option.id,label:expertTitle(option)}))||[];
+      if(info?.bound&&info.bound!==info.configured)
+        items.push({id:"set-default",label:"设为项目默认",separatorBefore:true});
+      return h(React.Fragment,null,h(UI.Menu,{
+        open:open&&!!items.length,onClose:()=>setOpen(false),items,selectedId:selected,
+        onSelect:id=>{setOpen(false);void choose(id)},side:"bottom",align:"start",portal:true,
+        anchor:button(h(React.Fragment,null,h(UI.IconAgentPresetOutlineRegular,{size:16}),h("span",null,label),h(UI.IconChevronDownOutlineRegular,{size:12})),
+          ()=>{if(!open&&!info?.bound)retry();setOpen(value=>!value||!info)},{
+            className:"wb-expert-trigger","aria-label":info?.bound?"已绑定 "+label+"，换专家并新建会话":"选择会话专家",
+            "aria-haspopup":"menu","aria-expanded":open&&!!items.length,disabled:!!busy||!info&&!error,
+          }),
+      }),error&&h("span",{className:"wb-muted wb-expert-error",role:"alert"},error));
     }
     function installNewSession(ctx, openProject) {
       const showPicker = "wb-new-session-project";
       const workspace = ctx.uiWorkspace;
       const original = workspace.startSession;
-      const startIn = (project, options, expertManagement) => expertManagement
-        ? requestSessionExpert(project)
-        : original.call(workspace, project.workspaceId, options);
+      const startIn = (project, options) => original.call(workspace, project.workspaceId, options);
       function ProjectChooser() {
         const [choice, setChoice] = useState();
-        const [expert,setExpert]=useState();
         useEffect(() => onEvent(showPicker, event => setChoice(event.detail)), []);
-        useEffect(() => onEvent(showExpertPicker, event => setExpert(event.detail)), []);
-        if(expert)return h(SessionExpertPicker,{key:expert.project.id+":"+expert.sessionId,...expert,
-          close:()=>setExpert(undefined),open:async id=>{
-            await ctx.sessions.refresh();
-            workspace.openSession(id);
-            window.dispatchEvent(new Event("wb-session-expert-bound"));
-          }});
         if (!choice) return null;
         const close = () => setChoice(undefined);
-        const select = project => { close(); startIn(project, choice.options, choice.expertManagement); };
+        const select = project => { close(); startIn(project, choice.options); };
         if (!choice.error && !choice.projects.length) return h(NewProject, { ordinaryOnly: true, onClose: close, onCreated: openProject });
         return h(UI.Modal, { open: true, title: "新会话", closeLabel: "关闭", onClose: close },
           h("div", { className: "wb-page wb-session-projects" },
@@ -2613,27 +2653,35 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
           const ordinary = projects.filter(project => project.type === "ordinary");
           const target = ordinary.find(project => project.workspaceId === (workspaceId||activeWorkspaceId)) ||
             (ordinary.length === 1 ? ordinary[0] : undefined);
-          if (target) startIn(target, options, expertManagement);
-          else show({ projects: ordinary, expertManagement });
+          if (target) startIn(target, options);
+          else show({ projects: ordinary });
         }).catch(error => { if (!navigation.aborted) show({ error: error.message }); });
       }
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "workbench-new-session" }, ProjectChooser));
       ctx.slots.inject("conversation.session.header.utilities",()=>ctx.slots.register({
         name:"conversation.session.header.utilities",id:"workbench-session-expert",order:-25,inject:sessionId=>({sessionId}),
-      },({sessionId})=>sessionId&&!sessionId.startsWith("object-")?h(SessionExpertLabel,{ctx,sessionId}):null));
+      },({sessionId})=>sessionId&&!sessionId.startsWith("object-")?h(SessionExpertMenu,{key:sessionId}):null));
       function HeroExpert({Original,props}) {
         const {data}=useProjectList();
+        const expert=React.useContext(SessionExpert);
         const selected=useSyncExternalStore(
           listener=>workspace.selection.subscribe(listener),
           ()=>workspace.selection.getSnapshot().sessionId||"");
-        if (!data?.expertManagement) return h(Original,props);
-        return selected?h(SessionExpertLabel,{ctx,sessionId:selected}):null;
+        if (!expert&&!data?.expertManagement) return h(Original,props);
+        return selected?h(SessionExpertMenu,{key:selected}):null;
       }
       function HeaderPreset({Original,props}) {
         const {data}=useProjectList();
         return data?.expertManagement?null:h(Original,props);
       }
+      function HeroWorkspace({Original,props}) {
+        const {data}=useProjectList();
+        if(!data)return null;
+        if(!data.expertManagement)return h(Original,props);
+        return h(Original,{...props,useWorkspaces:select=>props.useWorkspaces(state=>select(filteredWorkspaces(state)))});
+      }
       wrapSlot(ctx,"conversation.hero.agentPreset",undefined,(Original,props)=>h(HeroExpert,{Original,props}));
+      wrapSlot(ctx,"conversation.hero.workspace",undefined,(Original,props)=>h(HeroWorkspace,{Original,props}));
       wrapSlot(ctx,"conversation.session.header.actions","agent-preset",(Original,props)=>h(HeaderPreset,{Original,props}));
       ctx.effect(() => {
         workspace.startSession = start;
@@ -2964,8 +3012,6 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
           const activePanel=props.usePanelInfo(info=>info.activePanelId);
           if(!data)return error?h("div",{className:"wb-project-shortcuts"},alert(error),button("重试",notifyProjects)):null;
           const special=data.projects.filter(p=>p.type!=="ordinary");
-          const hidden=new Set([data.personalWorkspaceId,...special.map(p=>p.workspaceId)]);
-          if(hidden.size!==replyWorkspaceIds.size||[...hidden].some(id=>!replyWorkspaceIds.has(id)))replyWorkspaceIds=hidden;
           return h("section",{className:"wb-project-tree","aria-label":"项目与会话"},
             props.wide !== false && h(ProjectLookup,{projects:data.projects,openProject}),
             h(Original,{...props,requestAddWorkspace:()=>setCreate(true),
@@ -2993,7 +3039,7 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
           if(props.sessionId?.startsWith('object-'))return h(ReplyPage,{key:props.sessionId,sessionId:props.sessionId,openSession:openCustomer});
           const conversation=h(Original,props);
           if(personalId&&props.sessionId===personalId)return h(TodayConversation,{openSession},conversation);
-          return conversation;
+          return h(ExpertConversation,{key:props.sessionId,ctx,sessionId:props.sessionId},conversation);
         }
         base.component=CustomerConversation;return()=>{if(base.component===CustomerConversation)base.component=Original};
       });
