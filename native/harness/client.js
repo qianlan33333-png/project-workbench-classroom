@@ -1852,6 +1852,7 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
       const translate = t => (key, values) => unbrand(t(key, values));
       const modelLabels = new WeakMap();
       const modelSettings = new WeakMap();
+      const onboardingSteps = new WeakMap();
       ctx.slots.inject("conversation.hero.brand.mark", () => ctx.slots.register({ name: "conversation.hero.brand.mark" },
         () => h("span", { hidden: true, "data-wb-empty-hero": "" })));
       const displayDirectory = snapshot => {
@@ -1907,10 +1908,13 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
         },
       }));
       wrapSlot(ctx, "main", "plugins", (Original, props) => h(Original, { ...props, t: translate(props.t) }));
-      wrapSlot(ctx, "settings.onboarding", "welcome-notice", function SkipWelcome(_Original, { complete }) {
-        useEffect(() => { complete(); }, [complete]);
-        return null;
-      });
+      wrapSlot(ctx, "sidebar.settings", undefined, (Original, props) => h(Original, { ...props,
+        useOnboardingSteps: select => props.useOnboardingSteps(steps => {
+          if (!onboardingSteps.has(steps)) onboardingSteps.set(steps,
+            steps.filter(step => step.id !== "welcome-notice" && step.id !== "deepseek-official"));
+          return select(onboardingSteps.get(steps));
+        }),
+      }));
       ctx.effect(() => {
         const title = document.head.querySelector("title");
         if (!title) return;
