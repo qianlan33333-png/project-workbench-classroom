@@ -396,12 +396,14 @@ window.__ModuleLoader__.load({
     function VaultEditor({text,onChange,onStatus,attempt,readOnly}) {
       const element=useRef(null);
       const editor=useRef();
+      const locked=useRef(readOnly);
+      locked.current=readOnly;
       useEffect(()=>{
         let disposed=false;
         const source="/workbench-api/vault-editor.js"+(attempt?"?retry="+attempt:"");
         import(source).then(({openEditor})=>{
           if(disposed)return;
-          editor.current=openEditor(element.current,text,onChange,readOnly);
+          editor.current=openEditor(element.current,text,onChange,locked.current);
           onStatus("ready");
         }).catch(()=>{if(!disposed)onStatus("failed");});
         return()=>{disposed=true;editor.current?.destroy();editor.current=undefined;};
@@ -1706,7 +1708,6 @@ window.__ModuleLoader__.load({
             h(React.Fragment,null,selected.revision?button("编辑方法",()=>setDraft(selected.content)):h("p",{className:"wb-muted"},"已安装方法 · 只读"),
               markdown(selected.content),...(selected.references||[]).map(r=>h("details",{key:r.name},h("summary",null,r.name),markdown(r.content))))))));
     }
-    let expertDraftState;
     const expertTitle = row => row.displayName || row.name;
     const expertOrigins = {
       personal: "本人主会话", bundled: "随安装提供", "user-dsh": "工作台", "user-agents": "工作台",
@@ -1714,105 +1715,303 @@ window.__ModuleLoader__.load({
       "operations-original": "运营原方法", "operations-local": "运营工作台版",
     };
     const expertDetails = id => api(query("/experts", {id}));
-    function ExpertModal({row, projects, close, changed, openSuperAgent, allowEnable=false}) {
-      const [item,setItem]=useState(row), [form,setForm]=useState(row.resumeForm||(row.action==="create"?{...row,references:[]}:null));
-      const [busy,setBusy]=useState(false), [error,setError]=useState(""), [result,setResult]=useState(), [strategy,setStrategy]=useState("");
-      const [sample,setSample]=useState(""), [trialOpen,setTrialOpen]=useState(false);
+    const expertMain = "SKILL.md";
+    const expertNotes = new Map();
+    let requestedExpertProject = "";
+    const noteTitle = ref => /^#[ \t]+(.+?)\s*$/m.exec(ref.content)?.[1]?.slice(0,100) || ref.name.replace(/\.md$/i,"");
+    const expertPayload = row => ({displayName:expertTitle(row),description:row.description||"",content:row.content||"",references:row.references||[]});
+    const expertSaved = (a,b) => JSON.stringify(a)===JSON.stringify(b);
+    const expertCSS = `
+.wb-expert-page{display:flex;flex-direction:column;overflow:hidden}
+.wb-expert-top{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--dsw-alias-border-l3)}
+.wb-expert-top strong{flex:1;min-width:130px;font-size:16px}
+.wb-expert-top span{font-size:12px}
+.wb-expert-layout{display:grid;grid-template-columns:clamp(168px,20%,260px) minmax(0,1fr);min-height:0;flex:1}
+.wb-expert-docs{padding:20px 14px;border-right:1px solid var(--dsw-alias-border-l3);overflow:auto}
+.wb-expert-docs h2{font-size:15px;margin:0 0 12px}.wb-expert-docs ul{padding:0;margin:14px 0;list-style:none}
+.wb-expert-docs li{display:flex;align-items:center;gap:4px;min-width:0;margin:2px 0;border-radius:6px}
+.wb-expert-docs li[data-current=true]{background:var(--dsw-alias-interactive-bg-hover)}
+.wb-expert-docs .wb-doc-item{border:0;background:transparent;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;padding:6px 8px}
+.wb-expert-docs small{padding-right:6px;white-space:nowrap;font-size:11px}
+.wb-expert-docs .wb-doc-menu{border:0;background:transparent;padding:4px 6px;min-height:28px}
+.wb-expert-work{padding:18px clamp(12px,2vw,28px);overflow:auto;min-width:0}
+.wb-expert-work h1{font-size:18px;font-weight:600;margin:0}
+.wb-expert-doc-heading{display:flex;flex-wrap:wrap;align-items:center;gap:8px;justify-content:space-between;margin-bottom:12px}
+.wb-expert-panes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.wb-expert-pane{min-width:0;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;min-height:clamp(300px,60vh,760px);overflow:hidden}
+.wb-expert-pane h2{font-size:14px;font-weight:500;color:var(--dsw-alias-label-secondary);margin:0;padding:9px 12px;border-bottom:1px solid var(--dsw-alias-border-l3)}
+.wb-expert-pane .wb-vault-editor{border:0;min-height:0}
+.wb-expert-pane .cm-editor{min-height:clamp(260px,55vh,720px);font-size:14px}
+.wb-expert-pane .cm-gutters{display:none}
+.wb-expert-pane .cm-content{font-family:inherit;padding:12px;line-height:1.65}
+.wb-expert-pane .wb-vault-markdown{padding:12px 16px;overflow-wrap:anywhere}
+.wb-expert-pane .wb-vault-markdown :is(h1,h2,h3){margin:0 0 12px;color:inherit}
+.wb-expert-pane .wb-vault-markdown :is(p,ul,ol){margin:0 0 14px}
+.wb-expert-pane .wb-vault-markdown pre{overflow:auto}
+.wb-expert-meta{margin:12px 0 0;color:var(--dsw-alias-label-secondary)}
+.wb-expert-mobile{display:none}
+.wb-expert-create{max-width:540px;margin:24px auto;padding:0 24px}
+@media(max-width:700px){
+ .wb-expert-mobile{display:inline-block}.wb-expert-layout{grid-template-columns:minmax(0,1fr)}
+ .wb-expert-docs{display:none}.wb-expert-docs[data-open=true]{display:block;max-height:32vh;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l3)}
+ .wb-expert-layout:has(.wb-expert-docs[data-open=true]){grid-template-rows:auto minmax(0,1fr)}
+ .wb-expert-panes{display:block}.wb-expert-panes[data-view=edit] .wb-expert-pane[data-preview],.wb-expert-panes[data-view=preview] .wb-expert-pane:not([data-preview]){display:none}
+ .wb-expert-top{padding:8px 10px;gap:6px}.wb-expert-top strong{font-size:14px}.wb-expert-top button{padding:5px 8px}
+}
+`;
+    function ExpertDocumentPage({row, projects, back, changed, backLabel="返回专家", allowEnable=false, openSuperAgent}) {
+      const cached=expertNotes.get(row.id);
+      const [item,setItem]=useState(()=>cached?.item||row);
+      const [draft,setDraft]=useState(()=>cached?.draft||expertPayload(row));
+      const [active,setActive]=useState(expertMain),[tree,setTree]=useState(false),[mobile,setMobile]=useState("edit");
+      const [error,setError]=useState(""),[notice,setNotice]=useState(""),[busy,setBusy]=useState(false);
+      const [add,setAdd]=useState(null),[menu,setMenu]=useState(""),[removal,setRemoval]=useState(),[undo,setUndo]=useState();
+      const [editor,setEditor]=useState("loading"),[editorKey,setEditorKey]=useState(0),[preview,setPreview]=useState();
+      const [sample,setSample]=useState(""),[strategy,setStrategy]=useState(""),[trial,setTrial]=useState();
+      const pending=useRef(false);
+      const live=useRef(true);
+      const cacheOwner=useRef(Symbol()), copyKey=useRef("");
+      const clearCache=()=>{if(expertNotes.get(item.id)?.owner===cacheOwner.current)expertNotes.delete(item.id)};
+      useEffect(()=>{live.current=true;return()=>{live.current=false}},[]);
       const operations=item.source?.startsWith("operations-"), local=item.source==="operations-local";
-      const update=(name,value)=>setForm(form=>({...form,[name]:value}));
-      const act=async fn=>{setBusy(true);setError("");try{await fn()}catch(e){setError(e.message)}finally{setBusy(false)}};
-      const save=event=>{event.preventDefault();act(async()=>{
-        const saved=await api("/experts",form);
-        setItem(saved);setForm(null);setResult(undefined);setTrialOpen(false);changed?.();
-      })};
-      const opsAction=(action, data={})=>act(async()=>{
-        const out=await api("/experts",{id:item.id,action,revision:item.revision,...data});
-        if(action==="trial"){setResult(out);setItem({...item,tested:item.tested||!out.fixed})}
-        else{setItem(out);changed?.()}
-      });
-      const runTrial=()=>{
-        let value;
-        try{value=JSON.parse(sample)}catch{setError("请输入 JSON 格式的试跑数据");return}
-        if(!value||typeof value!=="object"||Array.isArray(value)){setError("试跑数据需要是一个 JSON 对象");return}
-        opsAction("trial",{sample:value});
+      const hasRefs=!operations&&item.source!=="personal";
+      const dirty=!expertSaved(draft,expertPayload(item));
+      const selected=draft.references.find(ref=>"references/"+ref.name===active);
+      const activeTitle=selected?noteTitle(selected):"方法正文";
+      const activeText=selected?selected.content:draft.content;
+      const open=path=>{
+        if(path!==active){setActive(path);setEditor("loading");setPreview(undefined)}
+        setTree(false);setMenu("");
       };
-      const scopeName=projects.find(p=>p.id===item.projectId)?.name;
-      const canCopy=!operations&&item.source!=="personal"&&item.id;
-      const isNew=form?.action==="create"||form?.action==="copy";
-      return h(UI.Modal,{open:true,className:"wb-expert-dialog",title:isNew?"新建专家":expertTitle(item),closeLabel:"关闭",onClose:()=>{
-        if(!busy&&(!form||window.confirm("放弃未保存的方法修改？")))close();
+      const resetEditor=()=>{setEditor("loading");setEditorKey(key=>key+1)};
+      useEffect(()=>{
+        if(dirty)expertNotes.set(item.id,{item,draft,owner:cacheOwner.current});
+        else clearCache();
+      },[item,draft,dirty]);
+      useEffect(()=>{
+        if(!dirty)return;
+        const prevent=e=>{e.preventDefault();e.returnValue=""};
+        window.addEventListener("beforeunload",prevent);
+        return()=>window.removeEventListener("beforeunload",prevent);
+      },[dirty]);
+      useEffect(()=>{
+        let alive=true;
+        const handle=setTimeout(()=>{
+          api("/expert-documents",{action:"preview",path:active,content:draft.content,references:draft.references})
+            .then(value=>{if(alive)setPreview({path:active,html:value.html})})
+            .catch(e=>{if(alive)setPreview({path:active,error:e.message})});
+        },180);
+        return()=>{alive=false;clearTimeout(handle)};
+      },[active,draft.content,draft.references]);
+      const act=async fn=>{
+        if(pending.current)return;
+        pending.current=true;setBusy(true);setError("");setNotice("");
+        try{await fn()}catch(e){if(live.current)setError(e.message)}
+        finally{pending.current=false;if(live.current)setBusy(false)}
+      };
+      const replace=saved=>{
+        clearCache();
+        if(!live.current){changed?.(saved);return}
+        setItem(saved.id===item.id&&saved.usage===undefined?{...saved,usage:item.usage}:saved);
+        setDraft(expertPayload(saved));setUndo(undefined);setRemoval(undefined);setTrial(undefined);
+        changed?.(saved);
+      };
+      const update=(name,value)=>setDraft(prev=>({...prev,[name]:value}));
+      const save=action=>act(async()=>{
+        const saved=await api("/experts",{id:item.id,revision:item.revision,action,...draft});
+        replace(saved);setNotice(saved.draft?"草稿已保存":"已保存");
+      });
+      const canSave=item.editable&&editor==="ready"&&!busy&&!removal&&!!draft.content.trim();
+      const saveMain=()=>{if(canSave&&(dirty||item.draft))void save(item.draft?"publish-draft":"update")};
+      const addDocument=event=>{
+        event.preventDefault();
+        const title=add.trim().replace(/\s+/g," ").slice(0,100);
+        if(!title||draft.references.length>=20||pending.current)return;
+        const name="doc-"+crypto.randomUUID().replaceAll("-","").slice(0,16)+".md";
+        setDraft(prev=>({...prev,references:[...prev.references,{name,content:"# "+title+"\n\n"}]}));
+        open("references/"+name);setAdd(null);
+      };
+      const addLink=()=>{
+        if(!selected)return;
+        const label=noteTitle(selected).replace(/[\\\[\]]/g,"\\$&");
+        const link="["+label+"](references/"+selected.name+")";
+        if(!draft.content.includes("](references/"+selected.name+")"))update("content",draft.content.trimEnd()+"\n\n- "+link+"\n");
+        open(expertMain);
+      };
+      const remove=(path,confirmed=false)=>act(async()=>{
+        const response=await api("/expert-documents",{action:"remove",path,confirmed,content:draft.content,references:draft.references});
+        if(response.references===undefined){setRemoval({path,usedBy:response.usedBy});return}
+        const after={...draft,content:response.content,references:response.references};
+        setUndo({before:draft,after,path});setDraft(after);setRemoval(undefined);
+        if(active===path)open(expertMain);
+        else if(active===expertMain?draft.content!==after.content:
+          selected?.content!==after.references.find(ref=>"references/"+ref.name===active)?.content)resetEditor();
+        setNotice("文档已从本次修改中移除");
+      });
+      const restore=()=>{
+        const {before,after,path}=undo;
+        const saved=before.references.find(ref=>"references/"+ref.name===path);
+        const refs=draft.references.map(ref=>{
+          const old=before.references.find(x=>x.name===ref.name);
+          const changed=after.references.find(x=>x.name===ref.name);
+          return old&&changed?.content===ref.content?old:ref;
+        });
+        if(saved&&!refs.some(ref=>ref.name===saved.name))refs.push(saved);
+        setDraft({...draft,content:draft.content===after.content?before.content:draft.content,references:refs});
+        setUndo(undefined);setNotice("已撤销删除");resetEditor();
+      };
+      const follow=e=>{
+        const href=e.target.closest?.("a")?.getAttribute("href")||"";
+        const match=/^#wb-vault\/([^/]+)\//.exec(href);
+        if(!match)return;
+        e.preventDefault();
+        if(pending.current||removal)return;
+        const path=decodeURIComponent(match[1]);
+        if(path===expertMain||draft.references.some(ref=>"references/"+ref.name===path))open(path);
+      };
+      const copy=()=>act(async()=>{
+        copyKey.current ||= "expert-"+crypto.randomUUID().replaceAll("-","");
+        const result=await api("/experts",operations?{id:item.id,action:"copy",revision:item.revision}:
+          {id:item.id,action:"copy",name:copyKey.current,projectId:item.projectId||"",revision:item.revision,
+            displayName:(expertTitle(item).slice(0,116)+" 副本")});
+        copyKey.current="";
+        open(expertMain);resetEditor();replace(result);
+      });
+      const opsAction=(action,extra={})=>act(async()=>{
+        const result=await api("/experts",{id:item.id,action,revision:item.revision,...extra});
+        if(action==="trial"){setTrial(result);if(!result.fixed)setItem({...item,tested:true})}
+        else replace(result);
+      });
+      const trialRun=()=>{
+        let input;
+        try{input=JSON.parse(sample)}catch{setError("请输入 JSON 格式的试跑数据");return}
+        if(!input||typeof input!=="object"||Array.isArray(input)){setError("试跑数据需要是一个 JSON 对象");return}
+        opsAction("trial",{sample:input});
+      };
+      const scope=projects.find(p=>p.id===item.projectId)?.name;
+      return h("section",{className:"wb-page wb-expert-page","aria-label":"专家明细",onKeyDown:e=>{
+        if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="s"){e.preventDefault();if(canSave)void save(item.draft?"save-draft":"update")}
       }},
-        h("div",{className:"wb-page wb-expert-modal"},alert(error),
-          form?h("form",{className:"wb-form",onSubmit:save},
-            isNew&&h(React.Fragment,null,
-              field("专家标识",h("input",{required:true,value:form.name||"",pattern:"[a-z0-9]+(-[a-z0-9]+)*",maxLength:64,onChange:e=>update("name",e.target.value)})),
-              field("所属范围",h("select",{value:form.projectId||"",disabled:form.action==="copy"&&!!item.projectId,onChange:e=>update("projectId",e.target.value)},
-                h("option",{value:""},"工作台共享"),...projects.map(p=>h("option",{key:p.id,value:p.id},p.name)))),
-              openSuperAgent&&button("到 Super Agent 起草",()=>openSuperAgent({...item,resumeForm:form}),{className:"wb-inline"})),
-            !operations&&item.source!=="personal"&&h(React.Fragment,null,
-              field("展示名称",h("input",{required:true,maxLength:120,value:form.displayName||"",onChange:e=>update("displayName",e.target.value)})),
-              field("适用任务",h("textarea",{required:true,maxLength:1024,rows:2,value:form.description||"",onChange:e=>update("description",e.target.value)}))),
-            field("方法正文",h("textarea",{required:item.source!=="personal",rows:12,value:form.content||"",onChange:e=>update("content",e.target.value)})),
-            !operations&&item.source!=="personal"&&h("section",{className:"wb-section"},
-              h("h2",null,"参考文件"),...(form.references||[]).map((ref,index)=>{
-                const change=(key,value)=>update("references",form.references.map((entry,i)=>i===index?{...entry,[key]:value}:entry));
-                return h("div",{key:index,className:"wb-form"},
-                  field("文件名",h("input",{required:true,placeholder:"example.md",value:ref.name,onChange:e=>change("name",e.target.value)})),
-                  field("文件正文",h("textarea",{rows:4,value:ref.content,onChange:e=>change("content",e.target.value)})),
-                  button("移除参考文件",()=>update("references",form.references.filter((_,i)=>i!==index))));
-              }),
-              button("添加参考文件",()=>update("references",[...(form.references||[]),{name:"",content:""}]),{disabled:(form.references||[]).length>=20})),
-            h("div",{className:"wb-actions"},button("取消",()=>row.action==="create"?close():setForm(null),{disabled:busy}),
-              h("button",{type:"submit",className:"wb-primary",disabled:busy},busy?"正在保存…":"保存方法")))
-          :h(React.Fragment,null,
-            h("p",{className:"wb-muted"},[scopeName,expertOrigins[item.source]].filter(Boolean).join(" · ")),
-            h("p",null,item.description),
-            item.revision&&h("details",null,h("summary",null,"版本与使用位置"),h("p",null,h("code",null,item.revision)),
-              item.usage?.length?h("ul",null,...item.usage.map(location=>h("li",{key:location},location))):h("p",{className:"wb-muted"},"暂无启用位置")),
-            h("div",{className:"wb-actions"},
-              item.editable&&button("编辑方法",()=>setForm({...item,action:"update"})),
-              canCopy&&button("复制方法",()=>setForm({...item,action:"copy",name:item.name+"-copy"})),
-              item.source==="operations-original"&&button("复制为工作台版",()=>opsAction("copy"),{disabled:busy})),
+        h("style",null,expertCSS),
+        h("header",{className:"wb-expert-top"},
+          button(backLabel,()=>{if(!dirty||window.confirm("离开且不保存本次修改？")){clearCache();back()}},{disabled:busy}),
+          h("strong",null,expertTitle(item)),
+          button("目录",()=>setTree(v=>!v),{className:"wb-expert-mobile","aria-expanded":tree}),
+          h("span",{role:"status",className:"wb-muted"},busy?"处理中…":dirty?"有未保存的修改":notice||(item.draft?"草稿":item.editable?"已保存":"只读")),
+          item.draft&&button("保存草稿",()=>save("save-draft"),{disabled:!canSave||!dirty}),
+          item.editable&&button(item.draft?"保存并启用":"保存修改",saveMain,{className:"wb-primary",disabled:!canSave||!dirty&&!item.draft})),
+        h("div",{className:"wb-expert-layout"},
+          h("nav",{className:"wb-expert-docs","aria-label":"专家文档","data-open":tree},
+            h("h2",null,"专家文档"),
+            hasRefs&&item.editable&&(add===null?button("新建文档",()=>setAdd(""),{disabled:busy||!!removal||draft.references.length>=20}):
+              h("form",{onSubmit:addDocument},field("文档名称",h("input",{required:true,maxLength:100,value:add,onChange:e=>setAdd(e.target.value),autoFocus:true})),
+                h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:!add.trim()||busy},"添加"),button("取消",()=>setAdd(null))))),
+            h("ul",null,h("li",{"data-current":active===expertMain},
+              button("方法正文",()=>open(expertMain),{className:"wb-doc-item","aria-current":active===expertMain,disabled:busy}),
+              h("small",{className:"wb-muted"},"主文档")),
+              ...draft.references.map(ref=>{
+                const path="references/"+ref.name,title=noteTitle(ref);
+                return h("li",{key:path,"data-current":active===path},
+                  button(title,()=>open(path),{className:"wb-doc-item","aria-current":active===path,disabled:busy,title}),
+                  item.editable&&h(UI.Menu,{open:menu===path,onClose:()=>setMenu(""),portal:true,align:"end",
+                    anchor:button(h(UI.IconEllipsisOutlineMedium,{size:16}),()=>setMenu(menu===path?"":path),{className:"wb-doc-menu","aria-label":title+"的文档操作","aria-haspopup":"menu","aria-expanded":menu===path,disabled:busy||!!removal}),
+                    items:[{id:"remove",label:"删除文档",danger:true}],onSelect:()=>{setMenu("");remove(path)}}));
+              }))),
+          h("article",{className:"wb-expert-work"},
+            h("div",{className:"wb-expert-doc-heading"},h("h1",null,activeTitle),
+              h("div",{className:"wb-actions"},
+                button("编辑",()=>setMobile("edit"),{className:"wb-expert-mobile","aria-pressed":mobile==="edit"}),
+                button("预览",()=>setMobile("preview"),{className:"wb-expert-mobile","aria-pressed":mobile==="preview"}),
+                selected&&item.editable&&button("在正文引用",addLink,{disabled:busy||!!removal}),
+                undo&&button("撤销删除",restore,{disabled:busy||!!removal}))),
+            alert(error),
+            removal&&h("section",{className:"wb-section","aria-label":"删除文档的引用"},
+              h("p",null,"以下文档引用了此文档："+removal.usedBy.map(path=>path===expertMain?"方法正文":noteTitle(draft.references.find(ref=>"references/"+ref.name===path)||{content:"",name:path})).join("、")),
+              h("div",{className:"wb-actions"},button("移除引用并删除",()=>remove(removal.path,true),{disabled:busy}),button("取消",()=>setRemoval(undefined),{disabled:busy}))),
+            h("div",{className:"wb-expert-panes","data-view":mobile},
+              h("section",{className:"wb-expert-pane","aria-label":"编辑"},h("h2",null,item.editable?"编辑":"正文"),
+                h(VaultEditor,{key:active+":"+editorKey,attempt:editorKey,text:activeText,onStatus:setEditor,readOnly:!item.editable||busy||!!removal,
+                  onChange:text=>setDraft(prev=>selected?{...prev,references:prev.references.map(ref=>ref.name===selected.name?{...ref,content:text}:ref)}:{...prev,content:text})}),
+                editor==="failed"&&button("重试加载编辑器",resetEditor)),
+              h("section",{className:"wb-expert-pane","data-preview":true,"aria-label":"预览",onClickCapture:follow},h("h2",null,"预览"),
+                preview?.path===active?(preview.error?alert(preview.error):h("div",{className:"wb-vault-markdown",dangerouslySetInnerHTML:{__html:preview.html}})):
+                  h("p",{role:"status",className:"wb-muted"},"正在渲染"))),
+            h("details",{className:"wb-expert-meta"},h("summary",null,"基本信息"),
+              h("p",null,[scope,expertOrigins[item.source]].filter(Boolean).join(" · ")),
+              item.editable&&!operations&&item.source!=="personal"?h("div",{className:"wb-form"},
+                field("名称",h("input",{value:draft.displayName,maxLength:120,disabled:busy,onChange:e=>update("displayName",e.target.value)})),
+                field("描述",h("textarea",{value:draft.description,maxLength:1024,disabled:busy,onChange:e=>update("description",e.target.value)}))):h("p",null,item.description),
+              item.usage?.length>0&&h("p",null,"使用位置："+item.usage.join("、")),
+              item.revision&&h("p",null,"修订 "+item.revision),
+              openSuperAgent&&button("到 Super Agent 起草",openSuperAgent,{disabled:busy})),
+            !item.draft&&item.source!=="personal"&&(!operations||!local)&&button(operations?"复制为工作台版":"复制专家",copy,{disabled:busy||dirty}),
             item.fixedOutput&&h("p",{className:"wb-muted"},"带固定模板的条目仍由原规则生成。"),
-            markdown(item.content),
-            ...(item.references||[]).map(ref=>h("details",{key:ref.name},h("summary",null,ref.name),markdown(ref.content))),
-            local&&h("section",{className:"wb-section"},h("h2",null,"试跑"),
-              item.tested&&h("p",{role:"status"},"当前版本已通过输出校验"),
-              button(trialOpen?"收起试跑":"隔离试跑",()=>setTrialOpen(value=>!value)),
-              trialOpen&&h("div",{className:"wb-form"},
-                item.requiredFields?.length>0&&h("p",{className:"wb-muted"},"必填字段 "+item.requiredFields.join("、")),
-                field("试跑数据",h("textarea",{rows:5,value:sample,placeholder:"输入脱敏后的 JSON 对象",onChange:e=>setSample(e.target.value)})),
-                button(busy?"正在试跑…":"运行校验",runTrial,{disabled:busy||!sample.trim()}),
-                result&&h(React.Fragment,null,result.fixed&&h("p",{className:"wb-muted"},"固定模板已通过校验。启用需再试跑一条需要模型生成的数据。"),h("pre",null,result.text))),
+            local&&h("details",{className:"wb-expert-meta"},h("summary",null,"试跑与启用"),
+              item.tested&&h("p",null,"当前版本已通过输出校验"),
+              item.requiredFields?.length>0&&h("p",null,"必填字段 "+item.requiredFields.join("、")),
+              field("试跑数据",h("textarea",{rows:4,value:sample,onChange:e=>setSample(e.target.value),placeholder:"输入脱敏后的 JSON 对象"})),
+              button("运行校验",trialRun,{disabled:busy||dirty||!sample.trim()}),
+              trial&&h(React.Fragment,null,trial.fixed&&h("p",null,"固定模板已通过校验。启用需再试跑一条需要模型生成的数据。"),h("pre",null,trial.text)),
               allowEnable&&h("div",{className:"wb-form"},
                 field("启用场景",h("select",{value:strategy,onChange:e=>setStrategy(e.target.value)},h("option",{value:""},"选择运营策略"),
                   ...(item.strategies||[]).map(key=>h("option",{key,value:key},key)))),
-                button("用于该策略的新批次",()=>opsAction("enable",{strategy}),{disabled:busy||!strategy||!item.tested||item.usage?.includes(strategy)}))))));
+                button("用于该策略的新批次",()=>opsAction("enable",{strategy}),{disabled:busy||dirty||!strategy||!item.tested||item.usage?.includes(strategy)}))))));
+    }
+    function NewExpert({project,back,created}) {
+      const [name,setName]=useState(""),[description,setDescription]=useState(""),[error,setError]=useState(""),[busy,setBusy]=useState(false);
+      const [createKey]=useState(()=>crypto.randomUUID().replaceAll("-",""));
+      const pending=useRef(false);
+      const submit=async e=>{
+        e.preventDefault();
+        if(pending.current||!name.trim()||!description.trim())return;
+        pending.current=true;setBusy(true);setError("");
+        try{created(await api("/experts",{action:"create-draft",createKey,projectId:project?.id||"",displayName:name,description}))}
+        catch(e){setError(e.message)}
+        finally{pending.current=false;setBusy(false)}
+      };
+      return h("section",{className:"wb-page"},h("style",null,expertCSS),
+        h("form",{className:"wb-form wb-expert-create",onSubmit:submit},
+          h("h1",null,"新建专家"),h("p",{className:"wb-muted"},"所属范围："+(project?.name||"工作台共享")),alert(error),
+          field("名称",h("input",{required:true,maxLength:120,value:name,disabled:busy,onChange:e=>setName(e.target.value),autoFocus:true})),
+          field("描述",h("textarea",{required:true,rows:3,maxLength:1024,value:description,disabled:busy,onChange:e=>setDescription(e.target.value)})),
+          h("div",{className:"wb-actions"},button("返回专家",back,{disabled:busy}),
+            h("button",{type:"submit",className:"wb-primary",disabled:busy||!name.trim()||!description.trim()},busy?"创建中…":"创建"))));
     }
     function ExpertsPage({openSuperAgent}) {
       const {data}=useProjectList();
-      const [rows,setRows]=useState(),[item,setItem]=useState(()=>expertDraftState),[search,setSearch]=useState(""),[error,setError]=useState("");
+      const [rows,setRows]=useState(),[item,setItem]=useState(),[creating,setCreating]=useState(()=>requestedExpertProject||false);
+      const [search,setSearch]=useState(""),[error,setError]=useState("");
+      const viewport=useRef(null),scroll=useRef(0),request=useRef(0);
       const reload=()=>api("/experts").then(({items,unavailable})=>{setRows(items);setError(unavailable.length?"部分来源暂不可读 · "+unavailable.join("、"):"")}).catch(e=>setError(e.message));
-      useEffect(()=>{if(data?.expertManagement)reload()},[data?.expertManagement]);
+      useEffect(()=>{
+        requestedExpertProject="";
+        return onEvent("wb-create-project-expert",e=>{request.current++;setItem(undefined);setCreating(e.detail)});
+      },[]);
+      useEffect(()=>{if(data?.expertManagement)reload();return()=>{request.current++}},[data?.expertManagement]);
+      useEffect(()=>{if(!item&&!creating&&viewport.current)viewport.current.scrollTop=scroll.current},[item,creating]);
       if(!data)return h("section",{className:"wb-page"},h("div",{className:"wb-content",role:"status"},"正在读取专家…"));
       if(!data.expertManagement)return h(LegacyExpertsPage);
-      const projects=data.projects.filter(project=>project.type!=="auto-operations");
-      const show=async row=>{setError("");try{setItem(await expertDetails(row.id))}catch(e){setError(e.message)}};
+      const project=data.projects.find(p=>p.type==="ordinary"&&p.id===creating);
+      const show=async row=>{
+        const n=++request.current;setError("");scroll.current=viewport.current?.scrollTop||0;
+        try{const loaded=await expertDetails(row.id);if(n===request.current)setItem(loaded)}catch(e){if(n===request.current)setError(e.message)}
+      };
+      if(item)return h(ExpertDocumentPage,{key:item.id,row:item,projects:data.projects,back:()=>setItem(undefined),changed:reload,openSuperAgent});
+      if(creating)return h(NewExpert,{project,back:()=>setCreating(false),created:row=>{setCreating(false);setItem(row);reload()}});
       const filtered=(rows||[]).filter(row=>[expertTitle(row),row.name,row.description,data.projects.find(p=>p.id===row.projectId)?.name]
         .join(" ").toLowerCase().includes(search.trim().toLowerCase()));
-      return h("section",{className:"wb-page"},h("div",{className:"wb-content"},
-        h("div",{className:"wb-heading"},h("h1",null,"专家"),button("新建专家",()=>setItem({action:"create",name:""}),{className:"wb-primary"})),
+      return h("section",{className:"wb-page",ref:viewport},h("div",{className:"wb-content"},
+        h("div",{className:"wb-heading"},h("h1",null,"专家"),button("新建专家",()=>{request.current++;scroll.current=viewport.current?.scrollTop||0;setCreating(true)},{className:"wb-primary"})),
         field("搜索专家",h("input",{type:"search",value:search,onChange:e=>setSearch(e.target.value)})),
         alert(error),!rows&&!error&&h("p",{role:"status"},"正在读取专家…"),
-        rows&&!filtered.length&&h("p",{className:"wb-muted"},"没有匹配的专家"),
+        rows&&!filtered.length&&h("p",{role:"status",className:"wb-muted"},"没有匹配的专家"),
         h("div",{className:"wb-list",style:{marginTop:16}},...filtered.map(row=>{
           const scope=data.projects.find(p=>p.id===row.projectId)?.name;
           return h("div",{key:row.id,className:"wb-row"},h("div",{className:"wb-row-main"},
             h("strong",null,expertTitle(row)),
-            h("div",{className:"wb-muted"},[scope,expertOrigins[row.source]].filter(Boolean).join(" · ")),
-            h("p",null,row.description)),button("查看方法",()=>show(row),{"aria-label":"查看 "+expertTitle(row)+" 的方法"}));
-        }))),
-        item&&h(ExpertModal,{row:item,projects,close:()=>{expertDraftState=undefined;setItem(undefined)},changed:()=>{expertDraftState=undefined;reload()},openSuperAgent:draft=>{expertDraftState=draft;openSuperAgent()}}));
+            h("div",{className:"wb-muted"},[scope,expertOrigins[row.source],row.draft?"草稿":""].filter(Boolean).join(" · ")),
+            h("p",null,row.description)),button("查看专家明细",()=>show(row),{"aria-label":"查看专家明细："+expertTitle(row)}));
+        }))));
     }
     function MCPPage({openNativePlugins}) {
       const [rows,setRows]=useState(),[error,setError]=useState(""),[selected,setSelected]=useState(),[results,setResults]=useState({}),[busy,setBusy]=useState(false);
@@ -1974,6 +2173,12 @@ window.__ModuleLoader__.load({
         const v=await api('/reply-experts?'+new URLSearchParams({projectId:project,name:edit.expertSkill}));
         setModal({kind:'expert',title:'回答专家',...v});
       });
+      const refreshReplyExpert=saved=>{
+        const refresh=rows=>rows.map(row=>row.id===saved.id?
+          {...row,displayName:saved.displayName,description:saved.description,revision:saved.revision}:row);
+        setExperts(refresh);
+        setDefaultExpert(prev=>prev?{...prev,options:refresh(prev.options)}:prev);
+      };
       const saveDefault=()=>act(async()=>{
         const saved=await api('/expert-default',{projectId:project,expertId:expertChoice,expected:defaultExpert.configured||""});
         setDefaultExpert({...defaultExpert,configured:saved.expertId,preferred:saved.expertId});
@@ -2037,7 +2242,7 @@ window.__ModuleLoader__.load({
                 disabled:!defaultExpert,onChange:e=>setExpertChoice(e.target.value)},
                 defaultExpert&&!expertChoice&&h('option',{value:""},"选择专家"),
                 ...experts.map(e=>h('option',{key:e.id||e.name,value:e.id||e.name},expertName(e)))),
-              button('查看方法',openExpert,{className:'ar-link',disabled:busy||defaultExpert&&!expertChoice})),
+              button('查看专家明细',openExpert,{className:'ar-link',disabled:busy||defaultExpert&&!expertChoice})),
             defaultExpert&&h(React.Fragment,null,h('p',{className:'ar-time'},'已有客户继续使用原专家。'),
               button('保存默认专家',saveDefault,{className:'ar-link',disabled:busy||!expertChoice||expertChoice===defaultExpert.preferred}))),
           h('div',{className:'ar-setting'},h('span',{className:'ar-setting-title'},'回答语料'),
@@ -2053,13 +2258,15 @@ window.__ModuleLoader__.load({
         h(React.Fragment,null,button('返回资料目录',()=>setModal({...modal,content:undefined}),{className:'ar-link'}),h('h3',null,modal.documentTitle),md(modal.content)):
         modal.documents.map(d=>h('div',{className:'ar-library-row',key:d.uri},h('strong',null,d.title||d.name),button('阅读',()=>readDocument(d),{className:'ar-link'}))));
       if(modal?.kind==='resource')modalContent=h('div',null,...modal.page.records.map(r=>h('article',{key:r.id,className:'ar-method'},...Object.entries(r.fields).map(([k,v])=>h('div',{key:k},h('strong',null,k),h('pre',{style:{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}},typeof v==='string'?v:JSON.stringify(v,null,2)))))));
-      return h('section',{className:'ar-root'},
+      return h(React.Fragment,null,
+        expertDetail&&h(ExpertDocumentPage,{row:expertDetail,projects:catalog.projects,back:()=>setExpertDetail(undefined),
+          backLabel:"返回应答设置",changed:refreshReplyExpert}),
+        h('section',{className:'ar-root',style:expertDetail?{display:"none"}:undefined},
         h('style',null,replyCSS),
         h('header',{className:'ar-top'},h('h1',null,projectName),button(h(React.Fragment,null,h(IconSettingsOutlineRegular,{size:17}),'设置'),()=>setSettings(v=>!v),{className:'ar-btn','aria-expanded':settings})),
         error&&h('p',{className:'ar-error',role:'alert'},error),
         h('div',{className:'ar-layout','data-settings':settings,'data-selected':!!sessionId},sidebar,conversation,settingsPanel),
-        h(Modal,{open:!!modal,onClose:()=>setModal(undefined),title:modal?.title||'查看资料',closeLabel:'关闭',className:'ar-modal',contentClassName:'ar-modal-content'},modalContent),
-        expertDetail&&h(ExpertModal,{row:expertDetail,projects:catalog.projects,close:()=>setExpertDetail(undefined)}));
+        h(Modal,{open:!!modal&&!expertDetail,onClose:()=>setModal(undefined),title:modal?.title||'查看资料',closeLabel:'关闭',className:'ar-modal',contentClassName:'ar-modal-content'},modalContent)));
 
     }
     function ChannelHistory({sessionId}){
@@ -2118,6 +2325,13 @@ window.__ModuleLoader__.load({
     function OperationsPage({projectId, openSchedules}) {
       const {data:projectList}=useProjectList();
       const [methodRows,setMethodRows]=useState([]),[methodDetail,setMethodDetail]=useState();
+      const [methodExpanded,setMethodExpanded]=useState(false);
+      const settingsForm=useRef(),settingsOffset=useRef(0);
+      useEffect(()=>{
+        if(methodDetail||!settingsForm.current)return;
+        const handle=requestAnimationFrame(()=>{if(settingsForm.current)settingsForm.current.scrollTop=settingsOffset.current});
+        return()=>cancelAnimationFrame(handle);
+      },[methodDetail]);
       const readMethods=()=>api("/experts").then(({items})=>setMethodRows(items.filter(row=>row.projectId===projectId&&row.source.startsWith("operations-"))));
       const [view,setView]=useState(null),[tab,setTab]=useState("work"),[page,setPage]=useState("home");
       const [runId,setRunId]=useState(""),[selected,setSelected]=useState(""),[profile,setProfile]=useState(null);
@@ -2285,7 +2499,7 @@ window.__ModuleLoader__.load({
         return h("div",{key:field.label+":"+i},h("dt",{className:"wb-muted"},field.label),h("dd",null,field.value||"待确认",
           field.value&&provenance&&h("small",{className:"op-field-source"},provenance)));
       }));
-      const modal=settings&&h(UI.Modal,{open:true,title:{project:"专项设置",profile:"档案设置",strategy:"策略设置"}[settings.kind],closeLabel:"关闭",onClose:()=>{if(!busy)setSettings(null)}},h("form",{className:"wb-page wb-form op-modal-content",onSubmit:saveSettings},
+      const modal=settings&&!methodDetail&&h(UI.Modal,{open:true,title:{project:"专项设置",profile:"档案设置",strategy:"策略设置"}[settings.kind],closeLabel:"关闭",onClose:()=>{if(!busy){settingsOffset.current=0;setMethodExpanded(false);setSettings(null)}}},h("form",{className:"wb-page wb-form op-modal-content",onSubmit:saveSettings,ref:settingsForm},
         settings.kind==="project"
           ? h(React.Fragment,null,
             field("关联知识库",h("select",{value:settings.knowledge.resourceId+"/"+settings.knowledge.section,onChange:e=>{
@@ -2295,10 +2509,10 @@ window.__ModuleLoader__.load({
             field("运营企微账号",h("select",{value:settings.transport,onChange:e=>setSettings({...settings,transport:e.target.value})},
               h("option",{value:""},"请选择"),...accounts.map(account=>h("option",{key:account.id,value:account.id},account.name)))),
             settings.transport&&(!settings.staffId||!accounts.length)&&h("p",{className:"wb-muted"},"待登记实际运营企微账号。"),
-            methodRows.length>0&&h("details",{className:"wb-section"},h("summary",null,"运营专家"),
+            methodRows.length>0&&h("details",{className:"wb-section",open:methodExpanded,onToggle:e=>setMethodExpanded(e.currentTarget.open)},h("summary",null,"运营专家"),
               ...methodRows.map(row=>h("div",{className:"wb-row",key:row.id},h("div",{className:"wb-row-main"},expertTitle(row),
                 h("div",{className:"wb-muted"},expertOrigins[row.source])),
-                button("查看方法",()=>act(async()=>setMethodDetail(await expertDetails(row.id))),{disabled:busy})))) )
+                button("查看专家明细",()=>act(async()=>{settingsOffset.current=settingsForm.current?.scrollTop||0;setMethodDetail(await expertDetails(row.id))}),{disabled:busy})))) )
           : h(React.Fragment,null,
             field(settings.kind==="profile"?"清洗时间":"自动运行时间",h("input",{type:"time",required:true,value:settings.time,onChange:e=>setSettings({...settings,time:e.target.value})})),
             field("专家",h("select",{required:true,value:settings.expert,onChange:e=>setSettings({...settings,expert:e.target.value})},h("option",{value:""},"请选择"),...experts.map(expert=>h("option",{key:expert.name,value:expert.name},({"operations-onboarding":"新人承接专家","operations-profile":"用户档案专家"}[expert.name]||expert.name))))),
@@ -2360,6 +2574,8 @@ window.__ModuleLoader__.load({
         card.image&&h("img",{loading:"lazy",alt:card.title||"原报告图片",src:"/workbench-api"+path("source-card",{
           package:sourcePlan.package_id,week:sourcePlan.week,run:sourceCopy.run,item:draft.key,digest:sourceCopy.digest,card:card.index,
         })}));
+      if(methodDetail)return h(ExpertDocumentPage,{row:methodDetail,projects:projectList.projects,allowEnable:true,
+        back:()=>setMethodDetail(undefined),backLabel:"返回运营设置",changed:()=>readMethods().catch(e=>setError(e.message))});
       return h("section",{className:"wb-page op-page"},
         h("header",{className:"op-header"},h("div",{className:"wb-actions"},page!=="home"&&button("返回",page==="profile"&&profileBack==="source-plan"?()=>setPage("source-plan"):page==="source-plan"&&sourcePlan?.historical?()=>setPage("history"):home,{className:"op-link",disabled:!!copyEdit}),h("h1",null,sectionTitle)),
           view&&h("div",{className:"wb-actions"},
@@ -2477,8 +2693,7 @@ window.__ModuleLoader__.load({
                 h("section",null,h("strong",null,"已生成稿件"),h("p",null,row.message)),
                 h("section",null,h("strong",null,"入选依据"),h("p",null,row.reason)),
                 row.detail&&h("section",null,h("strong",null,row.receipt?"CRM 回执":"状态明细"),h("p",null,row.detail),row.receipt&&h("p",null,row.receipt))))),
-        modal,confirmModal,
-        methodDetail&&h(ExpertModal,{row:methodDetail,projects:projectList.projects,allowEnable:true,close:()=>setMethodDetail(undefined),changed:()=>readMethods().catch(e=>setError(e.message))}));
+        modal,confirmModal);
     }
 
     const brandTitle = "浅蓝的一号位工作台";
@@ -2598,7 +2813,12 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
           pending.current=false;setBusy("");
         }
       };
-      const context=key?{info,selected,busy,error,choose,retry:()=>setRefresh(value=>value+1)}:
+      const createProjectExpert=()=>{
+        requestedExpertProject=project.id;
+        ctx.layout.selectPanel("wb-experts");
+        window.dispatchEvent(new CustomEvent("wb-create-project-expert",{detail:project.id}));
+      };
+      const context=key?{info,selected,busy,error,choose,createProjectExpert,retry:()=>setRefresh(value=>value+1)}:
         loadingProject?{error:projectError,retry:notifyProjects}:null;
       return h(SessionExpert.Provider,{value:context},children);
     }
@@ -2606,15 +2826,16 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
       const session=React.useContext(SessionExpert);
       const [open,setOpen]=useState(false);
       if(!session)return null;
-      const {info,selected,busy,error,choose,retry}=session;
+      const {info,selected,busy,error,choose,createProjectExpert,retry}=session;
       const name=info?.options.find(option=>option.id===selected);
       const label=name?expertTitle(name):selected?.split(":").at(-1)||(info||error?"选择专家":"读取专家…");
       const items=info?.options.map(option=>({id:option.id,label:expertTitle(option)}))||[];
       if(info?.bound&&info.bound!==info.configured)
         items.push({id:"set-default",label:"设为项目默认",separatorBefore:true});
+      if(info)items.push({id:"new-expert",label:"新建本项目专家",separatorBefore:true});
       return h(React.Fragment,null,h(UI.Menu,{
         open:open&&!!items.length,onClose:()=>setOpen(false),items,selectedId:selected,
-        onSelect:id=>{setOpen(false);void choose(id)},side:"bottom",align:"start",portal:true,
+        onSelect:id=>{setOpen(false);if(id==="new-expert")createProjectExpert();else void choose(id)},side:"bottom",align:"start",portal:true,
         anchor:button(h(React.Fragment,null,h(UI.IconAgentPresetOutlineRegular,{size:16}),h("span",null,label),h(UI.IconChevronDownOutlineRegular,{size:12})),
           ()=>{if(!open&&!info?.bound)retry();setOpen(value=>!value||!info)},{
             className:"wb-expert-trigger","aria-label":info?.bound?"已绑定 "+label+"，换专家并新建会话":"选择会话专家",

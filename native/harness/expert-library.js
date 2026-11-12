@@ -1,14 +1,25 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
+import { expertDocumentLinks, expertMainDocument, expertReferencePattern as referencePattern, removeExpertReference, vaultView } from './vault-markdown.js';
 
 const namePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const projectPattern = /^p_[a-f0-9]{24}$/;
-const referencePattern = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,95}\.md$/;
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = (message, status = 400, code) => Object.assign(new Error(message), { status, code });
 export const generalExpert = { id: 'general', name: 'general', displayName: '通用助理', description: '' };
 export const personalExpertId = 'personal:superagent';
+const draftTemplate = `## 任务描述
+
+<!-- 什么时候使用这个专家？ -->
+
+## 判断顺序
+
+<!-- 先核对什么，信息不足时如何处理？ -->
+
+## 输出要求
+
+<!-- 交付什么，哪些动作需要确认？ -->`;
 
 export function skillId(projectId, name) {
   return projectId ? `project:${projectId}:${name}` : `shared:${name}`;
@@ -38,28 +49,61 @@ async function atomicWrite(path, text) {
   } finally { await rm(temp, { force: true }); }
 }
 
-function validateBody(input, previous) {
+function documentsFor(content, references, readBudget = false) {
+  if (typeof content !== 'string' || Buffer.byteLength(content) > (readBudget ? 256 : 128) * 1024 ||
+      !Array.isArray(references) || references.length > 20) throw fail('专家文档超过保存范围');
+  const names = new Set();
+  let bytes = 0;
+  const docs = [{path: expertMainDocument, text: content}];
+  for (const ref of references) {
+    const validFile = typeof ref?.name === 'string' && (readBudget
+      ? ref.name.length <= 255 && /^[^./\\\u0000-\u001f][^/\\\u0000-\u001f]*\.md$/.test(ref.name)
+      : referencePattern.test(ref.name));
+    if (!validFile || names.has(ref.name) || typeof ref.content !== 'string')
+      throw fail('参考文件必须是名称唯一的 Markdown 文件');
+    names.add(ref.name);
+    bytes += Buffer.byteLength(ref.content);
+    if (bytes > (readBudget ? 256 : 48) * 1024) throw fail(readBudget ? '参考文件超过预览范围' : '参考文件总大小超过 48 KiB');
+    docs.push({path: 'references/' + ref.name, text: ref.content});
+  }
+  return docs;
+}
+
+export function expertDocumentAction(input) {
+  const docs = documentsFor(input.content, input.references, true);
+  if (input.action === 'preview') {
+    const result = vaultView(docs, input.path, {includeBacklinks: false, expert: true}).document;
+    if (!result) throw fail('文档不存在', 404);
+    return {html: result.html};
+  }
+  if (input.action !== 'remove' || typeof input.path !== 'string') throw fail('无效的文档操作');
+  const result = removeExpertReference(docs, input.path, input.confirmed === true);
+  if (!result) throw fail('只能删除已存在的辅助文档');
+  if (!result.documents) return {usedBy: result.usedBy};
+  const [main, ...refs] = result.documents;
+  return {usedBy: result.usedBy, content: main.text, references: refs.map(item => ({name: item.path.slice(11), content: item.text}))};
+}
+
+function validateBody(input, previous, verifyLinks = false) {
   const displayName = input.displayName ?? previous?.displayName ?? input.name;
   const description = input.description ?? previous?.description ?? '';
   const content = input.content ?? previous?.content ?? '';
   const references = input.references ?? previous?.references ?? [];
   if (typeof displayName !== 'string' || !displayName.trim() || displayName.length > 120 ||
       typeof description !== 'string' || !description.trim() || description.length > 1024 ||
-      typeof content !== 'string' || !content.trim() || Buffer.byteLength(content) > 128 * 1024 ||
-      !Array.isArray(references) || references.length > 20) throw fail('请输入有效的专家名称、用途和方法正文');
-  const files = new Map();
-  let bytes = 0;
-  for (const ref of references) {
-    if (!ref || !referencePattern.test(ref.name) || files.has(ref.name) || typeof ref.content !== 'string') throw fail('参考文件必须是名称唯一的 Markdown 文件');
-    bytes += Buffer.byteLength(ref.content);
-    if (bytes > 48 * 1024) throw fail('参考文件总大小超过 48 KiB');
-    files.set(ref.name, ref.content);
+      typeof content !== 'string' || !content.trim()) throw fail('请输入有效的专家名称、用途和方法正文');
+  const docs = documentsFor(content, references);
+  if (verifyLinks) {
+    const present = new Set(docs.map(item => item.path));
+    const known = [...new Set([...present, ...(previous?.references || []).map(ref => 'references/' + ref.name)])];
+    for (const item of docs) {
+      const missing = expertDocumentLinks(item.text, item.path, known).find(link => !present.has(link.target));
+      if (missing) throw fail('方法引用了缺失的参考文件：' + missing.target.slice(11));
+    }
   }
-  const linked = [...content.matchAll(/\]\(\.?\/?references\/([^\s)#]+)(?:#[^)]*)?\)/g)].map(match => match[1]);
-  for (const file of linked) if (!files.has(file)) throw fail('方法引用了缺失的参考文件');
   return { displayName: displayName.trim(), description: description.trim(), content: content.trim(),
     invocation: { modelInvocable: previous?.invocation?.modelInvocable !== false, userInvocable: previous?.invocation?.userInvocable !== false },
-    references: [...files].sort(([a], [b]) => a < b ? -1 : a === b ? 0 : 1).map(([name, text]) => ({ name, content: text })) };
+    references: references.map(({name, content}) => ({name, content})).sort((a,b) => a.name < b.name ? -1 : a.name === b.name ? 0 : 1) };
 }
 
 // The package builder already appends linked files for the filesystem-free
@@ -141,9 +185,47 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
     return (await Promise.all(names.filter(validName).map(name => managed(skillId(scope === 'shared' ? '' : scope, name))))).filter(Boolean);
   }
 
+  async function readDraft(id) {
+    const [scope, name] = splitSkillId(id);
+    const base = join(managedRoot, scope, name);
+    if (!await optional(() => safeDirectory(base))) return undefined;
+    if (await optional(() => lstat(join(base, 'current')))) return undefined;
+    const text = await optional(() => localFile(base, 'draft.json', 1024 * 1024));
+    if (text === undefined) return undefined;
+    const stored = JSON.parse(text);
+    const doc = validateBody(stored);
+    const revision = hash(JSON.stringify(doc));
+    if (stored.revision !== revision) throw fail('专家草稿摘要不一致', 503);
+    return {...doc, id, name, revision, source: 'managed', projectId: scope === 'shared' ? '' : scope,
+      editable: true, draft: true, usage: []};
+  }
+
+  async function draftRows(projectId) {
+    const scope = projectId || 'shared';
+    const dir = await optional(() => safeDirectory(join(managedRoot, scope)));
+    const names = dir ? await readdir(dir) : [];
+    return (await Promise.all(names.filter(validName).map(name => readDraft(skillId(projectId, name))))).filter(Boolean);
+  }
+
+  async function makeBase(scope, name) {
+    const base = join(managedRoot, scope, name);
+    for (const path of [managedRoot, join(managedRoot, scope), base]) {
+      try { await mkdir(path, { mode: 0o700 }); }
+      catch (error) { if (error.code !== 'EEXIST') throw error; }
+      await safeDirectory(path);
+    }
+    return base;
+  }
+
+  async function storeDraft(id, doc) {
+    const base = await makeBase(...splitSkillId(id));
+    await atomicWrite(join(base, 'draft.json'), JSON.stringify({...doc, revision: hash(JSON.stringify(doc))}));
+    return readDraft(id);
+  }
+
   function summary(row) {
-    const { id, name, displayName, description, source, projectId, editable, revision, usage, invocation } = row;
-    return { id, name, displayName, description, source, projectId, editable, revision, usage, invocation };
+    const { id, name, displayName, description, source, projectId, editable, revision, usage, invocation, draft } = row;
+    return { id, name, displayName, description, source, projectId, editable, revision, usage, invocation, draft };
   }
 
   async function listSkills(workspace, projectId = '') {
@@ -214,7 +296,7 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
     rows.set(personalExpertId, { id: personalExpertId, name: 'superagent', displayName: 'Super Agent', description: '本人主会话的工作方法', source: 'personal', editable: true });
     const workspaces = [{workspace: personalPath, id: '', name: '工作台共享'}, ...await projects()];
     const catalogues = await Promise.allSettled([
-      ...workspaces.map(project => listSkills(project.workspace, project.id)),
+      ...workspaces.map(async project => [...await listSkills(project.workspace, project.id), ...await draftRows(project.id)]),
       opsCatalog(),
     ]);
     for (const [index, project] of workspaces.entries()) {
@@ -247,13 +329,32 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
     const [scope] = splitSkillId(id);
     const project = scope === 'shared' ? { id: '', workspace: personalPath } : (await projects()).find(item => item.id === scope);
     if (!project) throw fail('所属项目不存在', 404);
+    const draft = await readDraft(id);
+    if (draft) return draft;
     const method = await runtime(id, project);
     return {...method, usage: await usage(id)};
   }
 
   async function save(input) {
     return serial(async () => {
+      if (input.action === 'create-draft') {
+        if (typeof input.createKey !== 'string' || !/^[a-f0-9]{32}$/.test(input.createKey)) throw fail('无效的创建编号');
+        const projectId = input.projectId || '';
+        const project = projectId ? (await projects()).find(item => item.id === projectId) : {id: '', workspace: personalPath};
+        if (!project) throw fail('所属项目不存在', 404);
+        const name = 'expert-' + input.createKey;
+        const id = skillId(projectId, name);
+        const doc = validateBody({displayName: input.displayName, description: input.description, content: draftTemplate});
+        const current = await readDraft(id);
+        if (current) {
+          if (current.displayName !== doc.displayName || current.description !== doc.description) throw fail('专家创建编号已使用', 409);
+          return current;
+        }
+        if ((await listSkills(project.workspace, projectId)).some(row => row.id === id)) throw fail('专家创建编号已使用', 409);
+        return storeDraft(id, doc);
+      }
       if (input.id === personalExpertId && input.action !== 'copy') {
+        if (input.action !== 'update' || typeof input.content !== 'string' || !input.content.trim() || input.references?.length) throw fail('本人主文档只能编辑');
         await saveRule({ name: 'AGENT.md', content: input.content, revision: input.revision });
         return detail(input.id);
       }
@@ -262,6 +363,8 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
         return call('/operations/experts/save', undefined, {id, action, revision, content, sample, strategy}, AbortSignal.timeout(action === 'trial' ? 120000 : 30000));
       }
       const source = input.action === 'copy' ? await detail(input.id) : undefined;
+      if (source?.draft) throw fail('草稿启用后才能复制专家', 409);
+      if (source && input.revision !== undefined && input.revision !== source.revision) throw fail('方法已更新，请重新打开后复制', 409);
       let id = input.id;
       let previous;
       if (input.action === 'create' || input.action === 'copy') {
@@ -272,22 +375,25 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
         const project = scope ? (await projects()).find(item => item.id === scope) : { id: '', workspace: personalPath };
         if (!project) throw fail('所属项目不存在', 404);
         id = skillId(scope, input.name);
-        if ((await listSkills(project.workspace, scope)).some(row => row.id === id)) throw fail('已存在同名专家', 409);
+        const existing = await managed(id);
+        if (source && input.revision !== undefined && existing &&
+            hash(JSON.stringify(validateBody({...input, name: input.name}, source, true))) === existing.revision) return existing;
+        if (existing || await readDraft(id) || (await listSkills(project.workspace, scope)).some(row => row.id === id)) throw fail('已存在同名专家', 409);
         previous = source;
       } else {
         previous = await detail(id);
         if (!previous.editable) throw fail('随发行包提供的方法可以复制', 403);
         if (input.revision !== previous.revision) throw fail('方法已更新，请重新打开后编辑', 409);
+        if (previous.draft) {
+          if (input.action === 'save-draft') return storeDraft(id, validateBody(input, previous, true));
+          if (input.action !== 'publish-draft') throw fail('请先启用该专家', 409);
+        } else if (input.action !== 'update') throw fail('无效的专家保存操作');
       }
       const [scope, name] = splitSkillId(id);
-      const doc = validateBody({ ...input, name }, previous);
+      const doc = validateBody({ ...input, name }, previous, true);
+      if (previous?.draft && doc.content === draftTemplate) throw fail('请填写方法正文后再启用');
       const revision = hash(JSON.stringify(doc));
-      const base = join(managedRoot, scope, name);
-      for (const path of [managedRoot, join(managedRoot, scope), base]) {
-        try { await mkdir(path, { mode: 0o700 }); }
-        catch (error) { if (error.code !== 'EEXIST') throw error; }
-        await safeDirectory(path);
-      }
+      const base = await makeBase(scope, name);
       const directory = join(base, revision);
       if (!await optional(() => lstat(directory))) {
         const temp = join(base, '.' + randomUUID());
@@ -306,6 +412,7 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
       }
       const prepared = await readRevision(id, base, scope, name, revision);
       await atomicWrite(join(base, 'current'), revision + '\n');
+      if (previous?.draft) await rm(join(base, 'draft.json'), {force: true}).catch(() => {});
       return prepared;
     });
   }

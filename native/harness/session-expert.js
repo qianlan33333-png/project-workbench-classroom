@@ -2,6 +2,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem';
 import { z } from 'zod';
 import { personalExpertId } from './expert-library.js';
+import { expertDocumentLinks, expertMainDocument } from './vault-markdown.js';
 
 const snapshotSchema = z.object({
   turn: z.number(), input: z.string(), id: z.string(), name: z.string(), revision: z.string(),
@@ -26,8 +27,10 @@ export const expertTurnProjection = {
 
 function materialize(expert, personal) {
   if (!expert) return null;
-  const linked = new Set([...expert.content.matchAll(/\]\(\.?\/?references\/([^\s)#]+)(?:#[^)]*)?\)/g)].map(match => match[1]));
-  const notes = (expert.references || []).filter(ref => linked.has(ref.name));
+  const references = expert.references || [];
+  const files = [expertMainDocument, ...references.map(ref => 'references/' + ref.name)];
+  const linked = new Set(references.length ? expertDocumentLinks(expert.content, expertMainDocument, files).map(link => link.target) : []);
+  const notes = references.filter(ref => linked.has('references/' + ref.name));
   const content = notes.length ? [expert.content, ...notes.map(ref => `## ${ref.name}\n\n${ref.content}`)].join('\n\n') : expert.content;
   return { id: expert.id, name: expert.name, revision: expert.revision, description: expert.description, content, personal,
     modelInvocable: expert.invocation?.modelInvocable !== false, userInvocable: expert.invocation?.userInvocable !== false };

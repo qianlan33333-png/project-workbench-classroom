@@ -20,7 +20,7 @@ import { zipSync } from 'fflate';
 import {directoryVault, notePath, renameVaultNote, searchVault, vaultArchiveEntries, vaultFolderPaths, vaultMediaMatches, vaultStructure, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
-import { expertLibrary, generalExpert, selectProjectExpert } from './expert-library.js';
+import { expertDocumentAction, expertLibrary, generalExpert, selectProjectExpert } from './expert-library.js';
 import { expertTurnProjection, installSessionExpert } from './session-expert.js';
 import { createActivation, installActivation, sameOrigin, setupBody, workbenchTitle as brandTitle } from "./activation.js";
 import { createSuperAgent } from './superagent.js';
@@ -926,6 +926,10 @@ export async function apply(ctx, config) {
                   configured: Boolean(process.env[server.tokenEnv]), endpoint: new URL(server.url).origin,
                 }))]);
               return;
+            }
+            if (req.method === "POST" && path === "/expert-documents" && expertManagement) {
+              if (!sameOrigin(req) || admission.peer !== ctx.connection.browserPeer) throw requestError('请在本人工作台网页操作', 403);
+              json(res, 200, expertDocumentAction(await body(req))); return;
             }
             if (req.method === "POST" && ["/project/create", "/today-rules", "/mcp-test", "/experts"].includes(path)) {
               const origin = req.headers.origin;

@@ -144,6 +144,63 @@ function nodeText(node) {
   return descendants(node, []).map(child => child.value ?? child.alt ?? '').join('');
 }
 
+// Experts share the Markdown parser/renderer, but their document namespace is
+// the single method package, never a knowledge Vault or a filesystem path.
+export const expertMainDocument = 'SKILL.md';
+export const expertReferencePattern = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,95}\.md$/;
+
+function expertLink(node, from, known, byPath, byName, definitions) {
+  const wiki = node.type === 'wikilink';
+  const url = wiki ? node.path : node.type === 'linkReference' ? definitions.get(node.identifier) : node.url;
+  if (url === undefined || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(url)) return undefined;
+  const existing = resolveLink(node, from, byPath, byName, definitions);
+  let address, heading;
+  try {
+    const [file, ...fragment] = url.split('#');
+    address = decodeURIComponent(file);
+    heading = wiki ? node.heading || '' : decodeURIComponent(fragment.join('#'));
+  } catch { return undefined; }
+  if (!address) return heading ? {note:from, heading} : existing;
+  let target = address.startsWith('/references/') ? address.slice(1) :
+    address.startsWith('/') ? undefined : path.normalize(path.join(path.dirname(from), address));
+  if (wiki && address.startsWith('references/')) target = path.normalize(address);
+  if (wiki && !address.includes('/') && address !== expertMainDocument)
+    target = 'references/' + address.replace(/\.md$/i,'') + '.md';
+  if (wiki && target?.startsWith('references/') && !noteExtension.test(target)) target += '.md';
+  if (known.has(target)) return {note:target, heading, label:existing?.label};
+  const resolved = target && lookup(byPath, target) || existing?.note;
+  if (resolved) return {note:resolved, heading, label:existing?.label};
+  if (target === expertMainDocument || target?.startsWith('references/') &&
+      expertReferencePattern.test(target.slice(11))) return {note:target, heading, label:existing?.label};
+  return existing;
+}
+
+export function expertDocumentLinks(text, from, files, includeDefinitions = false) {
+  const {nodes, definitions} = parseNote(text);
+  const {byPath, byName} = noteLookup(files.map(path => ({path})));
+  const known = new Set(files);
+  const links = [];
+  for (const node of nodes) {
+    if (!['wikilink', 'link', 'linkReference'].includes(node.type) && !(includeDefinitions && node.type === 'definition')) continue;
+    const target = expertLink(node, from, known, byPath, byName, definitions)?.note;
+    if (!target) continue;
+    const label = node.type === 'wikilink' ? node.alias || node.value : nodeText(node);
+    links.push({target, start: node.position.start.offset, end: node.position.end.offset, replacement: labelText(label || '')});
+  }
+  return links;
+}
+
+export function removeExpertReference(documents, target, confirmed) {
+  if (!target.startsWith('references/') || !documents.some(item => item.path === target)) return undefined;
+  const files = documents.map(item => item.path);
+  const sources = new Map(documents.filter(item => item.path !== target).map(item =>
+    [item.path, expertDocumentLinks(item.text, item.path, files, true).filter(link => link.target === target)]));
+  const usedBy = [...sources].filter(([, links]) => links.length).map(([name]) => name);
+  if (usedBy.length && !confirmed) return {usedBy};
+  return {usedBy, documents: documents.filter(item => item.path !== target).map(item =>
+    ({path: item.path, text: rewrite(item.text, sources.get(item.path))}))};
+}
+
 const mediaExtensions = new Map(Object.entries({pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',
   gif:'image/gif',webp:'image/webp',bmp:'image/bmp',avif:'image/avif'}));
 
@@ -227,9 +284,10 @@ export function searchVault(documents, search, {snippets = false} = {}) {
   });
 }
 
-export function vaultView(documents, selected, {originalCenter = false, includeBacklinks = true} = {}) {
+export function vaultView(documents, selected, {originalCenter = false, includeBacklinks = true, expert = false} = {}) {
   const docs = orderedNotes(documents);
   const {byPath, byName} = noteLookup(docs);
+  const known = expert ? new Set(docs.map(doc => doc.path)) : undefined;
   const current = selected === undefined ? docs[0]?.path : selected;
   const notes = docs.map(doc => ({path: doc.path}));
   const backlinks = [];
@@ -264,7 +322,8 @@ export function vaultView(documents, selected, {originalCenter = false, includeB
         edits.push({start: start.offset, end: end.offset, replacement: labelText(node.alt || '')});
       }
       if (!['wikilink', 'link', 'linkReference'].includes(node.type)) continue;
-      const link = resolveLink(node, name, byPath, byName, definitions);
+      const resolved = expert ? expertLink(node, name, known, byPath, byName, definitions) : resolveLink(node, name, byPath, byName, definitions);
+      const link = expert && resolved && !known.has(resolved.note) ? {...resolved, note:undefined} : resolved;
       if (!link) continue;
       if (name !== current && link.note && link.note === current) linked = true;
       if (name !== current) continue;
