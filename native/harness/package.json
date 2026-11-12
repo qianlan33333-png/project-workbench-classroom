@@ -54,7 +54,9 @@
     "model-options.js",
     "activation.js",
     "activation-issuer.js",
-    "brand.png"
+    "brand.png",
+    "brand-192.png",
+    "brand-512.png"
   ],
   "dsh": {
     "bundle": {

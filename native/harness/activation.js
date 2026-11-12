@@ -141,7 +141,7 @@ export function setupPage(res, status, title, body, script = '') {
     'x-content-type-options': 'nosniff',
     'content-security-policy': `default-src 'none'; img-src 'self'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
   });
-  res.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · ${workbenchTitle}</title>
+  res.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · ${workbenchTitle}</title><link rel="icon" type="image/png" href="/workbench-brand.png">
 <style nonce="${nonce}">
 *{box-sizing:border-box}body{margin:0;background:#fff;color:#101828;font:16px/1.55 system-ui,sans-serif}
 main{width:min(100% - 40px,360px);margin:clamp(44px,17vh,160px) auto 32px}

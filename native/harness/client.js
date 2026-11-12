@@ -994,7 +994,7 @@ window.__ModuleLoader__.load({
       },[]);
       return state;
     }
-    function NewProject({onClose,onCreated}) {
+    function NewProject({onClose,onCreated,ordinaryOnly=false}) {
       const [name,setName]=useState(""),[type,setType]=useState("ordinary"),[busy,setBusy]=useState(false),[error,setError]=useState(""),[created,setCreated]=useState();
       const pending=useRef(false);
       return h(UI.Modal,{open:true,title:"新建项目",closeLabel:"关闭",onClose:()=>{if(!pending.current)onClose()}},
@@ -1008,12 +1008,12 @@ window.__ModuleLoader__.load({
           }catch(e){setError(e.message)}
           finally{pending.current=false;setBusy(false)}
         }},
-        h("fieldset",{disabled:busy||!!created,className:"wb-form"},
+        !ordinaryOnly&&h("fieldset",{disabled:busy||!!created,className:"wb-form"},
           h("legend",null,"项目类型"),
           ...[["ordinary","普通项目","在项目内创建多个对话。"],["auto-reply","专项项目 · 自动化应答","使用现有的客户会话与应答设置。"],["auto-operations","专项项目 · 自动化运营","核对名单、用户档案和运营设置。"]].map(([id,label,hint])=>
-            h("label",{key:id,className:"wb-check"},h("input",{type:"radio",name:"project-type",checked:type===id,onChange:()=>setType(id)}),h("span",null,label,h("small",{className:"wb-muted",style:{display:"block"}},hint)))),
-          field("项目名称",h("input",{required:true,maxLength:80,value:name,onChange:e=>setName(e.target.value),placeholder:type==="ordinary"?"例如：产品研究":"例如：自动化应答"}))),
-        h("p",{className:"wb-muted"},"项目类型在创建时确定。"),
+            h("label",{key:id,className:"wb-check"},h("input",{type:"radio",name:"project-type",checked:type===id,onChange:()=>setType(id)}),h("span",null,label,h("small",{className:"wb-muted",style:{display:"block"}},hint))))),
+        field("项目名称",h("input",{required:true,disabled:busy||!!created,maxLength:80,value:name,onChange:e=>setName(e.target.value),placeholder:type==="ordinary"?"例如：产品研究":"例如：自动化应答"})),
+        !ordinaryOnly&&h("p",{className:"wb-muted"},"项目类型在创建时确定。"),
         alert(error),
         h("div",{className:"wb-actions"},button("取消",onClose,{disabled:busy}),
           h("button",{type:"submit",className:"wb-primary",disabled:busy||!name.trim()},busy?"正在打开…":created?"打开已创建项目":"创建项目")))));
@@ -1123,7 +1123,7 @@ window.__ModuleLoader__.load({
       const result=selected&&results[selected.name];
       return h("section",{className:"wb-page"},h("div",{className:"wb-content"},
         h("div",{className:"wb-heading"},h("h1",null,"MCP 插件"),h("div",{className:"wb-actions"},
-          button("Harness 插件",openNativePlugins),button("刷新",load))),
+          button("插件管理",openNativePlugins),button("刷新",load))),
         h("p",{className:"wb-muted"},"查看已登记的标准工具连接。配置状态与连接检测分别显示。"),
         alert(error),!rows&&!error&&h("p",{role:"status"},"正在读取插件…"),
         h("div",{className:"wb-list"},...(rows||[]).map(r=>
@@ -1759,6 +1759,10 @@ window.__ModuleLoader__.load({
     const linkCSS = `
 .wb-brand-name{font-size:16px;font-weight:650;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wb-brand-mark{display:block;flex:none}.wb-more-anchor{width:100%}
+div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-hero]){display:none}
+[data-slot="settings.section"] [class$="_rowCard"]:has(button[aria-label*="(deepseek-official)"]) [class$="_editorRoute"]{display:none}
+.wb-session-projects{display:grid;gap:8px}
+.wb-session-projects button{text-align:left}
 .wb-more-trigger{display:flex;align-items:center;gap:10px;width:100%;min-height:36px;padding:0 12px;background:transparent;color:inherit;border:0;border-radius:8px;font:inherit;text-align:left;cursor:pointer}
 .wb-more-trigger[data-rail]{width:36px;justify-content:center;padding:0}
 .wb-more-trigger:hover,.wb-more-trigger[aria-expanded=true],.wb-project-find:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -1779,6 +1783,148 @@ window.__ModuleLoader__.load({
 .wb-project-lookup [role=status]{padding:4px 8px;font-size:12px}
 @media(max-width:480px){.wb-link-row{flex-wrap:wrap;padding:8px 0}.wb-link-row strong{min-width:74px}.wb-link-panel{padding-bottom:8px}}
 `;
+
+    function installNewSession(ctx, openProject) {
+      const showPicker = "wb-new-session-project";
+      const workspace = ctx.uiWorkspace;
+      const original = workspace.startSession;
+      const startIn = (project, options) => original.call(workspace, project.workspaceId, options);
+      function ProjectChooser() {
+        const [choice, setChoice] = useState();
+        useEffect(() => onEvent(showPicker, event => setChoice(event.detail)), []);
+        if (!choice) return null;
+        const close = () => setChoice(undefined);
+        const select = project => { close(); startIn(project, choice.options); };
+        if (!choice.error && !choice.projects.length) return h(NewProject, { ordinaryOnly: true, onClose: close, onCreated: openProject });
+        return h(UI.Modal, { open: true, title: "新会话", closeLabel: "关闭", onClose: close },
+          h("div", { className: "wb-page wb-session-projects" },
+            choice.error ? h(React.Fragment, null, alert(choice.error), button("重试", () => { close(); start(undefined, choice.options); }))
+              : h(React.Fragment, null, h("p", { className: "wb-muted" }, "选择会话所属的项目"),
+                ...choice.projects.map(project => button(project.name, () => select(project), { key: project.id })))));
+      }
+      function start(workspaceId, options) {
+        if (workspaceId) return original.call(this, workspaceId, options);
+        const navigation = ctx.layout.beginNavigation();
+        const current = ctx.layout.panelInfo.getSnapshot().activePanelId === null
+          ? Object.values(ctx.sessions.list.getSnapshot().byId).find(session => session.retainedBy?.mainView > 0) : undefined;
+        const activeWorkspaceId = current && visibleSession(current.id)
+          ? ctx.workspaces.list.getSnapshot().items.find(item => item.sessionIds.includes(current.id))?.workspaceId : undefined;
+        const show = detail => window.dispatchEvent(new CustomEvent(showPicker, { detail: { ...detail, options } }));
+        void api("/project-list").then(({ projects }) => {
+          if (navigation.aborted) return;
+          const ordinary = projects.filter(project => project.type === "ordinary");
+          const target = ordinary.find(project => project.workspaceId === activeWorkspaceId) || (ordinary.length === 1 ? ordinary[0] : undefined);
+          if (target) startIn(target, options);
+          else show({ projects: ordinary });
+        }).catch(error => { if (!navigation.aborted) show({ error: error.message }); });
+      }
+      ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "workbench-new-session" }, ProjectChooser));
+      ctx.effect(() => {
+        workspace.startSession = start;
+        return () => { if (workspace.startSession === start) workspace.startSession = original; };
+      }, "workbench: new session project selection");
+    }
+
+    function wrapSlot(ctx, slot, id, render) {
+      ctx.slots.inject(slot, () => {
+        let wrapped, restore;
+        const update = () => {
+          const entry = ctx.slots.entries(slot).find(item => item.component && (!id || (item.options.id ?? item.options.key) === id));
+          if (entry === wrapped) return;
+          restore?.();
+          wrapped = entry;
+          restore = undefined;
+          if (!entry) return;
+          const Original = entry.component;
+          const WorkbenchSlot = props => render(Original, props);
+          entry.component = WorkbenchSlot;
+          restore = () => { if (entry.component === WorkbenchSlot) entry.component = Original; };
+        };
+        const unsubscribe = ctx.slots.subscribe(slot, update);
+        update();
+        return () => { unsubscribe(); restore?.(); };
+      });
+    }
+
+    function installWorkbenchBrand(ctx) {
+      const builtinProvider = id => id === "deepseek-official" || id === "deepseek-account";
+      const unbrand = text => text.replace(/DeepSeek\s+Harness/g, brandTitle).replace(/\bDeepSeek\b/g, "内置模型");
+      const translate = t => (key, values) => unbrand(t(key, values));
+      const modelLabels = new WeakMap();
+      const modelSettings = new WeakMap();
+      ctx.slots.inject("conversation.hero.brand.mark", () => ctx.slots.register({ name: "conversation.hero.brand.mark" },
+        () => h("span", { hidden: true, "data-wb-empty-hero": "" })));
+      const displayDirectory = snapshot => {
+        if (!modelLabels.has(snapshot)) modelLabels.set(snapshot, { ...snapshot,
+          groups: snapshot.groups.map(group => !builtinProvider(group.id) ? group : {
+            ...group, name: "内置模型", models: group.models.map(model => ({ ...model,
+              name: model.name.replace(/^DeepSeek[-\s]+/i, ""),
+            })),
+          }),
+          failures: snapshot.failures.map(failure => builtinProvider(failure.id)
+            ? { ...failure, name: "内置模型", message: unbrand(failure.message) } : failure),
+        });
+        return modelLabels.get(snapshot);
+      };
+      ctx.inject(["modelDirectories"], scope => {
+        scope.effect(() => {
+          const resolver = scope.modelDirectories;
+          const original = resolver.directoryFor;
+          const projected = new WeakMap();
+          function directoryFor(sessionId) {
+            const directory = original.call(this, sessionId);
+            if (!projected.has(directory)) projected.set(directory, {
+              store: {
+                subscribe: listener => directory.store.subscribe(listener),
+                getSnapshot: () => displayDirectory(directory.store.getSnapshot()),
+              },
+              load: () => directory.load().then(displayDirectory),
+              select: selection => directory.select(selection),
+            });
+            return projected.get(directory);
+          }
+          resolver.directoryFor = directoryFor;
+          return () => { if (resolver.directoryFor === directoryFor) resolver.directoryFor = original; };
+        }, "workbench: built-in model display labels");
+      });
+      wrapSlot(ctx, "conversation.input.model", undefined, (Original, props) => h(Original, { ...props, t: translate(props.t) }));
+      wrapSlot(ctx, "settings.section", "models", (Original, props) => h(Original, { ...props,
+        t: (key, values) => unbrand(props.t(key === "keyFallbackDetected" ? "keyFallbackDetectedHidden" : key, values)),
+        useSnapshot: select => props.useSnapshot(snapshot => {
+          if (!modelSettings.has(snapshot)) modelSettings.set(snapshot, { ...snapshot,
+            rows: snapshot.rows.map(row => builtinProvider(row.entry.provider)
+              ? { ...row, entry: { ...row.entry, displayName: "内置模型" } } : row),
+          });
+          return select(modelSettings.get(snapshot));
+        }),
+      }));
+      wrapSlot(ctx, "settings.general.item", "session-log-deepseek", (Original, props) => h(Original, { ...props,
+        t(key) {
+          const copy = props.t(key);
+          if (key !== "description") return copy;
+          return copy.startsWith("帮助") ? "向内置模型提供方共享会话日志，以帮助改进服务。"
+            : copy.replace(/\bDeepSeek\b/g, "AI provider");
+        },
+      }));
+      wrapSlot(ctx, "main", "plugins", (Original, props) => h(Original, { ...props, t: translate(props.t) }));
+      wrapSlot(ctx, "settings.onboarding", "welcome-notice", function SkipWelcome(_Original, { complete }) {
+        useEffect(() => { complete(); }, [complete]);
+        return null;
+      });
+      ctx.effect(() => {
+        const title = document.head.querySelector("title");
+        if (!title) return;
+        const refresh = () => {
+          const current = document.title;
+          const next = current.replace(/(^| — )DeepSeek Harness$/, `$1${brandTitle}`);
+          if (next !== current) document.title = next;
+        };
+        const observer = new MutationObserver(refresh);
+        observer.observe(title, { childList: true, characterData: true, subtree: true });
+        refresh();
+        return () => observer.disconnect();
+      }, "workbench: browser title");
+    }
 
     function ChannelLinks({ close }) {
       const [status, setStatus] = useState();
@@ -2080,21 +2226,8 @@ window.__ModuleLoader__.load({
           ({ size }) => h("img", { src: "/workbench-brand.png", width: size, height: size, alt: brandTitle, title: brandTitle, className: "wb-brand-mark" })));
         ctx.slots.inject("sidebar.brand.name", () => ctx.slots.register({ name: "sidebar.brand.name", priority: -10 },
           () => h("span", { className: "wb-brand-name", title: brandTitle }, brandTitle)));
-        ctx.effect(() => {
-          const workspace = ctx.uiWorkspace;
-          const original = workspace.startSession;
-          function start(workspaceId, options) {
-            if (workspaceId) return original.call(this, workspaceId, options);
-            const current = ctx.layout.panelInfo.getSnapshot().activePanelId === null &&
-              Object.values(ctx.sessions.list.getSnapshot().byId).find(session => session.retainedBy?.mainView > 0);
-            const project = current && current.id !== personalSessionId && visibleSession(current.id) &&
-              ctx.workspaces.list.getSnapshot().items.find(w => w.sessionIds.includes(current.id) && !replyWorkspaceIds.has(w.workspaceId));
-            if (project) return original.call(this, project.workspaceId, options);
-            ctx.layout.selectPanel("wb-today");
-          }
-          workspace.startSession = start;
-          return () => { if (workspace.startSession === start) workspace.startSession = original; };
-        }, "workbench: start a session in the active project");
+        installWorkbenchBrand(ctx);
+        installNewSession(ctx, openProject);
         function PreviousProjectEntry() {
           useEffect(() => {
             ctx.layout.selectPanel(null);

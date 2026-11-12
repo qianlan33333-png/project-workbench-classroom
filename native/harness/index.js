@@ -18,7 +18,7 @@ import { resourceDocuments } from './resource-documents.js';
 import {directoryVault, searchVault, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
-import { createActivation, installActivation, sameOrigin, setupBody } from "./activation.js";
+import { createActivation, installActivation, sameOrigin, setupBody, workbenchTitle as brandTitle } from "./activation.js";
 import { createSuperAgent } from './superagent.js';
 import { nativeLibraryCommand, activeLibraryCommand } from './library-command.js';
 
@@ -36,6 +36,10 @@ export const inject = [
   "tools",
 ];
 const owner = { kind: "owner", projectId: "", sessionId: "owner-ui" };
+const brandIcon = "/workbench-brand.png";
+const installIcons = [192, 512].map(size => ({
+  src: `/workbench-brand-${size}.png`, sizes: `${size}x${size}`, type: "image/png",
+}));
 const idOf = (path) =>
   "p_" + createHash("sha256").update(path).digest("hex").slice(0, 24);
 function json(res, status, value) {
@@ -141,14 +145,34 @@ export async function apply(ctx, config) {
       call,
     });
   }
+  for (const path of [brandIcon, ...installIcons.map(icon => icon.src)]) {
+    ctx.effect(() => ctx.webServer.register({
+      kind: "exact", path,
+      handler: async (req, res) => {
+        if (req.method !== "GET") { res.writeHead(405).end(); return; }
+        const logo = await readFile(new URL(path.replace("/workbench-", "./"), import.meta.url));
+        res.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=3600" }).end(logo);
+      },
+    }), "workbench: brand asset");
+  }
+  ctx.effect(() => ctx.webServer.tapIndex(html => html
+    .replace(/<link rel="(?:manifest|apple-touch-icon|icon)"[^>]*>\s*/g, "")
+    .replace(/<meta name="apple-mobile-web-app-title"[^>]*>/,
+      `<meta name="apple-mobile-web-app-title" content="${brandTitle}" />`)
+    .replace(/<title>[^<]*<\/title>/, `<title>${brandTitle}</title>
+    <link rel="icon" type="image/png" href="${brandIcon}" />
+    <link rel="apple-touch-icon" href="${installIcons[0].src}" />
+    <link rel="manifest" href="/workbench.webmanifest" />`)), "workbench: browser metadata");
   ctx.effect(() => ctx.webServer.register({
-    kind: "exact", path: "/workbench-brand.png",
-    handler: async (req, res) => {
+    kind: "exact", path: "/workbench.webmanifest",
+    handler(req, res) {
       if (req.method !== "GET") { res.writeHead(405).end(); return; }
-      const logo = await readFile(new URL("./brand.png", import.meta.url));
-      res.writeHead(200, {"content-type":"image/png","cache-control":"public, max-age=3600"}).end(logo);
+      res.writeHead(200, { "content-type": "application/manifest+json; charset=utf-8" }).end(JSON.stringify({
+        name: brandTitle, short_name: "一号位工作台", start_url: "/", scope: "/", display: "standalone",
+        icons: installIcons,
+      }));
     },
-  }), "workbench: brand asset");
+  }), "workbench: app manifest");
   const projectCache=new Map();
   async function syncProjects(signal) {
     const projects = [];
