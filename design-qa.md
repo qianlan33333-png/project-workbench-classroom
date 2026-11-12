@@ -135,3 +135,17 @@ final result: passed
 - Chromium 验证真实浏览器提交生成、查询已兑换和过期码，生成计数加一，普通列表不展示原码，两个视口均无页面错误。范围为隔离浏览器与隔离库。
 
 final result: passed
+
+# 新会话专家菜单 · Product Design 验收
+
+源：用户图一 `codex-clipboard-8c67819d-a397-4ce2-bdec-3ba0ec31865b.png`（1600 × 706）。实现：`.var/experts/dropdown-audit/candidate-dropdown-1440.png` 和 `.var/experts/dropdown-audit/candidate-dropdown-390.png`（1440 × 850、390 × 850，截图均为 CSS 像素）。同图比较：`.var/experts/dropdown-audit/compare.png`。
+
+比较的是两个菜单打开时的输入区。源截图是工作区菜单，候选是相邻的专家菜单；对齐触发器和输入框位置后比较，侧栏、内容及未选择时无勾选为预期差异。
+
+- 全图：原生输入区和项目切换位置不变，专家菜单直接从相邻按钮展开。390px 触屏菜单在视口内，保留原生输入区。
+- 局部：沿用原生字体、字号、行高和文字层级。菜单圆角、留白、阴影、前景色和打开态来自同一个 Harness Menu。专家图标和下拉箭头来自现有图标库，无新增图像。菜单文案与目录使用同一个名称，选定后菜单按稳定 ID 标记选中项。
+- 行为：桌面 Enter/Escape 和手机触摸均能打开、选定和收起；没有绑定对话框。首轮前绑定当前 Session，已绑定后换专家进入新 Session。延迟换专家请求期间切到知识库不会被旧请求抢回。
+
+未见需修复的 P0、P1 或 P2。手机抓图留有点击瞬间的浏览器触摸高亮，不影响菜单布局或选项。
+
+final result: passed
