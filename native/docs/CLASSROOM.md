@@ -1,6 +1,6 @@
 # 自动化应答课堂练习
 
-学员自己部署时默认无需激活码。启动后使用终端打印的 **Harness 本人访问链接**打开工作台。真实试答需要自己的 DeepSeek API 密钥，可在工作台的「设置 → 模型」填写。
+课堂版首次使用需要激活码。下载包开箱启用激活，按下面的源码步骤启动也会启用激活。使用终端打印的 **Harness 本人访问链接**打开激活页。激活后在「设置 → 模型」填写自己的 DeepSeek API 密钥。
 
 安装需要 Node.js 24、Go 1.26、MySQL 8.4 和 Temporal CLI。下面以本机课堂练习为例，命令在仓库根目录运行。
 
@@ -22,7 +22,11 @@
 3. 在另一个终端设置工作台环境变量，将示例 DSN 换成自己的 MySQL 连接。保持该终端运行。
 
    ```sh
-   unset WORKBENCH_ACTIVATION_REQUIRED WORKBENCH_ACTIVATION_SIGNING_KEY_FILE
+   unset WORKBENCH_ACTIVATION_SIGNING_KEY_FILE
+   export WORKBENCH_ACTIVATION_REQUIRED=1
+   export WORKBENCH_ACTIVATION_ISSUER=https://dsh.qianlan333.cloud
+   export WORKBENCH_ACTIVATION_PUBLIC_KEY_FILE="$PWD/native/classroom/activation-public.pem"
+   export WORKBENCH_ACTIVATION_DIR="$PWD/.var/classroom/activation"
    export WORKBENCH_MYSQL_DSN='workbench:YOUR_PASSWORD@tcp(127.0.0.1:3306)/workbench_classroom?parseTime=true'
    export WORKBENCH_HOST_TOKEN="$(openssl rand -hex 32)"
    export WORKBENCH_REPLY_PRACTICE=1 WORKBENCH_RESOURCE_ACL_EDIT=1
@@ -42,9 +46,9 @@
      --patch "$PWD/native/harness/cordis.patch.yml" --no-open --host 127.0.0.1 --port 3082
    ```
 
-4. 打开本人访问链接，创建「自动化应答」项目。进入项目「设置 → 开始练习」，选择专家和语料。可在「知识库」建语料库并授予项目读取权限。底部聊天框接收模拟客户消息，回复只在当前练习会话中显示。修改专家或更新语料后点「新练习」复测。
+4. 打开本人访问链接，输入激活码，再创建「自动化应答」项目。进入项目「设置 → 开始练习」，选择专家和语料。可在「知识库」建语料库并授予项目读取权限。底部聊天框接收模拟客户消息，回复只在当前练习会话中显示。修改专家或更新语料后点「新练习」复测。
 
-如果由分发方集中发码，在 Host 设置 `WORKBENCH_ACTIVATION_REQUIRED=1`，并配置签发服务地址、验签公钥和持久化激活目录。这样的实例首次使用需要分发方签发的激活码。部署在服务器或本机都遵循同一开关。详见[分发激活配置](ONBOARDING.md)。
+课堂使用现有签发服务。部署在服务器或本机都遵循同一激活开关。替换签发方时须一起更换地址和验签公钥。详见[分发激活配置](ONBOARDING.md)。
 
 ## 课堂下载包
 
