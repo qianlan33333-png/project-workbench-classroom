@@ -75,6 +75,7 @@ def package(args, tmp):
     shutil.copytree(mysql, stage / "mysql", ignore=shutil.ignore_patterns(
         "*.pdb", "*.lib", "*-debug*", "include", "man", "docs", "mysql-test"))
     (stage / "temporal").mkdir()
+    shutil.copy2(args.temporal_license, stage / "temporal" / "LICENSE")
     for name in ("temporal-server", "temporal-sql-tool"):
         shutil.copy2(tmp / "temporal" / (name + suffix), stage / "temporal" / (name + suffix))
     shutil.copytree(NATIVE / "skills", stage / "skills")
@@ -137,7 +138,7 @@ def package(args, tmp):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True, choices=TARGETS)
-    for arg in ("node", "mysql", "temporal", "output"):
+    for arg in ("node", "mysql", "temporal", "temporal-license", "output"):
         parser.add_argument("--" + arg, required=True, type=lambda value: Path(value).resolve())
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
