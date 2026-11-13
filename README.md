@@ -1,5 +1,7 @@
 # 个人工作台
 
+课堂自部署请从[课堂练习安装说明](native/docs/CLASSROOM.md)开始。学员自己部署时默认无需激活码。
+
 正式入口：[个人工作台](https://dsh.qianlan333.cloud)。当前版本 `native-20261108-03`，唯一回滚版本 `native-20261108-02`；标准回滚往返已实测。
 
 官方 Harness 管对话，Temporal 管执行，MySQL 管资源与业务事实。保留“今日”Personal Agent；项目通过允许列表引用自有/共享资源，专家 Skill 使用标准 MCP 工具。
