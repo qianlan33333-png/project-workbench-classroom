@@ -1000,3 +1000,9 @@ Safari 使用本地模型和 MCP 协议替身。验证请求到达输出上限�
 使用新的本地 Harness、MySQL 和 Temporal 实例。官方 DeepSeek Flash 验证返回 `verified`。在同一原生 SuperAgent 会话中，验证后发问成功，并准确复述验证前的合成标记。
 
 临时标准 MCP 接线将飞书只读查询转交现有 Worker 的 `feishu_cli_read`，并另接一个本地测试 MCP。飞书测试账号完成私聊验证和 CLI 授权后，在原隔离实例、原 SuperAgent 会话 `today_5e16296fcb6624faa53ab20f` 复测。授权后首次查询与重连后新查询均取得飞书 CLI 用户身份的成功回执，固定合成关键词各返回 0 条匹配。关闭飞书连接的 TCP 套接字期间，该调用失败，真实模型在同一轮成功调用内置项目列表和另一个 MCP 并给出完整回复。单独重连飞书 MCP 后工具恢复加载，未自动重放调用，新一轮三个工具均成功。隔离 MySQL 查到同一会话的一条去重飞书来源记录。白名单未改，未发布正式环境。
+
+### P0、P1 正式发布
+
+正式版 `native-20261113-50-p0p1-setup-recovery`，唯一回滚版 `native-20261113-49-followup-stability`。源码 `32f7110433b28027c5f46fc71aa4a308f8290142`，树 `f7bc35bb3187c028523f7152e7be47f7c4575d8d`，传输包 SHA-256 `349223a78016525f5050638bc7f02b89cc0428262836411846a5bc629b9c8bb0`。发布前在同一发布锁下保存受影响 MySQL 表的一致性备份，发布后读回 `sync_attempt` 为 `INT NOT NULL DEFAULT 0`。版本指针、11 个更新文件摘要、服务和后台消费者状态通过核对。黄小璨 OAuth 白名单未改。
+
+官方 DeepSeek Flash 模型验证返回 `verified`，原正式 SuperAgent `today_5b54bf760cfed53c17d3d885` 收到新问题并在原生会话日志中记录完整回复和测试标记 `WB_RELEASE_50_CHAT_7D2C`。正式 MCP 目录以该会话身份发现 `feishu_cli_read`。原正式飞书应用已生成 CLI 授权二维码，扫码窗口内未取得用户凭证，CLI 仍为 `unlinked`，正式真实读取待本人账号授权后复验。
