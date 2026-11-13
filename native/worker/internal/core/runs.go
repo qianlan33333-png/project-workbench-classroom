@@ -48,6 +48,7 @@ type Run struct {
 	Goal           string               `json:"goal,omitempty"`
 	NotifySession  string               `json:"notifySession,omitempty"`
 	OriginMessage  string               `json:"originMessage,omitempty"`
+	ReplyPractice  bool                 `json:"replyPractice,omitempty"`
 	ReplyParts     []string             `json:"replyParts,omitempty"`
 }
 
@@ -241,6 +242,9 @@ func (s *Store) SaveRun(ctx context.Context, r Run) error {
 	return nil
 }
 func (r Run) visibleTo(p Principal) bool {
+	if r.ReplyPractice {
+		return p.IsOwner() || p == r.Principal
+	}
 	return p.Kind != "project" || p.ProjectID == r.Principal.ProjectID && p.SessionID == r.Principal.SessionID
 }
 

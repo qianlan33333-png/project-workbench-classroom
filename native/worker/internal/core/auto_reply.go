@@ -46,6 +46,13 @@ func (s *Store) PutReplySettings(ctx context.Context, p Principal, v ReplySettin
 	if !p.IsOwner() || !ValidID(v.ProjectID) || !ValidID(v.ConnectionID) || !ValidID(v.ExpertSkill) || len(v.Knowledge) > 8 {
 		return v, ErrInvalid
 	}
+	if IsReplyPracticeConnection(v.ConnectionID) {
+		if v.ConnectionID != practiceConnection(v.ProjectID) {
+			return v, ErrDenied
+		}
+		off := false
+		v.Notify, v.ReadProfile, v.Subject = false, &off, nil
+	}
 	scope := Principal{Kind: "project", ProjectID: v.ProjectID, SessionID: "reply-config"}
 	if other, e := s.ReplySettingsForConnection(ctx, v.ConnectionID); e == nil && other.ProjectID != v.ProjectID {
 		return v, ErrConflict

@@ -98,6 +98,9 @@ func (a *Server) messageTools(s *mcp.Server, p core.Principal) {
 			return nil, RunRef{}, e
 		}
 		id := r.ID
+		if core.IsReplyPracticeConnection(in.ConnectionID) {
+			return nil, RunRef{RunID: id}, nil
+		}
 		_, e = a.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: engine.InteractiveQueue, WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, engine.SendMessage, id)
 		return nil, RunRef{RunID: id}, accepted(e)
 	})
@@ -220,6 +223,10 @@ func (a *Server) messageRoutes(mux *http.ServeMux) {
 				respond(w, out, e)
 				return
 			}
+			if core.IsReplyPracticeConnection(v.ConnectionID) {
+				respond(w, nil, core.ErrDenied)
+				return
+			}
 			if v.Principal.Kind == "project" {
 				old, e := a.Store.Route(r.Context(), v.ID)
 				if core.IsMissing(e) {
@@ -241,6 +248,10 @@ func (a *Server) messageRoutes(mux *http.ServeMux) {
 		}
 		var in core.IncomingMessage
 		if !decode(w, r, &in) {
+			return
+		}
+		if core.IsReplyPracticeConnection(in.ConnectionID) {
+			respond(w, nil, core.ErrDenied)
 			return
 		}
 		_, _ = a.Store.EnsureReplyRoute(r.Context(), in)
@@ -290,6 +301,12 @@ func (a *Server) reconcileDelivery(ctx context.Context, p core.Principal, in Rec
 	}
 	if d.RunID != in.RunID {
 		return nil, core.Delivery{}, core.ErrDenied
+	}
+	if core.IsReplyPracticeConnection(d.ConnectionID) {
+		if requireCRM || d.State != core.PracticeReplyState {
+			return nil, core.Delivery{}, core.ErrDenied
+		}
+		return nil, d, nil
 	}
 	if requireCRM {
 		transport, err := a.Store.Transport(ctx, p, d.ConnectionID)

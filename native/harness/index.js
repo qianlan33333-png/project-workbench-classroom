@@ -443,7 +443,7 @@ export async function apply(ctx, rawConfig) {
         },
       });
       const externalServers = new Map(toolServers
-        .filter(server => (p.kind === 'personal' ? server.personal : server.projects?.includes(p.projectId)) &&
+        .filter(server => !boundary.replyPractice && (p.kind === 'personal' ? server.personal : server.projects?.includes(p.projectId)) &&
           (!boundary.objectSession || server.customerTools?.length))
         .map(server => [server.name, server]));
       agent.ctx.on('tools/execute',async(exec,next)=>{
@@ -1045,7 +1045,7 @@ export async function apply(ctx, rawConfig) {
               res.writeHead(200,{'content-type':response.headers.get('content-type'),'content-disposition':response.headers.get('content-disposition')});
               const stream=Readable.fromWeb(response.body);stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);return;
             }
-            const readPaths = new Set(["/reply-states","/reply-timeline","/reply-accounts","/reply-resources","/transports","/reply-projects","/reply-settings","/message-routes","/reply-session","/reply-channel-history","/resource-page", "/business-policies", "/resource-permissions", "/schedules", "/notification-targets",
+            const readPaths = new Set(["/reply-practice","/reply-states","/reply-timeline","/reply-accounts","/reply-resources","/transports","/reply-projects","/reply-settings","/message-routes","/reply-session","/reply-channel-history","/resource-page", "/business-policies", "/resource-permissions", "/schedules", "/notification-targets",
               "/resources",
               "/connections", "/resource-sync-status",
               "/grants",
@@ -1055,7 +1055,7 @@ export async function apply(ctx, rawConfig) {
               "/personal/settings",
               "/notifications",
             ]);
-            const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause","/business-policies",
+            const writePaths = new Set(["/reply-practice","/reply-practice/message","/reply-manual","/reply-settings","/message-routes","/schedules/pause","/business-policies",
               "/resource-permissions","/resource-metadata","/vault-create","/vault-save",
               "/resources",
               "/connections", "/connection-test", "/resource-connection", "/resource-sync-start", "/resource-sync-retry",
@@ -1075,7 +1075,7 @@ export async function apply(ctx, rawConfig) {
               return;
             }
             if (req.method === "POST" && writePaths.has(path)) {
-              if (['/connection-test', '/resource-connection', '/resource-sync-start', '/resource-sync-retry'].includes(path) &&
+              if (['/reply-practice', '/reply-practice/message', '/connection-test', '/resource-connection', '/resource-sync-start', '/resource-sync-retry'].includes(path) &&
                   admission.peer !== ctx.connection.browserPeer) throw requestError('请在本人工作台网页操作', 403);
               const origin = req.headers.origin;
               if (!origin || new URL(origin).host !== req.headers.host) {

@@ -66,6 +66,13 @@ func (s *Store) PrepareReplyWithLimits(ctx context.Context, p Principal, connect
 	// immutable body and IDs, including a legacy interrupted submission.
 	// The original WeCom binding predates the transport kind field.
 	wecom := c.Kind == "wecom-gateway" || (c.Kind == "" && c.ID == "auto-reply-gateway")
+	practice := IsReplyPracticeConnection(connection)
+	if practice {
+		if c.Kind != "reply-practice" || p.Kind != "project" || connection != practiceConnection(p.ProjectID) {
+			return Run{}, ErrDenied
+		}
+		maxSingleChars, maxPartChars = 0, 0
+	}
 	splitLines := p.Kind == "project" && wecom
 	legacy := existingRun && splitLines && maxSingleChars == 0 && maxPartChars == 0 && len(old.ReplyParts) == 0
 	var parts []string
@@ -117,6 +124,9 @@ func (s *Store) PrepareReplyWithLimits(ctx context.Context, p Principal, connect
 	if err == nil && (!cfg.Enabled || cfg.ConnectionID != connection || cfg.Revision != m.SettingsRevision) {
 		return Run{}, ErrDenied
 	}
+	if practice && (IsMissing(err) || m.BusinessValidUntil != nil && !time.Now().Before(*m.BusinessValidUntil)) {
+		return Run{}, ErrDenied
+	}
 	allowed := p.Kind != "project"
 	for _, project := range c.Projects {
 		allowed = allowed || project == p.ProjectID
@@ -143,6 +153,11 @@ func (s *Store) PrepareReplyWithLimits(ctx context.Context, p Principal, connect
 			return Run{}, err
 		}
 		r.Lineage = UnionRefs(r.Lineage)
+	}
+	if practice {
+		r.NotifySession = p.SessionID
+		r.ReplyPractice = true
+	} else if !existingRun {
 		// Preserve the existing notification destination without replacing the
 		// originating customer message with a delegated task's origin.
 		parent, err := scanJSON[Run](tx.QueryRowContext(ctx, `SELECT body FROM wb_runs WHERE session_id=? AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.operation'))='dispatch' ORDER BY created_at LIMIT 1`, p.SessionID))
@@ -178,11 +193,17 @@ func (s *Store) PrepareReplyWithLimits(ctx context.Context, p Principal, connect
 	if !existingDelivery {
 		now := time.Now().UTC()
 		first.State, first.CreatedAt, first.UpdatedAt = "prepared", now, now
+		if practice {
+			first.State = PracticeReplyState
+		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO wb_deliveries(id,run_id,item_id,state,body) VALUES(?,?,?,?,?)`, id, id, first.ItemID, first.State, jsonText(first)); err != nil {
 			return Run{}, err
 		}
 	}
 	m.State = "reply_queued"
+	if practice {
+		m.State = "reply_" + PracticeReplyState
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE wb_messages SET body=? WHERE connection_id=? AND event_id=?`, jsonText(m), connection, event); err != nil {
 		return Run{}, err
 	}

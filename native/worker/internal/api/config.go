@@ -68,17 +68,18 @@ func (a *Server) configRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("GET /session/check", func(w http.ResponseWriter, r *http.Request) {
 		p := principal(r.Context())
-		object := false
+		object, practice := false, false
 		if p.Kind == "project" {
-			_, e := a.Store.SessionRoute(r.Context(), p)
+			route, e := a.Store.SessionRoute(r.Context(), p)
 			if e == nil {
 				object = true
+				practice = core.IsReplyPracticeConnection(route.ConnectionID)
 			} else if !core.IsMissing(e) {
 				respond(w, nil, e)
 				return
 			}
 		}
-		respond(w, map[string]bool{"allowed": true, "objectSession": object}, a.Store.CheckSession(r.Context(), p))
+		respond(w, map[string]bool{"allowed": true, "objectSession": object, "replyPractice": practice}, a.Store.CheckSession(r.Context(), p))
 	})
 	mux.HandleFunc("GET /events/pending", func(w http.ResponseWriter, r *http.Request) {
 		after, e := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)

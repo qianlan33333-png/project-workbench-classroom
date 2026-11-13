@@ -92,7 +92,7 @@ func (s *Store) ReadReplyActivity(ctx context.Context, p Principal, project stri
 	defer tx.Rollback()
 	const configuredProjects = `SELECT p.id,p.body->>'$.name' FROM wb_projects p
 		JOIN wb_settings s ON s.id=CONCAT('reply-',p.id)
-		WHERE COALESCE(s.body->>'$.connectionId','')<>''`
+		WHERE COALESCE(s.body->>'$.connectionId','')<>'' AND s.body->>'$.connectionId' NOT LIKE 'reply-practice-%'`
 	projects, err := tx.QueryContext(ctx, configuredProjects+` AND (?='' OR p.id=?) ORDER BY p.id LIMIT 2`, project, project)
 	if err != nil {
 		return out, err

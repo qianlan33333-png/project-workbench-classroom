@@ -74,6 +74,9 @@ func (s *Store) OwnerMessageDecision(ctx context.Context, m StoredMessage) (Deci
 // Gate changes and this claim lock the same rows; after claim, only receipts
 // can establish the external outcome, never a resend.
 func (s *Store) deliveryGate(ctx context.Context, tx *sql.Tx, d Delivery) error {
+	if IsReplyPracticeConnection(d.ConnectionID) {
+		return ErrDenied
+	}
 	r, e := scanJSON[Run](tx.QueryRowContext(ctx, `SELECT body FROM wb_runs WHERE id=?`, d.RunID))
 	if e != nil {
 		return e

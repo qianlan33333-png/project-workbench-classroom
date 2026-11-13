@@ -87,7 +87,7 @@ func (s *Store) PutTransport(ctx context.Context, p Principal, v Transport) erro
 	if !p.IsOwner() {
 		return ErrDenied
 	}
-	if v.ModeConnectionID != "" && !ValidID(v.ModeConnectionID) {
+	if IsReplyPracticeConnection(v.ID) || v.Kind == "reply-practice" || (v.ModeConnectionID != "" && (!ValidID(v.ModeConnectionID) || IsReplyPracticeConnection(v.ModeConnectionID))) {
 		return ErrInvalid
 	}
 	u, e := url.Parse(v.Endpoint)
@@ -565,6 +565,9 @@ func (s *Store) MessageContext(ctx context.Context, p Principal, connection, eve
 	return records, nil
 }
 func (s *Store) PutDelivery(ctx context.Context, r Run, v Delivery) error {
+	if IsReplyPracticeConnection(v.ConnectionID) {
+		return ErrDenied
+	}
 	if v.Text == "" || len(v.Text) > 16000 || len(v.Target) == 0 || !ValidID(v.ID) || v.RunID != r.ID || v.ItemID == "" {
 		return ErrInvalid
 	}

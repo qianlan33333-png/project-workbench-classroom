@@ -75,6 +75,8 @@ func (s *Store) RunCatalog(ctx context.Context, p Principal, exclude string) ([]
 	if p.Kind == "project" {
 		q += ` AND project_id=? AND session_id=?`
 		args = append(args, p.ProjectID, p.SessionID)
+	} else {
+		q += ` AND JSON_EXTRACT(body,'$.replyPractice') IS NULL`
 	}
 	if exclude != "" {
 		q += ` AND id<>?`

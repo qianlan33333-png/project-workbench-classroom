@@ -53,6 +53,9 @@ func modeChangedTx(ctx context.Context, tx *sql.Tx, r *MessageRoute) error {
 		return nil
 	}
 	r.ModeChangedAt = time.Now().UTC()
+	if IsReplyPracticeConnection(r.ConnectionID) {
+		return nil
+	}
 	state := conversationState(*r)
 	e := RunEvent{
 		ID:        uuid.NewSHA1(uuid.NameSpaceURL, []byte(fmt.Sprintf("conversation-mode/%s/%d", r.ID, state.Version))).String(),

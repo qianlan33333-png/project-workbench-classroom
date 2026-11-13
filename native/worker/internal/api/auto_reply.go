@@ -12,6 +12,7 @@ import (
 )
 
 func (a *Server) replyRoutes(mux *http.ServeMux) {
+	a.replyPracticeRoutes(mux)
 	mux.HandleFunc("GET /reply-states", func(w http.ResponseWriter, r *http.Request) {
 		var keys []string
 		if json.Unmarshal([]byte(r.URL.Query().Get("keys")), &keys) != nil {
@@ -48,6 +49,9 @@ func (a *Server) replyRoutes(mux *http.ServeMux) {
 			}
 			if err = json.Unmarshal(raw, &c); err != nil {
 				break
+			}
+			if core.IsReplyPracticeConnection(c.ID) {
+				continue
 			}
 			for _, id := range c.Projects {
 				if id == project && c.Enabled {
@@ -340,6 +344,10 @@ func (a *Server) startIncoming(ctx context.Context, message core.StoredMessage) 
 		goal = message.Text + "\n\n这是已绑定本人渠道的新消息，请由 SuperAgent 处理；需要回复本人时使用当前消息的connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。"
 	}
 	run := core.Run{ID: message.ID, Principal: message.Principal, Operation: "incoming", Title: "客户新消息", Goal: goal, OriginMessage: message.ID, ExpertRef: message.ExpertRef, Sources: append([]core.Ref{}, message.Knowledge...)}
+	if core.IsReplyPracticeConnection(message.ConnectionID) {
+		run.NotifySession = message.Principal.SessionID
+		run.ReplyPractice = true
+	}
 	for _, ref := range message.Context {
 		run.Sources = append(run.Sources, ref.Ref)
 	}

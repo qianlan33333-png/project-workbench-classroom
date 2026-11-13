@@ -56,6 +56,9 @@ func (s *Store) PrepareOwnerMessage(ctx context.Context, owner Principal, in Own
 	if err != nil {
 		return Run{}, err
 	}
+	if IsReplyPracticeConnection(route.ConnectionID) {
+		return Run{}, ErrDenied
+	}
 	if !route.Enabled || route.Principal.Kind != "project" || routeRevision(route) != in.Revision {
 		return Run{}, ErrConflict
 	}
