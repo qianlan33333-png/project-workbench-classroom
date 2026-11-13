@@ -10,13 +10,14 @@ import (
 )
 
 type ChannelEntry struct {
-	ID    string    `json:"id"`
-	Kind  string    `json:"kind"`
-	Text  string    `json:"text"`
-	State string    `json:"state"`
-	At    time.Time `json:"at"`
-	RunID string    `json:"runId,omitempty"`
-	Key   string    `json:"key"`
+	ID      string    `json:"id"`
+	Kind    string    `json:"kind"`
+	Text    string    `json:"text"`
+	State   string    `json:"state"`
+	Failure string    `json:"failure,omitempty"`
+	At      time.Time `json:"at"`
+	RunID   string    `json:"runId,omitempty"`
+	Key     string    `json:"key"`
 }
 type ChannelPage struct {
 	Items  []ChannelEntry `json:"items"`
@@ -79,7 +80,7 @@ func (s *Store) channelPage(ctx context.Context, p Principal, session, before st
 		if text == "" {
 			text = "原渠道未提供正文"
 		}
-		out.Items = append(out.Items, ChannelEntry{ID: m.ID, Key: "m:" + m.ID, Kind: kind, Text: text, State: m.State, At: m.CreatedAt.Truncate(time.Microsecond), RunID: m.ID})
+		out.Items = append(out.Items, ChannelEntry{ID: m.ID, Key: "m:" + m.ID, Kind: kind, Text: text, State: m.State, Failure: m.Failure, At: m.CreatedAt.Truncate(time.Microsecond), RunID: m.ID})
 	}
 	e = rows.Err()
 	rows.Close()

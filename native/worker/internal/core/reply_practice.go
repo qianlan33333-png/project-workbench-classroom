@@ -99,3 +99,53 @@ func (s *Store) AcceptReplyPractice(ctx context.Context, p Principal, in ReplyPr
 	}
 	return s.AcceptMessage(ctx, message)
 }
+
+// FinishUnansweredIncoming keeps a failed exercise turn separate from an
+// explicit handoff. A model outage must not pause the simulated conversation.
+func (s *Store) FinishUnansweredIncoming(ctx context.Context, m StoredMessage, failure string) error {
+	if !IsReplyPracticeConnection(m.ConnectionID) {
+		return s.MessageDisposition(ctx, m.Principal, m.ConnectionID, m.EventID, "handoff")
+	}
+	switch failure {
+	case "MISSING_CREDENTIAL", "AUTH", "INVALID_CREDENTIAL", "QUOTA", "ACCOUNT_QUOTA", "SERVER", "TRANSPORT", "TIMEOUT", "RATE_LIMIT":
+	default:
+		failure = "no_reply"
+	}
+	_, err := s.DB.ExecContext(ctx, `UPDATE wb_messages SET body=JSON_SET(body,'$.state','practice_failed','$.failure',?)
+		WHERE connection_id=? AND event_id=? AND message_state='received'`, failure, m.ConnectionID, m.EventID)
+	return err
+}
+
+func (s *Store) InstallReplyPracticeCorpus(ctx context.Context, owner Principal, root, project, text string) (Resource, error) {
+	cfg, err := s.ReplySettings(ctx, owner, project)
+	if err != nil {
+		return Resource{}, err
+	}
+	if cfg.ConnectionID != practiceConnection(project) || strings.TrimSpace(text) == "" || len(text) > 16384 {
+		return Resource{}, ErrDenied
+	}
+	id := "vault-" + uuid.NewSHA1(uuid.NameSpaceURL, []byte("classroom-example/"+project)).String()
+	r, err := s.Resource(ctx, id)
+	if IsMissing(err) {
+		r, err = s.createVault(ctx, owner, root, id, "课堂示例语料", "", vaultInitial{
+			notes: map[string]string{"蓝松方案.md": text},
+		})
+	}
+	if err != nil {
+		return r, err
+	}
+	if r.Relation != VaultRelation {
+		return Resource{}, ErrConflict
+	}
+	perms, err := s.ResourcePermissions(ctx, owner, r.ID)
+	if err != nil {
+		return r, err
+	}
+	for _, grant := range perms.Grants {
+		if grant.ProjectID == project {
+			return r, nil
+		}
+	}
+	err = s.SetGrant(ctx, owner, Grant{ResourceID: r.ID, ProjectID: project, Sections: []string{vaultSection}})
+	return r, err
+}

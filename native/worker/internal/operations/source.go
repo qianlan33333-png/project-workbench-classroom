@@ -9,8 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
-	"time"
 )
 
 type SourceResult struct {
@@ -77,38 +75,13 @@ func invokeSource(ctx context.Context, script, config, id string, result any, in
 	}
 	command := exec.Command("python3", args...)
 	command.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var output bytes.Buffer
 	command.Stdout = &output
-	if e = command.Start(); e != nil {
-		return e
-	}
-	done := make(chan error, 1)
-	go func() { done <- command.Wait() }()
-	canceled := false
-	select {
-	case e = <-done:
-	case <-ctx.Done():
-		canceled = true
-		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
-	}
-	// Also drain a helper left behind after an early parent failure. Do not
-	// release the project's fence while its source process group still runs.
-	deadline := time.Now().Add(5 * time.Second)
-	for syscall.Kill(-command.Process.Pid, 0) == nil {
-		if time.Now().After(deadline) {
-			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-		} else {
-			_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
+	if e = runSourceProcess(ctx, command); e != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if canceled {
-		<-done
-		return ctx.Err()
-	}
-	if e != nil {
-		return errors.New("original source collection failed; inspect the original task's source step")
+		return e
 	}
 	if e = json.Unmarshal(output.Bytes(), result); e != nil {
 		return errors.New("original source returned an incomplete result")

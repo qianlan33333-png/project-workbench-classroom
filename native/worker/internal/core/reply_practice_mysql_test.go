@@ -73,6 +73,18 @@ func TestMySQLReplyPracticeKeepsReplyInItsSession(t *testing.T) {
 	if ok, err := s.CanAdmitIncoming(ctx, next); !ok || err != nil || next.Principal != m.Principal {
 		t.Fatalf("local reply did not release original session: %v %v", ok, err)
 	}
+	must(s.FinishUnansweredIncoming(ctx, next, "MISSING_CREDENTIAL"))
+	failed, err := s.Message(ctx, owner, next.ConnectionID, next.EventID)
+	must(err)
+	if failed.State != "practice_failed" || failed.Failure != "MISSING_CREDENTIAL" {
+		t.Fatalf("technical failure lost its reason: %+v", failed)
+	}
+	input.MessageID = uuid.NewString()
+	next, err = s.AcceptReplyPractice(ctx, owner, input)
+	must(err)
+	if ok, err := s.CanAdmitIncoming(ctx, next); !ok || err != nil || next.Principal != m.Principal {
+		t.Fatalf("failed turn did not release original session: %v %v", ok, err)
+	}
 	must(s.MessageDisposition(ctx, next.Principal, next.ConnectionID, next.EventID, "handoff"))
 	var controls int
 	must(s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM wb_events WHERE session_id=? AND body->>'$.kind'='conversation.mode.changed'", next.Principal.SessionID).Scan(&controls))

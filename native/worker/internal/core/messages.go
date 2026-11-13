@@ -63,6 +63,7 @@ type StoredMessage struct {
 	RouteID   string      `json:"routeId,omitempty"`
 	Principal Principal   `json:"principal"`
 	State     string      `json:"state"`
+	Failure   string      `json:"failure,omitempty"`
 	CreatedAt time.Time   `json:"createdAt"`
 	Context   []RecordRef `json:"context,omitempty"`
 }
@@ -353,7 +354,9 @@ func (s *Store) AcceptMessage(ctx context.Context, v IncomingMessage) (StoredMes
 		if route.Principal.Kind == "project" && (!route.AutoReply || settingsRevision < 0) {
 			message.State = "paused"
 		}
-		if inputErr != nil {
+		if inputErr != nil && IsReplyPracticeConnection(v.ConnectionID) {
+			message.State, message.Failure = "practice_failed", "knowledge"
+		} else if inputErr != nil {
 			message.State = "handoff"
 			route.AutoReply = false
 			route.Revision = routeRevision(route) + 1

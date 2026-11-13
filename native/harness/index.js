@@ -21,7 +21,7 @@ import { zipSync } from 'fflate';
 import {directoryVault, notePath, renameVaultNote, searchVault, vaultArchiveEntries, vaultFolderPaths, vaultMediaMatches, vaultStructure, vaultView} from './vault-markdown.js';
 import { channelContext } from "./channel-context.js";
 import { ownerSkillCatalog } from './owner-catalog.js';
-import { expertDocumentAction, expertLibrary, generalExpert, selectProjectExpert } from './expert-library.js';
+import { expertDocumentAction, expertLibrary, generalExpert, selectProjectExpert, skillId } from './expert-library.js';
 import { expertTurnProjection, installSessionExpert } from './session-expert.js';
 import { createActivation, installActivation, sameOrigin, setupBody, workbenchTitle as brandTitle } from "./activation.js";
 import { createSuperAgent } from './superagent.js';
@@ -556,7 +556,10 @@ export async function apply(ctx, rawConfig) {
     const loading=loadSession(id,path);sessionLoads.set(id,loading);
     try{return await loading}finally{if(sessionLoads.get(id)===loading)sessionLoads.delete(id)}
   }
-  async function settleIncoming(agent){const id=delivery.stateOf(agent.session).incomingReport;if(id)await call('/messages/settle',owner,{runId:id})}
+  async function settleIncoming(agent) {
+    const {incomingReport:runId, incomingError} = delivery.stateOf(agent.session);
+    if (runId) await call('/messages/settle', owner, {runId, failure:incomingError});
+  }
   const releaseTimer=setInterval(async()=>{
     for(const[id,handle]of agentHandles){if(!id.startsWith('object-'))continue;
       if(handle.agent.status!=='idle'||delivery.stateOf(handle.agent.session).pendingIncoming){idleSince.delete(id);continue}
@@ -845,6 +848,30 @@ export async function apply(ctx, rawConfig) {
                   .map(note => ({path:note.path, text:note.text, create:true}));
                 json(res, 200, await call('/vault-import', owner, {id:input.id, name:input.name, origin:{resourceId, version}, changes}, signal));
               }
+              return;
+            }
+            if (expertManagement && req.method === 'POST' && path === '/reply-practice/example') {
+              if (!sameOrigin(req) || admission.peer !== ctx.connection.browserPeer) throw requestError('请在本人工作台网页操作', 403);
+              const {projectId} = await body(req);
+              const project = (await syncProjects()).find(item => item.id === projectId);
+              const [practice, saved] = await Promise.all([
+                call('/reply-practice', owner),
+                call('/reply-settings?projectId=' + encodeURIComponent(projectId), owner),
+              ]);
+              if (!project || !practice.available || !saved.connectionId?.startsWith('reply-practice-'))
+                throw requestError('请先为本项目开启课堂练习', 403);
+              const expertId = skillId(projectId, 'classroom-reply');
+              const request = {action:'create', projectId, name:'classroom-reply', displayName:'课堂示例专家',
+                description:'用蓝松方案练习查资料和连续追问。',
+                content:await readFile(new URL('./classroom/expert.md', import.meta.url),'utf8'), references:[]};
+              try { await experts.save(request); }
+              catch (error) {
+                if (error.status !== 409 || !(await expertChoices(project, true)).options.some(item => item.id === expertId)) throw error;
+              }
+              const corpus = await call('/reply-practice/example', owner, {
+                projectId, text:await readFile(new URL('./classroom/corpus.md', import.meta.url),'utf8'),
+              });
+              json(res,200,{expertId, resourceId:corpus.id});
               return;
             }
             if (expertManagement && req.method === 'GET' && ['/expert-options', '/reply-experts'].includes(path)) {

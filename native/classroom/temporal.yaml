@@ -1,0 +1,71 @@
+log:
+  stdout: true
+  level: warn
+
+persistence:
+  defaultStore: mysql-default
+  visibilityStore: mysql-visibility
+  numHistoryShards: 4
+  datastores:
+    mysql-default:
+      sql:
+        pluginName: mysql8
+        databaseName: temporal
+        connectAddr: '@DB@'
+        connectProtocol: tcp
+        user: classroom
+        password: '@PASSWORD@'
+        maxConns: 12
+        maxIdleConns: 4
+    mysql-visibility:
+      sql:
+        pluginName: mysql8
+        databaseName: temporal_visibility
+        connectAddr: '@DB@'
+        connectProtocol: tcp
+        user: classroom
+        password: '@PASSWORD@'
+        maxConns: 4
+        maxIdleConns: 2
+
+global:
+  membership:
+    maxJoinDuration: 30s
+    broadcastAddress: 127.0.0.1
+
+services:
+  frontend:
+    rpc:
+      grpcPort: @FRONTEND@
+      membershipPort: @FRONTEND_MEMBER@
+      bindOnLocalHost: true
+  history:
+    rpc:
+      grpcPort: @HISTORY@
+      membershipPort: @HISTORY_MEMBER@
+      bindOnLocalHost: true
+  matching:
+    rpc:
+      grpcPort: @MATCHING@
+      membershipPort: @MATCHING_MEMBER@
+      bindOnLocalHost: true
+  worker:
+    rpc:
+      grpcPort: @WORKER@
+      membershipPort: @WORKER_MEMBER@
+      bindOnLocalHost: true
+
+clusterMetadata:
+  enableGlobalNamespace: false
+  failoverVersionIncrement: 10
+  masterClusterName: active
+  currentClusterName: active
+  clusterInformation:
+    active:
+      enabled: true
+      initialFailoverVersion: 1
+      rpcName: frontend
+      rpcAddress: '127.0.0.1:@FRONTEND@'
+
+dcRedirectionPolicy:
+  policy: noop

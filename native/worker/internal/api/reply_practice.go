@@ -36,6 +36,23 @@ func (a *Server) replyPracticeRoutes(mux *http.ServeMux) {
 			respond(w, settings, err)
 		}
 	})
+	mux.HandleFunc("POST /reply-practice/example", func(w http.ResponseWriter, r *http.Request) {
+		if !owner(w, r) {
+			return
+		}
+		if !enabled {
+			respond(w, nil, core.ErrDenied)
+			return
+		}
+		var in struct {
+			ProjectID string `json:"projectId"`
+			Text      string `json:"text"`
+		}
+		if decodeLimited(w, r, &in, 32*1024) {
+			result, err := a.Store.InstallReplyPracticeCorpus(r.Context(), principal(r.Context()), a.VaultRoot, in.ProjectID, in.Text)
+			respond(w, result, err)
+		}
+	})
 	mux.HandleFunc("POST /reply-practice/message", func(w http.ResponseWriter, r *http.Request) {
 		if !owner(w, r) {
 			return

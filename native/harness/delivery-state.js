@@ -3,15 +3,15 @@ import { z } from 'zod';
 const textOf = content => (content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
 const primary = new Set(['user', 'workbench-owner', 'workbench-incoming', 'workbench-delegation', 'workbench-result']);
 export const deliveryProjection = {
-  key: 'workbenchDelivery', stateVersion: 6,
+  key: 'workbenchDelivery', stateVersion: 7,
   stateSchema: z.object({
-    pendingIncoming:z.string(),incomingReport:z.string(),through: z.number(), feedback: z.boolean(),
+    pendingIncoming:z.string(),incomingReport:z.string(),incomingError:z.string(),through: z.number(), feedback: z.boolean(),
     ownerRequest: z.object({ id: z.string(), text: z.string() }), dispatches: z.array(z.string()),
     activeDispatch: z.string(), lastReply: z.string(),
     files: z.array(z.object({ attachmentId:z.string(),name:z.string(),bytes:z.number() })),
     report: z.object({ runId: z.string(), text: z.string(), reason: z.string() }).nullable(),
   }),
-  init: () => ({pendingIncoming:'',incomingReport:'', through: 0, feedback: false, ownerRequest: { id: '', text: '' }, dispatches: [], activeDispatch: '', lastReply: '', report: null,files:[] }),
+  init: () => ({pendingIncoming:'',incomingReport:'', incomingError:'', through: 0, feedback: false, ownerRequest: { id: '', text: '' }, dispatches: [], activeDispatch: '', lastReply: '', report: null,files:[] }),
   apply(state, event) {
     if (event.type === 'agent/inbox/spliced') {
       const inserted = event.data.inserted;
@@ -38,7 +38,13 @@ export const deliveryProjection = {
       const text = textOf(event.data.message.content);
       return text ? { ...state, lastReply: text } : state;
     }
-    if(event.type==='turn/end'&&state.pendingIncoming)return{...state,incomingReport:state.pendingIncoming,pendingIncoming:''};
+    if (event.type === 'turn/end' && state.pendingIncoming) {
+      const reason = event.data.reason;
+      const code = reason?.kind === 'error' ? reason.error?.code : undefined;
+      const known = ['MISSING_CREDENTIAL','AUTH','INVALID_CREDENTIAL','QUOTA','ACCOUNT_QUOTA','SERVER','TRANSPORT','TIMEOUT','RATE_LIMIT'];
+      return {...state, incomingReport:state.pendingIncoming, pendingIncoming:'',
+        incomingError:known.includes(code) ? code : 'no_reply'};
+    }
     if (event.type === 'turn/end' && state.activeDispatch) {
       return { ...state, activeDispatch: '', lastReply: '', report: {
         runId: state.activeDispatch, text: state.lastReply.slice(0, 24000), reason: event.data.reason?.kind || 'unknown',

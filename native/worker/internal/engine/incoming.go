@@ -53,5 +53,5 @@ func (a *Activities) HandoffIncoming(ctx context.Context, id string) error {
 	if m.State != "received" {
 		return nil
 	}
-	return a.Store.MessageDisposition(ctx, m.Principal, m.ConnectionID, m.EventID, "handoff")
+	return a.Store.FinishUnansweredIncoming(ctx, m, "no_reply")
 }

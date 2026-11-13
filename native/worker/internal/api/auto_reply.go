@@ -153,14 +153,15 @@ func (a *Server) replyRoutes(mux *http.ServeMux) {
 			return
 		}
 		var v struct {
-			RunID string `json:"runId"`
+			RunID   string `json:"runId"`
+			Failure string `json:"failure,omitempty"`
 		}
 		if !decode(w, r, &v) {
 			return
 		}
 		m, e := a.Store.IncomingForRun(r.Context(), v.RunID)
 		if e == nil && m.State == "received" {
-			e = a.Store.MessageDisposition(r.Context(), m.Principal, m.ConnectionID, m.EventID, "handoff")
+			e = a.Store.FinishUnansweredIncoming(r.Context(), m, v.Failure)
 		}
 		respond(w, map[string]bool{"settled": e == nil}, e)
 	})
@@ -339,6 +340,9 @@ func (a *Server) startIncoming(ctx context.Context, message core.StoredMessage) 
 	goal := message.Text + "\n\n本消息connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。当前是原客户Session的继续对话，先结合已有原生历史理解本条消息。message_context只补充允许资料和近期渠道记录，historyLimited不代表原Session没有历史；本条原文以宿主本轮输入为准。是否检索、怎样检索及使用哪个已授权工具，按已加载专家方法决定，不要求每条消息都检索；业务事实须有可核实依据。仅通过message_reply或message_disposition提交本条消息的处理结果，普通聊天正文不会自动发给客户。"
 	if message.ExpertSkill != "" {
 		goal = "本轮使用当前配置的专家方法，历史中的旧方法不覆盖本轮配置。先调用skill加载专家方法：" + message.ExpertSkill + "。\n" + goal
+	}
+	if core.IsReplyPracticeConnection(message.ConnectionID) {
+		goal += "\n这是课堂模拟。遇到问候，请直接友好问好，用 message_reply 提交，不必查资料。资料不足时说明缺什么或请客户补充，仍用 message_reply。只有客户明确要求人工时才用 handoff。"
 	}
 	if message.Principal.Kind == "personal" {
 		goal = message.Text + "\n\n这是已绑定本人渠道的新消息，请由 SuperAgent 处理；需要回复本人时使用当前消息的connectionId=" + message.ConnectionID + " eventId=" + message.EventID + "。"
