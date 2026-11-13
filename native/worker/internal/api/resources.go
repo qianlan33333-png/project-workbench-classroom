@@ -12,6 +12,18 @@ import (
 )
 
 func (a *Server) resourceRoutes(mux *http.ServeMux) {
+	a.resourceSyncRoutes(mux)
+	mux.HandleFunc("POST /resource-connection", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			ResourceID   string `json:"resourceId"`
+			ConnectionID string `json:"connectionId"`
+			Revision     int64  `json:"revision"`
+		}
+		if decode(w, r, &in) {
+			v, err := a.Store.RebindMySQLResource(r.Context(), principal(r.Context()), in.ResourceID, in.ConnectionID, in.Revision)
+			respond(w, v, err)
+		}
+	})
 	mux.HandleFunc("GET /resource-page", func(w http.ResponseWriter, r *http.Request) {
 		ref := core.Ref{ResourceID: r.URL.Query().Get("resourceId"), Version: r.URL.Query().Get("version"), Section: r.URL.Query().Get("section")}
 		page, e := a.Store.Read(r.Context(), principal(r.Context()), ref, r.URL.Query().Get("after"), 10)

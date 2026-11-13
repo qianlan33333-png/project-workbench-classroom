@@ -118,6 +118,14 @@ func (a *Server) configRoutes(mux *http.ServeMux) {
 			respond(w, v, a.Store.PutConnection(r.Context(), principal(r.Context()), v))
 		}
 	})
+	mux.HandleFunc("POST /connection-test", func(w http.ResponseWriter, r *http.Request) {
+		var v core.Connection
+		if decode(w, r, &v) {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+			respond(w, map[string]bool{"verified": true}, core.TestMySQLConnection(ctx, principal(r.Context()), v))
+		}
+	})
 	mux.HandleFunc("GET /grants", func(w http.ResponseWriter, r *http.Request) {
 		v, e := a.Store.Grants(r.Context(), principal(r.Context()))
 		respond(w, v, e)

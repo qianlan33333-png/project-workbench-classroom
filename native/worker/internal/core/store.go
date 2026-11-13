@@ -72,6 +72,15 @@ func (s *Store) Migrate(ctx context.Context) error {
 			}
 		}
 	}
+	var syncAttemptColumn int
+	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='wb_write_fences' AND column_name='sync_attempt'`).Scan(&syncAttemptColumn); e != nil {
+		return e
+	}
+	if syncAttemptColumn == 0 {
+		if _, e := s.DB.ExecContext(ctx, `ALTER TABLE wb_write_fences ADD COLUMN sync_attempt INT NOT NULL DEFAULT 0`); e != nil {
+			return e
+		}
+	}
 	var expertColumn int
 	if e := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='wb_sessions' AND column_name='expert_ref'`).Scan(&expertColumn); e != nil {
 		return e
@@ -319,6 +328,17 @@ func (s *Store) PutResource(ctx context.Context, p Principal, r Resource) error 
 	return s.putResource(ctx, p, r, true)
 }
 func (s *Store) RegisterResource(ctx context.Context, p Principal, r Resource) error {
+	if !p.IsOwner() {
+		return ErrDenied
+	}
+	if err := r.Validate(); err != nil {
+		return err
+	}
+	probe, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := s.checkResourceConnection(probe, r); err != nil {
+		return err
+	}
 	return s.putResource(ctx, p, r, false)
 }
 func (s *Store) putResource(ctx context.Context, p Principal, r Resource, seed bool) error {
@@ -549,6 +569,10 @@ func insertSnapshotRecords(ctx context.Context, tx *sql.Tx, id, version string, 
 	return err
 }
 func (s *Store) Publish(ctx context.Context, p Principal, id, version string, expectedCount int) (Snapshot, error) {
+	return s.publish(ctx, p, id, version, expectedCount, nil, nil, nil)
+}
+
+func (s *Store) publish(ctx context.Context, p Principal, id, version string, expectedCount int, expectedRevision *int64, source *Connection, onPublished func(*sql.Tx, Snapshot) error) (Snapshot, error) {
 	if _, e := s.canWrite(ctx, p, id); e != nil {
 		return Snapshot{}, e
 	}
@@ -576,40 +600,58 @@ func (s *Store) Publish(ctx context.Context, p Principal, id, version string, ex
 		return v, e
 	}
 	var current, state, previous string
-	e = tx.QueryRowContext(ctx, `SELECT current_version FROM wb_resources WHERE id=? FOR UPDATE`, id).Scan(&current)
+	var revision int64
+	e = tx.QueryRowContext(ctx, `SELECT current_version,revision FROM wb_resources WHERE id=? FOR UPDATE`, id).Scan(&current, &revision)
 	if e != nil {
 		return v, e
+	}
+	if expectedRevision != nil && revision != *expectedRevision {
+		return v, &MySQLSourceError{"mysql_resource_changed", "同步期间资源配置已更新。请用新配置重试原任务。"}
+	}
+	if source != nil {
+		currentSource, err := scanJSON[Connection](tx.QueryRowContext(ctx, "SELECT body FROM wb_connections WHERE id=? FOR UPDATE", source.ID))
+		if err != nil {
+			return v, err
+		}
+		if currentSource.Kind != source.Kind || currentSource.SecretEnv != source.SecretEnv {
+			return v, &MySQLSourceError{"mysql_resource_changed", "同步期间连接配置已更新。请用新配置重试原任务。"}
+		}
 	}
 	e = tx.QueryRowContext(ctx, `SELECT state,previous_version FROM wb_snapshots WHERE resource_id=? AND version=? FOR UPDATE`, id, version).Scan(&state, &previous)
 	if e != nil {
 		return v, e
 	}
-	if state == "published" {
-		if e = tx.Commit(); e != nil {
+	if state != "published" {
+		if state != "staging" || current != previous {
+			return v, ErrConflict
+		}
+		var count int
+		if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM wb_records WHERE resource_id=? AND version=?`, id, version).Scan(&count); e != nil {
 			return v, e
 		}
-		return s.Snapshot(ctx, id, version)
+		if count != expectedCount {
+			return v, fmt.Errorf("%w: expected %d records, got %d", ErrInvalid, expectedCount, count)
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE wb_snapshots SET state='published',record_count=?,published_at=UTC_TIMESTAMP(6) WHERE resource_id=? AND version=?`, count, id, version); e != nil {
+			return v, e
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE wb_resources SET current_version=?,revision=revision+1 WHERE id=?`, version, id); e != nil {
+			return v, e
+		}
 	}
-	if state != "staging" || current != previous {
-		return v, ErrConflict
-	}
-	var count int
-	if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM wb_records WHERE resource_id=? AND version=?`, id, version).Scan(&count); e != nil {
+	published, e := readSnapshot(ctx, tx, id, version)
+	if e != nil {
 		return v, e
 	}
-	if count != expectedCount {
-		return v, fmt.Errorf("%w: expected %d records, got %d", ErrInvalid, expectedCount, count)
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE wb_snapshots SET state='published',record_count=?,published_at=UTC_TIMESTAMP(6) WHERE resource_id=? AND version=?`, count, id, version); e != nil {
-		return v, e
-	}
-	if _, e = tx.ExecContext(ctx, `UPDATE wb_resources SET current_version=?,revision=revision+1 WHERE id=?`, version, id); e != nil {
-		return v, e
+	if onPublished != nil {
+		if e = onPublished(tx, published); e != nil {
+			return v, e
+		}
 	}
 	if e = tx.Commit(); e != nil {
 		return v, e
 	}
-	return s.Snapshot(ctx, id, version)
+	return published, nil
 }
 func (s *Store) Read(ctx context.Context, p Principal, ref Ref, after string, limit int) (Page, error) {
 	if limit <= 0 {

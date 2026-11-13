@@ -1,4 +1,29 @@
 // Project identity is supplied by the host from the registered workspace path.
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm';
+
+export async function verifyModel(llm, selection, signal) {
+  const assembler = new BlockAssembler();
+  let finished = false;
+  try {
+    const prepared = await llm.prepareCall({
+      provider: selection.provider, model: selection.model, reasoningEffort: selection.reasoningEffort, maxTokens: 96,
+    }, signal);
+    const prompt = createUserMessage({ content: [{ type: 'text', text: 'Reply with OK.' }], source: { kind: 'user' } });
+    for await (const chunk of prepared.stream({
+      ...prepared.config, messages: [prompt], purpose: 'workbench-model-check', signal,
+    })) {
+      assembler.push(chunk);
+      if (chunk.type === 'finish') finished = true;
+    }
+    if (finished && assembler.finish.kind === 'stop' && assembler.blocks().some(block => block.type === 'text' && block.text.trim()))
+      return { code: 'verified' };
+    if (finished && assembler.finish.kind === 'max-tokens') return { code: 'probe-output-limit' };
+    return { code: assembler.finish.failure?.code ?? 'unavailable' };
+  } catch (error) {
+    return { code: signal.aborted ? 'TIMEOUT' : error?.code ?? 'unavailable' };
+  }
+}
+
 export function sessionModelOptions(config, projectId) {
   const reasoningEffort = config.reasoningEffortByProject?.[projectId] ?? config.reasoningEffort ?? 'off';
   if (!['off', 'low', 'high', 'max'].includes(reasoningEffort)) {

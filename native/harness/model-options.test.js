@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionModelOptions, applyProjectReasoning } from './model-options.js';
+import { sessionModelOptions, applyProjectReasoning, verifyModel } from './model-options.js';
 
 test('project reasoning configuration preserves other projects, provider and model', () => {
   const config = {provider: 'same-provider', model: 'same-model', reasoningEffortByProject: {p_reply: 'high'}};
@@ -19,4 +19,15 @@ test('explicit project policy replaces recorded effort on resume without replaci
   assert.deepEqual(selected,[{provider:'recorded-provider',model:'recorded-model',reasoningEffort:'high'}]);
   applyProjectReasoning(agent,config,'p_today');
   assert.equal(selected.length,1);
+});
+
+test('a reasoning model reaching the probe cap reports the output limit, not an outage', async () => {
+  const selection = { provider: 'fixture', model: 'reasoner', reasoningEffort: 'high' };
+  const llm = { async prepareCall(config) {
+    assert.equal(config.reasoningEffort, selection.reasoningEffort);
+    return { config, async *stream() {
+      yield { type: 'finish', reason: { kind: 'max-tokens' } };
+    } };
+  } };
+  assert.deepEqual(await verifyModel(llm, selection, AbortSignal.timeout(1000)), { code: 'probe-output-limit' });
 });

@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"workbench-native/internal/core"
 )
@@ -25,9 +24,11 @@ func (a *Server) feishuCLITool(s *mcp.Server, p core.Principal) {
 		Name:        "feishu_cli_read",
 		Description: "Read using the owner's linked Feishu CLI user identity. Uses fixed read-only commands for documents, Base, sheets, calendars, tasks, Wiki, meetings, Minutes and conversations.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-		OutputSchema: &jsonschema.Schema{
-			Type: "object", Required: []string{"data"},
-			Properties: map[string]*jsonschema.Schema{"data": {}},
+		// Keep the unconstrained property as a schema object on the wire.
+		// The typed schema serializes {} as true, which some MCP SDKs reject.
+		OutputSchema: map[string]any{
+			"type": "object", "required": []string{"data"},
+			"properties": map[string]any{"data": map[string]any{}},
 		},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in input) (*mcp.CallToolResult, any, error) {
 		config, err := a.personalConfig(ctx)

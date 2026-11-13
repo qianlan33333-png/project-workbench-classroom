@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	"workbench-native/internal/core"
 )
@@ -144,6 +145,11 @@ func readRunExecution(ctx context.Context, c client.Client, r core.Run, v *RunOv
 	// ID. A later trigger sharing the Workflow ID must not relabel old summaries.
 	executionRunID := r.ExecutionRunID()
 	desc, err := c.DescribeWorkflowExecution(read, r.ExecutionID(), executionRunID)
+	var missing *serviceerror.NotFound
+	if r.Operation == "sync" && !v.Published && executionRunID == "" && errors.As(err, &missing) {
+		v.Execution = "NotStarted"
+		return
+	}
 	info := desc.GetWorkflowExecutionInfo()
 	if err != nil || info == nil || info.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED {
 		return

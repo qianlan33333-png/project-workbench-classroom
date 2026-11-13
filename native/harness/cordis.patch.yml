@@ -53,4 +53,4 @@
         model: !!js process.env.WORKBENCH_MODEL || 'deepseek-flash'
         reasoningEffort: !!js process.env.WORKBENCH_REASONING_EFFORT || 'off'
         reasoningEffortByProject: !!js JSON.parse(process.env.WORKBENCH_PROJECT_REASONING || '{}')
-        toolServers: !!js JSON.parse(process.env.WORKBENCH_TOOL_SERVERS || '[]')
+        toolServers: !!js process.env.WORKBENCH_TOOL_SERVERS || '[]'

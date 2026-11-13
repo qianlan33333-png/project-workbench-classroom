@@ -7,9 +7,10 @@ import (
 
 // A fence only protects commits from stale workers; Temporal owns scheduling.
 type WriteFence struct {
-	ProjectID string
-	Epoch     int64
-	Execution string
+	ProjectID   string
+	Epoch       int64
+	Execution   string
+	SyncAttempt int32 `json:"SyncAttempt,omitempty"`
 }
 type fenceKey struct{}
 
@@ -53,7 +54,7 @@ func (s *Store) BeginWrite(ctx context.Context, project, execution string) (Writ
 		return f, tx.Commit()
 	}
 	f.Epoch++
-	if _, e = tx.ExecContext(ctx, `UPDATE wb_write_fences SET epoch=?,execution=?,active=TRUE WHERE project_id=?`, f.Epoch, execution, project); e != nil {
+	if _, e = tx.ExecContext(ctx, `UPDATE wb_write_fences SET epoch=?,execution=?,active=TRUE,sync_attempt=0 WHERE project_id=?`, f.Epoch, execution, project); e != nil {
 		return f, e
 	}
 	if _, e = tx.ExecContext(ctx, `UPDATE wb_write_attempts SET epoch=? WHERE execution=?`, f.Epoch, execution); e != nil {
@@ -61,6 +62,29 @@ func (s *Store) BeginWrite(ctx context.Context, project, execution string) (Writ
 	}
 	return f, tx.Commit()
 }
+
+// SyncResource has one scheduled Activity per writer workflow. A higher
+// Temporal attempt revokes the earlier attempt even if its worker is still live.
+func (s *Store) BeginSyncAttempt(ctx context.Context, f WriteFence, attempt int32) (WriteFence, error) {
+	if attempt < 1 || f.SyncAttempt != 0 || f.Epoch < 1 {
+		return f, ErrDenied
+	}
+	result, err := s.DB.ExecContext(ctx, `UPDATE wb_write_fences SET sync_attempt=?
+		WHERE project_id=? AND epoch=? AND execution=? AND active=TRUE AND sync_attempt<?`, attempt, f.ProjectID, f.Epoch, f.Execution, attempt)
+	if err != nil {
+		return f, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return f, err
+	}
+	if count != 1 {
+		return f, ErrDenied
+	}
+	f.SyncAttempt = attempt
+	return f, nil
+}
+
 func (s *Store) EndWrite(ctx context.Context, f WriteFence) error {
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
@@ -90,10 +114,11 @@ func guardWrite(ctx context.Context, tx *sql.Tx) error {
 	var epoch int64
 	var execution string
 	var active bool
-	if e := tx.QueryRowContext(ctx, `SELECT epoch,execution,active FROM wb_write_fences WHERE project_id=? FOR SHARE`, f.ProjectID).Scan(&epoch, &execution, &active); e != nil {
+	var attempt int32
+	if e := tx.QueryRowContext(ctx, `SELECT epoch,execution,active,sync_attempt FROM wb_write_fences WHERE project_id=? FOR SHARE`, f.ProjectID).Scan(&epoch, &execution, &active, &attempt); e != nil {
 		return e
 	}
-	if !active || epoch != f.Epoch || execution != f.Execution {
+	if !active || epoch != f.Epoch || execution != f.Execution || attempt != f.SyncAttempt {
 		return ErrDenied
 	}
 	return nil

@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"fmt"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -21,12 +20,17 @@ func Sync(ctx workflow.Context, id string) (err error) {
 	return workflow.ExecuteActivity(ctx, "SyncResource", TaskInput{id, fence}).Get(ctx, nil)
 }
 func (a *Activities) SyncResource(ctx context.Context, in TaskInput) error {
-	ctx = core.WithFence(ctx, in.Fence)
+	activity.RecordHeartbeat(ctx, in.RunID)
 	id := in.RunID
 	r, e := a.Store.ExecutionRun(ctx, id)
 	if e != nil {
 		return failure(e)
 	}
+	fence, e := a.Store.BeginSyncAttempt(ctx, in.Fence, activity.GetInfo(ctx).Attempt)
+	if e != nil {
+		return failure(e)
+	}
+	ctx = core.WithFence(ctx, fence)
 	done := make(chan struct{})
 	defer close(done)
 	activity.RecordHeartbeat(ctx, id)
@@ -44,16 +48,6 @@ func (a *Activities) SyncResource(ctx context.Context, in TaskInput) error {
 			}
 		}
 	}()
-	v, e := a.Store.SyncSource(ctx, r, func() { activity.RecordHeartbeat(ctx, id) })
-	if e != nil {
-		return failure(e)
-	}
-	refs := []core.Ref{}
-	for _, section := range v.Sections {
-		refs = append(refs, core.Ref{ResourceID: v.ResourceID, Version: v.Version, Section: section.ID})
-	}
-	if e = a.Store.PinRunSources(ctx, r.Principal, id, refs); e != nil {
-		return failure(e)
-	}
-	return a.Store.Emit(ctx, core.RunEvent{ID: id + "-published", SessionID: r.Principal.SessionID, RunID: id, Kind: "resource.published", Text: fmt.Sprintf("资料已发布，共 %d 条。", v.Count), Details: v})
+	_, e = a.Store.SyncRunSource(ctx, r, func() { activity.RecordHeartbeat(ctx, id) })
+	return failure(e)
 }

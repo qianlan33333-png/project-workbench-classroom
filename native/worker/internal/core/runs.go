@@ -399,18 +399,22 @@ func (s *Store) runStats(ctx context.Context, p Principal, r Run) (RunStats, err
 	return stats, rows.Err()
 }
 func (s *Store) Emit(ctx context.Context, e RunEvent) error {
+	return emitRunEvent(ctx, s.DB, e)
+}
+
+func emitRunEvent(ctx context.Context, writer runWriter, e RunEvent) error {
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now().UTC()
 	}
 	child := false
 	if e.RunID != "" {
-		r, err := scanJSON[Run](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_runs WHERE id=?`, e.RunID))
+		r, err := scanJSON[Run](writer.QueryRowContext(ctx, `SELECT body FROM wb_runs WHERE id=?`, e.RunID))
 		if err != nil {
 			return err
 		}
 		child = r.ParentRunID != ""
 	}
-	_, err := s.DB.ExecContext(ctx, `INSERT IGNORE INTO wb_events(id,session_id,run_id,body,delivered) VALUES(?,?,?,?,?)`, e.ID, e.SessionID, e.RunID, jsonText(e), child)
+	_, err := writer.ExecContext(ctx, `INSERT IGNORE INTO wb_events(id,session_id,run_id,body,delivered) VALUES(?,?,?,?,?)`, e.ID, e.SessionID, e.RunID, jsonText(e), child)
 	if err != nil {
 		return err
 	}
@@ -418,14 +422,14 @@ func (s *Store) Emit(ctx context.Context, e RunEvent) error {
 		return nil
 	}
 	if e.RunID != "" {
-		r, readErr := scanJSON[Run](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_runs WHERE id=?`, e.RunID))
+		r, readErr := scanJSON[Run](writer.QueryRowContext(ctx, `SELECT body FROM wb_runs WHERE id=?`, e.RunID))
 		if readErr != nil {
 			return readErr
 		}
 		if r.NotifySession != "" && r.NotifySession != e.SessionID {
 			e.ID += "-notify"
 			e.SessionID = r.NotifySession
-			_, err = s.DB.ExecContext(ctx, `INSERT IGNORE INTO wb_events(id,session_id,run_id,body) VALUES(?,?,?,?)`, e.ID, e.SessionID, e.RunID, jsonText(e))
+			_, err = writer.ExecContext(ctx, `INSERT IGNORE INTO wb_events(id,session_id,run_id,body) VALUES(?,?,?,?)`, e.ID, e.SessionID, e.RunID, jsonText(e))
 		}
 	}
 	return err

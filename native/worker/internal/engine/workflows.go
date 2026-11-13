@@ -202,6 +202,13 @@ type Activities struct {
 }
 
 func failure(e error) error {
+	var source *core.MySQLSourceError
+	if errors.As(e, &source) {
+		if source.Code == "mysql_unavailable" {
+			return temporal.NewApplicationError(source.Text, "MySQLSource")
+		}
+		return temporal.NewNonRetryableApplicationError(source.Text, "MySQLSource", nil)
+	}
 	if errors.Is(e, core.ErrDenied) {
 		return temporal.NewNonRetryableApplicationError(e.Error(), "Denied", e)
 	}

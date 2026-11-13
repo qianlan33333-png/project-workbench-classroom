@@ -184,6 +184,13 @@ func respond(w http.ResponseWriter, v any, e error) {
 		return
 	}
 	status := 400
+	var source *core.MySQLSourceError
+	if errors.As(e, &source) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": source.Code, "error": source.Text})
+		return
+	}
 	if errors.Is(e, core.ErrDenied) {
 		status = 403
 	}

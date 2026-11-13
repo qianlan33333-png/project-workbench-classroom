@@ -11,8 +11,9 @@ import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { attachmentText } from "./attachment-text.js";
 import { deliveryProjection } from "./delivery-state.js";
 import { modelCapacity, admittedStream } from './model-capacity.js';
-import { sessionModelOptions, applyProjectReasoning } from './model-options.js';
-import { toolNamespace, namespaceOfTool } from './tool-namespace.js';
+import { sessionModelOptions, applyProjectReasoning, verifyModel } from './model-options.js';
+import { namespaceOfTool } from './tool-namespace.js';
+import { attachExternalMcp, externalMcpConfig, externalMcpFailure } from './external-mcp.js';
 import { installPersonalMemory } from './personal-memory.js';
 import { replyEvidenceProjection } from './reply-evidence.js';
 import { resourceDocuments } from './resource-documents.js';
@@ -65,7 +66,10 @@ async function body(req) {
   return JSON.parse(Buffer.concat(parts).toString("utf8") || "{}");
 }
 
-export async function apply(ctx, config) {
+export async function apply(ctx, rawConfig) {
+  const externalMcp = externalMcpConfig(rawConfig.toolServers);
+  const toolServers = externalMcp.servers.filter(server => !server.error);
+  const config = { ...rawConfig, toolServers };
   const admitModel=modelCapacity();
   const token = process.env.WORKBENCH_HOST_TOKEN;
   if (!token || token.length < 32)
@@ -135,6 +139,12 @@ export async function apply(ctx, config) {
       if (path === '/vault-import' && response.status === 422) {
         const error = await response.json();
         throw Object.assign(requestError(error.error, 422), {invalidPaths:error.invalidPaths});
+      }
+      if (['/connection-test', '/resource-connection', '/resources'].includes(path) && response.headers.get('content-type')?.startsWith('application/json') && response.status === 400) {
+        const failure = await response.json();
+        if (failure?.code?.startsWith('mysql_') || failure?.code === 'source_missing')
+          throw requestError(failure.error, response.status);
+        throw requestError('无法读取数据库配置结果，请稍后重试。', response.status);
       }
       throw requestError(`worker ${response.status}: ${(await response.text()).slice(0, 300)}`,response.status);
     }
@@ -356,6 +366,7 @@ export async function apply(ctx, config) {
     }
   });
   const owned = new Map();
+  let personalMcp;
   async function attach(agent) {
     if (owned.has(agent.id)) return;
     const p = identity(agent);
@@ -408,8 +419,9 @@ export async function apply(ctx, config) {
       "workbench: resource boundary",
     );
     owned.set(agent.id, dispose);
-    const extensions=[];
+    const extensions=new Map();
     let workbenchMcp, removeExpert;
+    const stopExtensions = () => [...extensions.values()].map(extension => extension.dispose());
     try {
       const project = {id: p.projectId, workspace: agent.session.header.cwd};
       const locked = async signal => (await call('/session/expert', p, undefined, signal)).expertId;
@@ -430,31 +442,22 @@ export async function apply(ctx, config) {
           return id ? experts.runtime(id, project) : undefined;
         },
       });
-      const namespaces=new Set(['workbench']),externalSources=new Map();
-      // Optional standard MCP servers are owner-installed plugins. Customer
-      // object Sessions intentionally receive only the fixed message tools.
-      for(const server of (config.toolServers||[])) {
-        if(!(p.kind==='personal'?server.personal:server.projects?.includes(p.projectId)))continue;
-        if(boundary.objectSession&&(!Array.isArray(server.customerTools)||!server.customerTools.length))continue;
-        toolNamespace(server.name);if(namespaces.has(server.name))throw Error('Duplicate MCP namespace');
-        const url=new URL(server.url);
-        if(url.username||url.password||url.search||url.hash||(url.protocol!=='https:'&&(url.protocol!=='http:'||url.hostname!=='127.0.0.1')))throw Error('Invalid MCP endpoint');
-        if(!/^WORKBENCH_MCP_[A-Z0-9_]+$/.test(server.tokenEnv)||!process.env[server.tokenEnv])throw Error('MCP connector credential is not configured');
-        if(!Array.isArray(server.sources)||!server.sources.length)throw Error('MCP connector must declare registered source references');
-        const declared=structuredClone(server.sources);
-        externalSources.set(server.name,declared);
-        const plugin=await agent.ctx.plugin(mcpClient,{serverName:server.name,transport:'streamable-http',url:url.href,headers:{authorization:'Bearer '+process.env[server.tokenEnv],'X-Workbench-Kind':p.kind,'X-Workbench-Project':p.projectId,'X-Workbench-Session':p.sessionId,...(!boundary.objectSession?{'X-Workbench-Sources':JSON.stringify(declared)}:{})},toolCallTimeoutMs:60000,failOnStartupError:true});
-        extensions.push(plugin);namespaces.add(server.name);
-      }
+      const externalServers = new Map(toolServers
+        .filter(server => (p.kind === 'personal' ? server.personal : server.projects?.includes(p.projectId)) &&
+          (!boundary.objectSession || server.customerTools?.length))
+        .map(server => [server.name, server]));
       agent.ctx.on('tools/execute',async(exec,next)=>{
         const name=namespaceOfTool(exec.name);
-        if(!externalSources.has(name))return next();
-        if(boundary.objectSession){const server=config.toolServers.find(s=>s.name===name);const tool=exec.name.replace('mcp__'+name+'__','');if(!server.customerTools.includes(tool))throw Error('Customer tool is not allowed')}
+        const server=externalServers.get(name);
+        if(!server)return next();
+        if(boundary.objectSession){const tool=exec.name.replace('mcp__'+name+'__','');if(!server.customerTools.includes(tool))throw Error('Customer tool is not allowed')}
         // Conservatively record before dispatch, including failed/partial calls.
         // Recheck after return so a concurrent revocation cannot reveal a result.
-        const refs=boundary.objectSession?await call('/session/resolve-sources',p,externalSources.get(name),exec.signal):externalSources.get(name);
+        const refs=boundary.objectSession?await call('/session/resolve-sources',p,server.sources,exec.signal):server.sources;
         await call('/session/external-sources',p,refs,exec.signal);
+        const observe=extensions.get(name)?.observe();
         const result=await next();
+        observe?.(result);
         await call('/session/external-sources',p,refs,exec.signal);
         return result;
       });
@@ -468,14 +471,15 @@ export async function apply(ctx, config) {
       });
       workbenchMcp=mcpOwner;
       const mask = dispose;
-      owned.set(agent.id, () => {
+      owned.set(agent.id, async () => {
+        if (personalMcp === extensions) personalMcp = undefined;
         mask();
         removeExpert();
-        for(const extension of extensions)extension.dispose();
-        return mcpOwner.dispose();
+        await Promise.allSettled([mcpOwner.dispose(), ...stopExtensions()]);
       });
       agent.ctx.tools.guard((exec) => {
-        if(exec.name!=='skill'&&![...namespaces].some(name=>exec.name.startsWith('mcp__'+name+'__')))return '此工作台通过资源和标准 MCP 工具执行；未配置的工具不可调用。';
+        const name=namespaceOfTool(exec.name);
+        if(exec.name!=='skill'&&name!=='workbench'&&!externalServers.has(name))return '此工作台通过资源和标准 MCP 工具执行；未配置的工具不可调用。';
         if (!delivery.stateOf(agent.session).feedback) return;
         const readOnly = new Set([
           "attachment_list", "resource_list",
@@ -498,10 +502,17 @@ export async function apply(ctx, config) {
         order: 80,
         text: "你在固定项目内工作。专家 Skill 负责判断，标准工具负责执行。资料仅通过已授权资源读取；内部业务需要查资料时可以用 resource_list 找库，如 access=none，说明需要哪个库的只读权限。客户对象会话只用配置的对客资料。批量传引用，不逐人塞入主对话。先选择板块与方法，再提交任务。状态、数据发布、内容生成和实际送达必须区分。",
       });
+      // Optional connections mount independently, after the required tools and guards.
+      for (const [name, server] of externalServers) {
+        extensions.set(name, attachExternalMcp(agent.ctx, server, {
+          'X-Workbench-Kind': p.kind, 'X-Workbench-Project': p.projectId, 'X-Workbench-Session': p.sessionId,
+          ...(!boundary.objectSession ? {'X-Workbench-Sources': JSON.stringify(server.sources)} : {}),
+        }, () => ctx.tools.definitions(agent).some(tool => namespaceOfTool(tool.name) === name)));
+      }
+      if (p.kind === 'personal') personalMcp = extensions;
     } catch (e) {
       removeExpert?.();
-      for(const extension of extensions)extension.dispose();
-      workbenchMcp?.dispose();
+      await Promise.allSettled([workbenchMcp?.dispose(), ...stopExtensions()]);
       dispose();
       owned.delete(agent.id);
       throw e;
@@ -509,13 +520,15 @@ export async function apply(ctx, config) {
   }
   ctx.on("agent/created", ({ agent }) => attach(agent));
   ctx.on("agent/disposed", ({ agent }) => {
-    owned.get(agent.id)?.();
+    const dispose = owned.get(agent.id);
     owned.delete(agent.id);
+    return dispose?.();
   });
   ctx.effect(
-    () => () => {
-      for (const dispose of owned.values()) dispose();
+    () => async () => {
+      const disposers = [...owned.values()];
       owned.clear();
+      await Promise.allSettled(disposers.map(dispose => dispose()));
     },
     "workbench: scoped lifecycle",
   );
@@ -893,7 +906,7 @@ export async function apply(ctx, config) {
               json(res, 200, {
                 projects: await syncProjects(),
                 resources: await call("/resources"),
-                documentResourceIds: [...new Set((config.toolServers || []).flatMap(server => (server.sources || []).map(ref => ref.resourceId)))],
+                documentResourceIds: [...new Set(toolServers.flatMap(server => server.sources.map(ref => ref.resourceId)))],
                 personalWorkspaceId: personalWorkspace.id,
                 personalSessionId: superAgent.id,
               });
@@ -921,10 +934,38 @@ export async function apply(ctx, config) {
               return;
             }
             if (req.method === "GET" && path === "/mcp-catalog") {
-              json(res, 200, [{ name: "workbench", label: "工作台工具", configured: true },
-                ...(config.toolServers || []).map(server => ({ name: server.name, label: server.name,
-                  configured: Boolean(process.env[server.tokenEnv]), endpoint: new URL(server.url).origin,
-                }))]);
+              json(res, 200, { error: externalMcp.error, rows: [
+                { name: "workbench", label: "工作台工具", configured: true },
+                ...externalMcp.servers.map(server => {
+                  const connection = personalMcp?.get(server.name);
+                  return { name: server.name, label: server.name, configured: Boolean(server.tokenEnv && process.env[server.tokenEnv]),
+                    endpoint: server.endpoint, configurationError: server.error, runtime: connection?.status(), canReconnect: !!connection };
+                }),
+              ] });
+              return;
+            }
+            if (req.method === "POST" && path === "/model-check") {
+              if (!sameOrigin(req) || admission.peer !== ctx.connection.browserPeer) throw requestError('请在本人工作台网页操作', 403);
+              const { sessionId } = await body(req);
+              const agent = ctx.agents.get(typeof sessionId === 'string' && !sessionId.startsWith('object-') ? sessionId : superAgent.id);
+              const selection = agent?.model.current() ?? sessionModelOptions(config, idOf(personalPath));
+              const disconnect = new AbortController();
+              res.once('close', () => disconnect.abort());
+              const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(15000)]);
+              const result = await admitModel('owner', signal, () => verifyModel(ctx.llm, selection, signal))
+                .catch(() => ({ code: 'unavailable' }));
+              if (!res.destroyed) json(res, 200, { ...result, model: selection.model });
+              return;
+            }
+            if (req.method === "POST" && path === "/mcp-reconnect") {
+              if (!sameOrigin(req) || admission.peer !== ctx.connection.browserPeer) throw requestError('请在本人工作台网页操作', 403);
+              const { name } = await body(req);
+              const connection = personalMcp?.get(name);
+              if (!connection) throw requestError('当前 SuperAgent 未配置此连接', 404);
+              if (ctx.agents.get(superAgent.id)?.status !== 'idle')
+                throw requestError('SuperAgent 正在处理消息，请等当前一轮结束后再重新连接。', 409);
+              connection.reconnect();
+              json(res, 202, connection.status());
               return;
             }
             if (req.method === "POST" && path === "/expert-documents" && expertManagement) {
@@ -946,7 +987,7 @@ export async function apply(ctx, config) {
               }
               if (path === "/mcp-test") {
                 const builtin = input.name === "workbench";
-                const server = (config.toolServers || []).find(item => item.name === input.name);
+                const server = toolServers.find(item => item.name === input.name);
                 if (!builtin && !server) throw requestError("插件不存在", 404);
                 const endpoint = new URL(builtin ? "/mcp" : server.url, worker);
                 if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
@@ -954,11 +995,16 @@ export async function apply(ctx, config) {
                   throw requestError("服务地址无效");
                 const credential = builtin ? token : process.env[server.tokenEnv];
                 if (!credential) throw requestError("尚未配置凭证");
+                const principal = builtin || server.personal
+                  ? { kind: 'personal', projectId: '', sessionId: superAgent.id } : owner;
                 const client = new MCPClient({ name: "workbench-owner-check", version: "1" });
                 const signal = AbortSignal.timeout(8000);
                 try {
                   await client.connect(new StreamableHTTPClientTransport(endpoint, {
-                    requestInit: { redirect: "error", headers: { ...headers(owner), authorization: "Bearer " + credential } },
+                    requestInit: { redirect: "error", headers: {
+                      ...headers(principal), authorization: "Bearer " + credential,
+                      ...(server?.personal ? { 'X-Workbench-Sources': JSON.stringify(server.sources) } : {}),
+                    } },
                   }), { signal });
                   const tools = [];
                   let cursor;
@@ -970,9 +1016,9 @@ export async function apply(ctx, config) {
                     if (tools.length > 500 || seen.size >= 30 || cursor && seen.has(cursor)) throw Error("invalid tools catalogue");
                     if (cursor) seen.add(cursor);
                   } while (cursor);
-                  json(res, 200, { tools });
-                } catch {
-                  throw requestError("未能以当前凭证读取工具目录，请检查服务和连接配置", 502);
+                  json(res, 200, { tools, scope: principal.kind === 'personal' ? 'superagent' : 'owner' });
+                } catch (error) {
+                  throw requestError(externalMcpFailure(signal.aborted ? signal.reason : error), 502);
                 } finally { await client.close().catch(() => {}); }
                 return;
               }
@@ -1001,7 +1047,7 @@ export async function apply(ctx, config) {
             }
             const readPaths = new Set(["/reply-states","/reply-timeline","/reply-accounts","/reply-resources","/transports","/reply-projects","/reply-settings","/message-routes","/reply-session","/reply-channel-history","/resource-page", "/business-policies", "/resource-permissions", "/schedules", "/notification-targets",
               "/resources",
-              "/connections",
+              "/connections", "/resource-sync-status",
               "/grants",
               "/memory",
               "/runs",
@@ -1012,13 +1058,15 @@ export async function apply(ctx, config) {
             const writePaths = new Set(["/reply-manual","/reply-settings","/message-routes","/schedules/pause","/business-policies",
               "/resource-permissions","/resource-metadata","/vault-create","/vault-save",
               "/resources",
-              "/connections",
+              "/connections", "/connection-test", "/resource-connection", "/resource-sync-start", "/resource-sync-retry",
               "/memory",
               "/decisions/answer",
               "/personal/settings",
               "/notifications",
             ]);
             if (req.method === "GET" && readPaths.has(path)) {
+              if (path === '/resource-sync-status' && admission.peer !== ctx.connection.browserPeer)
+                throw requestError('请在本人工作台网页操作', 403);
               const disconnect = new AbortController();
               res.once("close", () => disconnect.abort());
               const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(30000)]);
@@ -1027,6 +1075,8 @@ export async function apply(ctx, config) {
               return;
             }
             if (req.method === "POST" && writePaths.has(path)) {
+              if (['/connection-test', '/resource-connection', '/resource-sync-start', '/resource-sync-retry'].includes(path) &&
+                  admission.peer !== ctx.connection.browserPeer) throw requestError('请在本人工作台网页操作', 403);
               const origin = req.headers.origin;
               if (!origin || new URL(origin).host !== req.headers.host) {
                 json(res, 403, { error: "origin rejected" });

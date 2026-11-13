@@ -924,6 +924,8 @@ window.__ModuleLoader__.load({
         [registration, setRegistration] = useState(),
         [editingResource, setEditingResource] = useState(),
         [connection, setConnection] = useState(),
+        [connectionTest, setConnectionTest] = useState(),
+        [syncResource, setSyncResource] = useState(),
         [sharing, setSharing] = useState(),
         [preview,setPreview]=useState(),[business,setBusiness]=useState(),[documents,setDocuments]=useState();
       const load = async () => {
@@ -944,7 +946,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         load();
       }, []);
-      const act = async (fn) => {
+      const act = async (fn, onError = e => setError(e.message)) => {
         setBusy(true);
         setError("");
         setNotice("");
@@ -953,7 +955,20 @@ window.__ModuleLoader__.load({
           await load();
           setNotice("已保存");
         } catch (e) {
-          setError(e.message);
+          onError(e);
+        } finally {
+          setBusy(false);
+        }
+      };
+      const testConnection = async () => {
+        const draft = connection;
+        setBusy(true);
+        setConnectionTest(undefined);
+        try {
+          await api("/connection-test", draft);
+          setConnectionTest({ ok: true, reference: draft.secretEnv });
+        } catch (e) {
+          setConnectionTest({ message: e.message, reference: draft.secretEnv });
         } finally {
           setBusy(false);
         }
@@ -1089,15 +1104,16 @@ window.__ModuleLoader__.load({
             h(
               "div",
               { className: "wb-actions" },
-              kind==="corpus"?button("新增语料库",()=>setNewVault({id:"vault-"+crypto.randomUUID(),name:""}),{disabled:busy}):button("连接配置", () =>
+              kind==="corpus"?button("新增语料库",()=>setNewVault({id:"vault-"+crypto.randomUUID(),name:""}),{disabled:busy}):button("连接配置", () => {
+                setConnectionTest(undefined);
                 setConnection({
                   id: "c_" + crypto.randomUUID().slice(0, 8),
                   name: "",
                   kind: "mysql",
                   secretEnv: "WORKBENCH_SOURCE_",
                   location: "",
-                }),
-              ),
+                });
+              }, {disabled:busy}),
               kind==="database"&&button("注册资源", () => setRegistration({...emptyResource(),kind}), {disabled:!catalog||busy}),
             ),
           ),
@@ -1127,10 +1143,21 @@ window.__ModuleLoader__.load({
                   act(async () => {
                     await api("/connections", connection);
                     setConnection(undefined);
-                  });
+                  }, e => setConnectionTest({ message: e.message, reference: connection.secretEnv }));
                 },
               },
               h("h2", null, "连接配置"),
+              connections.some(c => c.kind === "mysql") && field("编辑已保存的 MySQL 连接", h("select", {
+                value: connections.some(c => c.id === connection.id) ? connection.id : "",
+                disabled: busy,
+                onChange: e => {
+                  const saved = connections.find(c => c.id === e.target.value);
+                  if (saved) setConnection(saved);
+                  else setConnection({ id: "c_" + crypto.randomUUID().slice(0, 12), name: "", kind: "mysql", secretEnv: "WORKBENCH_SOURCE_", location: "" });
+                  setConnectionTest(undefined);
+                },
+              }, h("option", { value: "" }, "新建连接"),
+              ...connections.filter(c => c.kind === "mysql").map(c => h("option", { value: c.id, key: c.id }, c.name)))),
               field(
                 "名称",
                 h("input", {
@@ -1146,8 +1173,11 @@ window.__ModuleLoader__.load({
                   "select",
                   {
                     value: connection.kind,
-                    onChange: (e) =>
-                      setConnection({ ...connection, kind: e.target.value }),
+                    disabled: busy || connections.some(c => c.id === connection.id),
+                    onChange: (e) => {
+                      setConnectionTest(undefined);
+                      setConnection({ ...connection, kind: e.target.value });
+                    },
                   },
                   h("option", { value: "mysql" }, "MySQL"),
                   h("option", { value: "http-json" }, "HTTPS 数据快照（JSON）"),
@@ -1161,11 +1191,14 @@ window.__ModuleLoader__.load({
                     h("input", {
                       required: true,
                       value: connection.secretEnv,
-                      onChange: (e) =>
+                      disabled: busy,
+                      onChange: (e) => {
+                        setConnectionTest(undefined);
                         setConnection({
                           ...connection,
                           secretEnv: e.target.value,
-                        }),
+                        });
+                      },
                     }),
                   )
                 : field(
@@ -1184,13 +1217,19 @@ window.__ModuleLoader__.load({
               h(
                 "p",
                 { className: "wb-muted" },
-                "凭证保存在服务器中。这里只填写引用名称，专家不会取得密码。",
+                connection.kind === "mysql"
+                  ? "请向部署者获取服务器上的凭证引用名称。测试连接只验证能否登录，登记资源时会检查表和字段的读取权限。"
+                  : "凭证由部署者保管。在这里填写服务器上的引用名称。",
               ),
+              connection.kind === "mysql" && h("p", { role: "status" },
+                connectionTest?.ok && connectionTest.reference === connection.secretEnv ? "本次连接测试通过" : "当前配置未验证"),
+              alert(connectionTest?.message),
               h(
                 "div",
                 { className: "wb-actions" },
+                connection.kind === "mysql" && button("测试连接", testConnection, { disabled: busy }),
                 h("button", { disabled: busy, type: "submit" }, "保存连接"),
-                button("取消", () => setConnection(undefined)),
+                button("取消", () => setConnection(undefined), { disabled: busy }),
               ),
             ),
           registration &&
@@ -1201,7 +1240,7 @@ window.__ModuleLoader__.load({
                 onSubmit: (e) => {
                   e.preventDefault();
                   act(async () => {
-                    const {schemaText,checksText,sourceFieldsText,...resource}=registration;
+                    const {schemaText,checksText,sourceFieldsText,saveError,...resource}=registration;
                     await api("/resources", {
                       ...resource,
                       jsonSource:connections.find(c=>c.id===registration.connectionId)?.kind==="http-json" ? {...registration.jsonSource,fields:sourceFieldsText===undefined?registration.jsonSource?.fields:JSON.parse(sourceFieldsText||"{}")} : undefined,
@@ -1214,7 +1253,7 @@ window.__ModuleLoader__.load({
                       })),
                     });
                     setRegistration(undefined);
-                  });
+                  }, e => change("saveError", e.message));
                 },
               },
               h("h2", null, "注册资源"),
@@ -1355,6 +1394,7 @@ window.__ModuleLoader__.load({
                 h("button", { type: "submit", disabled: busy }, "保存资源"),
                 button("取消", () => setRegistration(undefined)),
               ),
+              alert(registration.saveError),
             ),
           editingResource&&h(ResourceMetadataDialog,{
             key:editingResource.id,resource:editingResource,close:()=>setEditingResource(undefined),
@@ -1414,6 +1454,8 @@ window.__ModuleLoader__.load({
                 r.relation===businessPolicyRelation ? button("查看资料",()=>openBusiness(r)) : r.currentVersion&&button("查看资料",()=>kind==="corpus"?openCorpus(r):openPreview(r)),
                 button("权限设置", () => setSharing(r), {"aria-label":"权限设置："+r.name}),
                 button("编辑", () => setEditingResource(r), {"aria-label":"编辑 "+r.name}),
+                connections.some(c => c.id === r.connectionId && c.kind === "mysql") &&
+                  button("同步设置", () => setSyncResource(r), { "aria-label": "同步设置：" + r.name }),
               ),
             ),
             catalog &&
@@ -1424,12 +1466,105 @@ window.__ModuleLoader__.load({
                 kind==="corpus"?"还没有语料库。":"还没有资源。先配置连接，再注册需要使用的资料。",
               ),
           ),
+          syncResource && h(MySQLSyncDialog, { resource: syncResource, connections,
+            close: () => { setSyncResource(undefined); void load(); },
+            openConnections: connectionId => {
+              setConnectionTest(undefined);
+              setConnection(connections.find(c => c.id === connectionId));
+              setSyncResource(undefined);
+            },
+          }),
         ),
       );
     }
 
+    function MySQLSyncDialog({ resource, connections, close, openConnections }) {
+      const [status, setStatus] = useState();
+      const [connectionId, setConnectionId] = useState(resource.connectionId);
+      const [changing, setChanging] = useState(false);
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState("");
+      const operation = useRef();
+      const read = async signal => {
+        try {
+          const data = await api(query("/resource-sync-status", { resourceId: resource.id }), undefined, signal);
+          if (!signal?.aborted) setStatus(data);
+        } catch (e) {
+          if (!signal?.aborted) setError(e.message);
+        }
+      };
+      useEffect(() => {
+        const controller = new AbortController();
+        void read(controller.signal);
+        return () => controller.abort();
+      }, [resource.id]);
+      useEffect(() => {
+        if (!["Running", "Unknown"].includes(status?.run?.execution) || error || busy) return;
+        const controller = new AbortController();
+        const timer = setTimeout(() => read(controller.signal), 1500);
+        return () => { clearTimeout(timer); controller.abort(); };
+      }, [status, error, busy]);
+      const act = async work => {
+        setBusy(true);
+        setError("");
+        try { await work(); }
+        catch (e) { setError(e.message); }
+        finally { setBusy(false); }
+      };
+      const start = () => act(async () => {
+        operation.current ??= crypto.randomUUID();
+        try {
+          await api("/resource-sync-start", { destination: resource.id, operationKey: operation.current });
+        } catch (e) {
+          await read();
+          throw e;
+        }
+        operation.current = undefined;
+        await read();
+      });
+      const retry = () => act(async () => {
+        await api("/resource-sync-retry", { runId: status.run.id });
+        operation.current = undefined;
+        await read();
+      });
+      const rebind = () => act(async () => {
+        await api("/resource-connection", { resourceId: resource.id, connectionId, revision: status.revision });
+        setChanging(false);
+        await read();
+      });
+      const run = status?.run;
+      const waiting = run && ["Running", "Unknown"].includes(run.execution);
+      const current = status?.connectionId || resource.connectionId;
+      return h(UI.Modal, { open: true, title: resource.name + " · 同步设置", closeLabel: "关闭", onClose: () => { if (!busy) close(); } },
+        h("div", { className: "wb-page wb-form wb-metadata-form" },
+          h("p", null, "当前连接：" + (connections.find(c => c.id === current)?.name ?? current)),
+          !status && !error && h("p", { role: "status" }, "正在读取同步任务…"),
+          run && h("div", { role: "status" },
+            h("strong", null, run.published ? "已发布" : stateText(run)),
+            h("p", { className: "wb-muted" }, "任务编号 " + run.id)),
+          status?.problem && alert(status.problem),
+          status?.canRetry && status.currentVersion && h("p", { className: "wb-muted" }, "上一版已发布的资料可继续查看。"),
+          alert(error),
+          changing ? h(React.Fragment, null,
+            field("选择 MySQL 连接", h("select", { value: connectionId, disabled: busy, onChange: e => setConnectionId(e.target.value) },
+              ...connections.filter(c => c.kind === "mysql").map(c => h("option", { value: c.id, key: c.id }, c.name)))),
+            h("div", { className: "wb-actions" },
+              button("保存新连接", rebind, { disabled: busy || connectionId === current }),
+              button("取消更换", () => setChanging(false), { disabled: busy })))
+            : h("div", { className: "wb-actions" },
+              button("更换连接", () => {
+                setConnectionId(current);
+                setChanging(true);
+              }, { disabled: busy || waiting || !status }),
+              button("编辑当前连接", () => openConnections(current), { disabled: busy || waiting }),
+              button("刷新状态", () => act(read), { disabled: busy }),
+              status?.canRetry ? button("重试原任务", retry, { disabled: busy })
+                : button("开始同步", start, { disabled: busy || !status || waiting }))));
+    }
+
     const UI = require("@deepseek-ai/dsh-client-ui-primitives");
     const workbenchCSS = `
+.wb-model-issue{margin:8px 0 16px;padding:12px 16px;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;font-size:14px;line-height:1.6;overflow-wrap:anywhere}.wb-model-issue p{margin:0 0 6px}.wb-model-issue button+p{margin:8px 0 0}
 .wb-expert-dialog{width:min(680px,calc(100vw - 24px))}.wb-expert-modal{box-sizing:border-box;width:100%;height:auto;max-height:70dvh;padding:12px 20px;overflow-wrap:anywhere}.wb-expert-modal .wb-form{padding:8px 0}.wb-expert-modal pre{white-space:pre-wrap}
       .wb-project-shortcut{width:100%;display:flex;align-items:center;gap:8px;padding:8px 10px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
       .wb-project-shortcut:hover,.wb-project-shortcut[aria-current=page]{background:var(--dsw-alias-interactive-bg-hover)}
@@ -2015,35 +2150,61 @@ window.__ModuleLoader__.load({
         }))));
     }
     function MCPPage({openNativePlugins}) {
-      const [rows,setRows]=useState(),[error,setError]=useState(""),[selected,setSelected]=useState(),[results,setResults]=useState({}),[busy,setBusy]=useState(false);
-      const load=()=>{setError("");api("/mcp-catalog").then(setRows).catch(e=>setError(e.message))};
+      const [catalog,setCatalog]=useState(),[error,setError]=useState(""),[selectedName,setSelected]=useState(),[results,setResults]=useState({}),[busy,setBusy]=useState("");
+      const load=()=>{setError("");return api("/mcp-catalog").then(setCatalog).catch(e=>setError(e.message))};
       useEffect(()=>{load()},[]);
-      const test=async name=>{
-        setBusy(true);setResults(v=>({...v,[name]:undefined}));
-        try{const r=await api("/mcp-test",{name});setResults(v=>({...v,[name]:r}))}
-        catch(e){setResults(v=>({...v,[name]:{error:e.message}}))}finally{setBusy(false)}
+      const rows=catalog?.rows||[];
+      useEffect(()=>{
+        if(!error&&rows.some(r=>r.runtime?.status==="connecting")){
+          const timer=setTimeout(load,800);
+          return ()=>clearTimeout(timer);
+        }
+      },[catalog,error]);
+      const act=async (action,name)=>{
+        setBusy(action);setResults(v=>({...v,[name]:undefined}));
+        try{
+          const r=await api("/mcp-"+action,{name});
+          if(action==="test")setResults(v=>({...v,[name]:r}));
+          else {
+            setCatalog(c=>({...c,rows:c.rows.map(row=>row.name===name?{...row,runtime:r}:row)}));
+            await load();
+          }
+        }
+        catch(e){setResults(v=>({...v,[name]:{error:e.message}}))}finally{setBusy("")}
       };
+      const selected=rows.find(r=>r.name===selectedName);
       const result=selected&&results[selected.name];
+      const state=r=>r.configurationError?"配置错误":!r.configured?"缺少凭证":
+        ({connecting:"正在连接",loaded:"已加载到 SuperAgent",failed:"连接失败","call-failed":"最近调用失败","no-tools":"当前无工具"}[r.runtime?.status]||
+        (results[r.name]?.tools?"目录测试通过":results[r.name]?.error?"测试未通过":"已配置 · 未测试"));
       return h("section",{className:"wb-page"},h("div",{className:"wb-content"},
         h("div",{className:"wb-heading"},h("h1",null,"MCP 插件"),h("div",{className:"wb-actions"},
           button("插件管理",openNativePlugins),button("刷新",load))),
-        h("p",{className:"wb-muted"},"查看已登记的标准工具连接。配置状态与连接检测分别显示。"),
-        alert(error),!rows&&!error&&h("p",{role:"status"},"正在读取插件…"),
-        h("div",{className:"wb-list"},...(rows||[]).map(r=>
+        h("p",{className:"wb-muted"},"外部连接独立运行。单个连接出错时，仍可使用 SuperAgent 和其他可用工具。"),
+        alert(error||catalog?.error),!catalog&&!error&&h("p",{role:"status"},"正在读取插件…"),
+        h("div",{className:"wb-list"},...rows.map(r=>
           h("div",{key:r.name,className:"wb-row"},h("div",{className:"wb-row-main"},h("strong",null,r.label),h("div",{className:"wb-muted"},"Streamable HTTP")),
-            h("span",{className:"wb-tag"},results[r.name]?.tools?"已连接":results[r.name]?.error?"测试未通过":r.configured?"已配置 · 未测试":"缺少凭证"),
-            button("连接配置",()=>setSelected(r),{"aria-label":r.label+"连接配置"})))),
+            h("span",{className:"wb-tag"},state(r)),
+            button("连接配置",()=>setSelected(r.name),{"aria-label":r.label+"连接配置"})))),
         selected&&h(UI.Modal,{open:true,title:selected.label+" · 连接配置",closeLabel:"关闭",onClose:()=>setSelected(undefined)},
           h("div",{className:"wb-page",style:{maxHeight:"65vh",padding:"16px 20px"}},
-            h("dl",null,h("dt",null,"服务"),h("dd",null,selected.endpoint||"工作台内置服务"),h("dt",null,"凭证"),h("dd",null,selected.configured?"已配置":"未配置")),
-            h("p",{className:"wb-muted"},"连接由宿主管理。测试只检查工具目录。"),
-            button(busy?"正在测试…":"测试连接",()=>test(selected.name),{disabled:busy||!selected.configured}),
+            h("dl",null,h("dt",null,"服务"),h("dd",null,selected.endpoint||(selected.name==="workbench"?"工作台内置服务":"未配置有效地址")),
+              h("dt",null,"凭证"),h("dd",null,selected.configured?"已配置":"未配置"),
+              h("dt",null,"状态"),h("dd",{role:"status"},state(selected))),
+            alert(selected.configurationError?selected.configurationError+"，请联系部署者。":selected.runtime?.message||
+              (!selected.configured?"缺少凭证，请联系部署者配置。":"")),
+            h("p",{className:"wb-muted"},"测试只读取工具目录。重新连接仅刷新 SuperAgent 的此连接，不会重跑之前的工具。"),
+            h("div",{className:"wb-actions"},
+              button(busy==="test"?"正在测试…":"测试连接",()=>act("test",selected.name),{disabled:!!busy||!selected.configured}),
+              selected.canReconnect&&button("重新连接",()=>act("reconnect",selected.name),{disabled:!!busy||!selected.configured||selected.runtime?.status==="connecting"})),
             alert(result?.error),
-            result?.tools&&h("div",{className:"wb-list"},h("h2",null,"工具预览 · "+result.tools.length),...result.tools.map(tool=>h("div",{className:"wb-row",key:tool.name},
+            result?.tools&&h("div",{className:"wb-list"},h("h2",null,"工具预览 · "+result.tools.length),
+              h("p",{className:"wb-muted"},result.scope==="superagent"?"按 SuperAgent 身份读取目录。实际调用仍需工具权限。":"按工作台管理身份读取目录。项目会话的工具范围需按项目权限核对。"),
+              ...result.tools.map(tool=>h("div",{className:"wb-row",key:tool.name},
               h("div",{className:"wb-row-main"},h("strong",null,tool.name),h("p",{className:"wb-muted"},tool.description)))))))));
     }
     const time = value => value ? new Date(value).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "尚未记录";
-    const stateText = r => ({Running:"执行中",Completed:r.published?"结果已发布":"执行已结束",Failed:"执行失败",Canceled:"已停止",Terminated:"已终止",TimedOut:"已超时",Unknown:"状态待核实"}[r.execution]||r.execution);
+    const stateText = r => ({NotStarted:"尚未启动",Running:"执行中",Completed:r.published?"结果已发布":"执行已结束",Failed:"执行失败",Canceled:"已停止",Terminated:"已终止",TimedOut:"已超时",Unknown:"状态待核实"}[r.execution]||r.execution);
     const receiptText = r => {const s=r.deliveries?.states;if(!s)return "";return `渠道回执：待提交 ${s.prepared||0} · 已受理 ${s.accepted||0} · 待手机确认 ${s.pending_confirmation||0} · 已发送 ${s.sent||0} · 已送达 ${s.delivered||0} · 失败 ${s.failed||0} · 待核实 ${(s.unknown||0)+(s.submitting||0)}`};
     const scheduleHours=s=>s.hours.map(hour=>String(hour).padStart(2,"0")+":"+String(s.minute).padStart(2,"0")).join("、");
     function ScheduleRows({rows, openSession, act, busy, openPanel}) {
@@ -3108,16 +3269,43 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
         }, "workbench: built-in model display labels");
       });
       wrapSlot(ctx, "conversation.input.model", undefined, (Original, props) => h(Original, { ...props, t: translate(props.t) }));
-      wrapSlot(ctx, "settings.section", "models", (Original, props) => h(Original, { ...props,
-        t: (key, values) => unbrand(props.t(key === "keyFallbackDetected" ? "keyFallbackDetectedHidden" : key, values)),
-        useSnapshot: select => props.useSnapshot(snapshot => {
-          if (!modelSettings.has(snapshot)) modelSettings.set(snapshot, { ...snapshot,
-            rows: snapshot.rows.map(row => builtinProvider(row.entry.provider)
-              ? { ...row, entry: { ...row.entry, displayName: "内置模型" } } : row),
-          });
-          return select(modelSettings.get(snapshot));
-        }),
-      }));
+      wrapSlot(ctx, "conversation.chat.node", "turn-error", (Original, props) => {
+        const issue = modelIssue(props.node.data.code);
+        if (!issue) return h(Original, props);
+        return h("div", { className: "wb-model-issue", role: "status" },
+          h("strong", null, issue.title),
+          h("p", null, issue.message, " 修好后在原对话重试上面的问题。"),
+          button("打开模型设置", () => window.dispatchEvent(new Event("wb-open-model-settings")), { className: "wb-inline" }));
+      });
+      function ModelsWithVerification({ Original, props }) {
+        const [revision, setRevision] = useState(0);
+        const invalidate = useRef();
+        invalidate.current = () => setRevision(value => value + 1);
+        const wrappedOperations = React.useMemo(() => {
+          if (!props.operations) return undefined;
+          const operations = { ...props.operations };
+          for (const name of ["storeCredential", "removeCredential", "writeSettings"]) {
+            operations[name] = (...args) => {
+              invalidate.current();
+              return props.operations[name](...args);
+            };
+          }
+          return operations;
+        }, [props.operations]);
+        return h(React.Fragment, null,
+          h(ModelVerification, { workspace: ctx.uiWorkspace, key: revision }),
+          h(Original, { ...props, operations: wrappedOperations,
+            t: (key, values) => unbrand(props.t(key === "keyFallbackDetected" ? "keyFallbackDetectedHidden" : key, values)),
+            useSnapshot: select => props.useSnapshot(snapshot => {
+              if (!modelSettings.has(snapshot)) modelSettings.set(snapshot, { ...snapshot,
+                rows: snapshot.rows.map(row => builtinProvider(row.entry.provider)
+                  ? { ...row, entry: { ...row.entry, displayName: "内置模型" } } : row),
+              });
+              return select(modelSettings.get(snapshot));
+            }),
+          }));
+      }
+      wrapSlot(ctx, "settings.section", "models", (Original, props) => h(ModelsWithVerification, { Original, props }));
       wrapSlot(ctx, "settings.general.item", "session-log-deepseek", (Original, props) => h(Original, { ...props,
         t(key) {
           const copy = props.t(key);
@@ -3127,13 +3315,17 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
         },
       }));
       wrapSlot(ctx, "main", "plugins", (Original, props) => h(Original, { ...props, t: translate(props.t) }));
-      wrapSlot(ctx, "sidebar.settings", undefined, (Original, props) => h(Original, { ...props,
+      function SettingsShell({ Original, props }) {
+        useEffect(() => onEvent("wb-open-model-settings", () => props.actions.openSection("models")), [props.actions]);
+        return h(Original, { ...props,
         useOnboardingSteps: select => props.useOnboardingSteps(steps => {
           if (!onboardingSteps.has(steps)) onboardingSteps.set(steps,
             steps.filter(step => step.id !== "welcome-notice" && step.id !== "deepseek-official"));
           return select(onboardingSteps.get(steps));
         }),
-      }));
+        });
+      }
+      wrapSlot(ctx, "sidebar.settings", undefined, (Original, props) => h(SettingsShell, { Original, props }));
       ctx.effect(() => {
         const title = document.head.querySelector("title");
         if (!title) return;
@@ -3147,6 +3339,46 @@ div:has(> span > [data-slot="conversation.hero.brand.mark"] > [data-wb-empty-her
         refresh();
         return () => observer.disconnect();
       }, "workbench: browser title");
+    }
+
+    function modelIssue(code) {
+      if (code === "MISSING_CREDENTIAL")
+        return { title: "模型缺少 API 密钥", message: "向模型账号持有人获取密钥，再到模型设置保存并验证。" };
+      if (["AUTH", "INVALID_CREDENTIAL"].includes(code))
+        return { title: "模型拒绝了当前密钥", message: "到模型设置替换密钥并验证。如果没有可用密钥，请找模型账号持有人。" };
+      if (["QUOTA", "ACCOUNT_QUOTA"].includes(code))
+        return { title: "模型账号额度不足", message: "请让模型账号持有人检查余额和用量额度，恢复后再验证。" };
+      if (["SERVER", "TRANSPORT", "TIMEOUT", "RATE_LIMIT", "unavailable"].includes(code))
+        return { title: "模型服务暂不可用", message: "请稍后重试。如果持续失败，请联系部署者检查模型服务或网络。" };
+      return undefined;
+    }
+
+    function ModelVerification({ workspace }) {
+      const [result, setResult] = useState();
+      const [busy, setBusy] = useState(false);
+      async function verify() {
+        setResult(undefined);
+        setBusy(true);
+        try {
+          const sessionId = workspace.selection.getSnapshot().sessionId;
+          setResult(await api("/model-check", { sessionId }));
+        } catch {
+          setResult({ code: "unavailable" });
+        } finally {
+          setBusy(false);
+        }
+      }
+      const issue = result && (modelIssue(result.code) ?? {
+        title: "模型验证未通过", message: "请确认所选模型可用。若仍失败，请联系部署者。",
+      });
+      return h("section", { className: "wb-model-issue", "aria-label": "验证当前模型" },
+        h("p", null, "保存密钥后，发送一条测试请求验证当前对话所选模型。"),
+        button(busy ? "正在验证…" : "验证当前模型", verify, { disabled: busy, className: "wb-inline" }),
+        result && h("p", { role: "status" }, result.code === "verified"
+          ? `本次验证通过（${result.model}）。修改密钥或模型后请重新验证。`
+          : result.code === "probe-output-limit"
+            ? "模型已响应，验证请求达到输出上限。请回到原对话发送一条简短消息，确认能收到完整回复。"
+            : `${issue.title}。${issue.message}`));
     }
 
     function ChannelLinks({ close }) {

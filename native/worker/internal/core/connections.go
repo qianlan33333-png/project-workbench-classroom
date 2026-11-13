@@ -125,9 +125,20 @@ func (s *Store) Projects(ctx context.Context) ([]Project, error) {
 }
 
 // SyncSource reads only an owner-registered relation/directory. Models never submit SQL or credentials.
-// A source transaction is one repeatable-read snapshot. A retry that observes changed data fails
-// on conflicting staged records instead of silently combining source versions.
+// A MySQL attempt reads one repeatable-read snapshot and discards this run's
+// previous unpublished staging. Other sources reject conflicting staged records.
 func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapshot, error) {
+	return s.syncSource(ctx, r, heartbeat, nil)
+}
+
+// SyncRunSource commits a saved run's source references and completion event with its snapshot.
+func (s *Store) SyncRunSource(ctx context.Context, r Run, heartbeat func()) (Snapshot, error) {
+	return s.syncSource(ctx, r, heartbeat, func(tx *sql.Tx, snapshot Snapshot) error {
+		return recordSyncPublication(ctx, tx, r, snapshot)
+	})
+}
+
+func (s *Store) syncSource(ctx context.Context, r Run, heartbeat func(), onPublished func(*sql.Tx, Snapshot) error) (Snapshot, error) {
 	resource, e := s.canWrite(ctx, r.Principal, r.Destination)
 	if e != nil {
 		return Snapshot{}, e
@@ -142,7 +153,10 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 		return snap, e
 	}
 	if existing.State == "published" {
-		return existing, nil
+		if onPublished == nil {
+			return existing, nil
+		}
+		return s.publish(ctx, r.Principal, resource.ID, r.ID, existing.Count, nil, nil, onPublished)
 	}
 	validator, e := (Method{OutputSchema: resource.RecordSchema}).ResolveOutput()
 	if e != nil {
@@ -324,27 +338,23 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 			return snap, ErrConflict
 		}
 	case "mysql":
-		if !ValidID(resource.Relation) || !ValidID(resource.KeyField) {
-			return snap, ErrInvalid
-		}
-		dsn := os.Getenv(conn.SecretEnv)
-		if dsn == "" {
-			return snap, fmt.Errorf("source connection is not configured")
-		}
-		source, e := Open(ctx, dsn)
+		source, e := openMySQLSource(ctx, conn)
 		if e != nil {
-			return snap, fmt.Errorf("source connection unavailable")
+			return snap, e
 		}
 		defer source.DB.Close()
 		tx, e := source.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 		if e != nil {
-			return snap, e
+			return snap, mysqlSourceError(e)
 		}
 		defer tx.Rollback()
+		if e := checkMySQLColumns(ctx, tx, resource); e != nil {
+			return snap, e
+		}
 		var total, distinct, nonnull int
 		key := "`" + resource.KeyField + "`"
 		if e = tx.QueryRowContext(ctx, "SELECT COUNT(*),COUNT(DISTINCT "+key+"),COUNT("+key+") FROM `"+resource.Relation+"`").Scan(&total, &distinct, &nonnull); e != nil {
-			return snap, e
+			return snap, mysqlSourceError(e)
 		}
 		if total != distinct || total != nonnull {
 			return snap, fmt.Errorf("%w: source key must be unique and non-null", ErrInvalid)
@@ -354,12 +364,17 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 			var versions, withWatermark int
 			column := "`" + resource.WatermarkField + "`"
 			if e = tx.QueryRowContext(ctx, "SELECT COUNT(DISTINCT "+column+"),MIN("+column+"),COUNT("+column+") FROM `"+resource.Relation+"`").Scan(&versions, &watermark, &withWatermark); e != nil {
-				return snap, e
+				return snap, mysqlSourceError(e)
 			}
 			if versions != 1 || !watermark.Valid || strings.TrimSpace(watermark.String) == "" || withWatermark != total {
 				return snap, fmt.Errorf("%w: source must have one published watermark", ErrInvalid)
 			}
 			snap.SourceWatermark = watermark.String
+		}
+		if existing.State == "staging" {
+			if e = s.resetMySQLStaging(ctx, r.Principal, resource.ID, r.ID); e != nil {
+				return snap, e
+			}
 		}
 		if e = s.BeginSnapshot(ctx, r.Principal, snap); e != nil {
 			return snap, e
@@ -385,7 +400,7 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 			query += " ORDER BY `" + resource.KeyField + "` LIMIT 200"
 			rows, e := tx.QueryContext(ctx, query, args...)
 			if e != nil {
-				return snap, e
+				return snap, mysqlSourceError(e)
 			}
 			columnTypes, e := rows.ColumnTypes()
 			if e != nil {
@@ -430,7 +445,7 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 			e = rows.Err()
 			rows.Close()
 			if e != nil {
-				return snap, e
+				return snap, mysqlSourceError(e)
 			}
 			if n < 200 {
 				break
@@ -440,7 +455,7 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 			return snap, fmt.Errorf("%w: source cursor did not cover all records", ErrInvalid)
 		}
 		if e = tx.Commit(); e != nil {
-			return snap, e
+			return snap, mysqlSourceError(e)
 		}
 	case "jsonl":
 		if !ValidID(resource.Relation) {
@@ -525,7 +540,10 @@ func (s *Store) SyncSource(ctx context.Context, r Run, heartbeat func()) (Snapsh
 			return snap, fmt.Errorf("%w: source count dropped below configured retention threshold", ErrInvalid)
 		}
 	}
-	published, err := s.Publish(ctx, r.Principal, resource.ID, r.ID, count)
+	if conn.Kind == "mysql" {
+		return s.publish(ctx, r.Principal, resource.ID, r.ID, count, &resource.Revision, &conn, onPublished)
+	}
+	published, err := s.publish(ctx, r.Principal, resource.ID, r.ID, count, nil, nil, onPublished)
 	if err == nil && profileCollection != "" {
 		err = operations.CleanupCollected(ctx, profileCollection, r.ID)
 	}

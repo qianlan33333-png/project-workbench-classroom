@@ -71,7 +71,7 @@ export async function createActivation({ directory, issuer, publicKey, fetcher =
     get active() { return active; },
     activate(code) {
       if (active) return Promise.resolve();
-      if (!activationCodePattern.test(code)) throw activationError('请输入完整的激活码。');
+      if (!activationCodePattern.test(code)) throw activationError('激活码应为 32 位。请从发码消息重新复制完整激活码。');
       if (redeeming) throw activationError('正在验证，请稍后再试。', 409);
       redeeming = redeem(code).finally(() => { redeeming = undefined; });
       return redeeming;
@@ -90,9 +90,9 @@ export async function createActivation({ directory, issuer, publicKey, fetcher =
       });
       if ([404, 409, 410].includes(response.status)) {
         throw activationError({
-          404: '激活码无效，请检查后重试。',
-          409: '这个激活码已用于另一台工作台。',
-          410: '激活码已过期，请获取新码。',
+          404: '找不到这个激活码。请重新复制原码，仍然无效时联系发码方核对。',
+          409: '这个激活码已用于另一台工作台。请联系发码方获取新码。',
+          410: '激活码已过期。请联系发码方获取新码。',
         }[response.status], response.status);
       }
       if (!response.ok) throw new Error('Issuer rejected activation');
@@ -103,7 +103,7 @@ export async function createActivation({ directory, issuer, publicKey, fetcher =
       await persist(grantPath, grant, true);
     } catch (error) {
       if (error.activationStatus) throw error;
-      throw activationError('暂时无法验证激活码，请稍后重试。', 503);
+      throw activationError('暂时无法连接发码服务。请稍后在本工作台用原码重试。若持续失败，请联系发码方检查服务。', 503);
     }
     active = true;
   }
@@ -149,7 +149,7 @@ main{width:min(100% - 40px,360px);margin:clamp(44px,17vh,160px) auto 32px}
 h1{text-align:center;font-size:28px;margin:48px 0 34px}form{display:grid;gap:12px}
 input,button{font:inherit;border-radius:8px;min-height:44px;padding:10px 12px}input{width:100%;border:1px solid #d0d5dd}
 button{cursor:pointer;border:0;background:#0052e8;color:#fff;font-weight:600;margin-top:10px}button:focus-visible,input:focus-visible{outline:2px solid #1360ff;outline-offset:2px}
-[role=alert]{color:#a42020;margin:0}output{display:block;overflow-wrap:anywhere;margin-top:20px}
+[role=alert]{color:#a42020;margin:0}output{display:block;overflow-wrap:anywhere;margin-top:20px}.hint{color:#475467;margin:0}
 </style>
 <main><div class="brand"><img src="/workbench-brand.png" alt="" width="36" height="36">${workbenchTitle}</div>
 <h1>${title}</h1>${body}</main>${script && `<script nonce="${nonce}">${script}</script>`}</html>`);
@@ -166,7 +166,21 @@ export function installActivation(ctx, activation) {
   ctx.effect(() => {
     const original = connection.authorizeIndex;
     const gate = function (req, res) {
-      if (!original.call(this, req, res)) return false;
+      // Harness still validates the launch link and issues the browser cookie.
+      let unauthorized = false;
+      const entry = req.method === 'GET' && new URL(req.url, 'http://localhost').pathname === '/';
+      const reply = entry ? {
+        writeHead(status, headers) {
+          unauthorized = status === 401;
+          if (!unauthorized) res.writeHead(status, headers);
+        },
+        end(content) {
+          if (unauthorized) setupPage(res, 401, '需要本人访问链接',
+            '<p>请联系部署者获取此工作台的本人访问链接，再在当前浏览器中打开。打开后，按提示输入发码方提供的激活码。</p>');
+          else res.end(content);
+        },
+      } : res;
+      if (!original.call(this, req, reply)) return false;
       if (activation.active) return true;
       redirect(res, '/activation');
       return false;
@@ -207,8 +221,9 @@ export function installActivation(ctx, activation) {
       }
       setupPage(res, error?.activationStatus || (error ? 503 : 200), '激活工作台',
         `<form method="post" action="/activation"><label for="code">激活码</label>
-<input id="code" name="code" autocomplete="off" spellcheck="false" autocapitalize="none" maxlength="64" required placeholder="请输入激活码">
-${error ? `<p role="alert">${escapeHtml(error.activationStatus ? error.message : '暂时无法验证激活码，请稍后重试。')}</p>` : ''}
+<input id="code" name="code" autocomplete="off" spellcheck="false" autocapitalize="none" maxlength="64" required placeholder="请输入激活码" aria-describedby="${error ? 'activation-error' : 'activation-hint'}"${error ? ' autofocus' : ''}>
+<p id="activation-hint" class="hint">还没有激活码？请联系发码方。</p>
+${error ? `<p id="activation-error" role="alert">${escapeHtml(error.activationStatus ? error.message : '暂时无法验证激活码。请稍后用原码重试，若持续失败请联系发码方。')}</p>` : ''}
 <button>激活工作台</button></form>`);
     },
   }), 'workbench: activation page');

@@ -105,6 +105,24 @@ func TestMySQLFeishuCLIResultAndDelegationProvenance(t *testing.T) {
 	must(err)
 	defer c.Close()
 
+	catalog, err := c.ListTools(ctx, nil)
+	must(err)
+	var outputSchema any
+	for _, tool := range catalog.Tools {
+		if tool.Name == "feishu_cli_read" {
+			outputSchema = tool.OutputSchema
+		}
+	}
+	rawSchema, err := json.Marshal(outputSchema)
+	must(err)
+	var wire struct {
+		Properties map[string]json.RawMessage
+	}
+	must(json.Unmarshal(rawSchema, &wire))
+	if string(wire.Properties["data"]) != "{}" {
+		t.Fatalf("expected an unconstrained schema object on the wire, got %s", rawSchema)
+	}
+
 	result, err := c.CallTool(ctx, &mcp.CallToolParams{Name: "feishu_cli_read", Arguments: map[string]string{"operation": "document"}})
 	must(err)
 	if result.IsError || len(result.Content) != 1 || result.Content[0].(*mcp.TextContent).Text != `{"data":`+payload+"}" {
