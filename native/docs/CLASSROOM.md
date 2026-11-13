@@ -54,6 +54,10 @@
 
 课堂 ZIP 已编译工作台和启动器，并附带 Node、Harness、MySQL、Temporal。完整解压后，macOS 双击 `Start.command`，Windows 双击 `Start.cmd`。保持启动窗口运行。打开的是同一个本机工作台网页。macOS 和 Windows 使用各自的包。
 
+Mac 包要求 macOS 14 或更高版本。当前测试包尚未做 Apple Developer ID 签名及公证，带下载标记的 `Start.command` 可能在双击时被 macOS 拦截。Apple 芯片真机已复现这个启动限制。参见 [Apple 官方说明](https://support.apple.com/zh-cn/102445)。
+
 课堂启动器会先显示激活页。输入发码方的激活码后再进入工作台配置自己的 DeepSeek API 密钥。数据、会话和激活状态保存在本机用户配置目录 `WorkbenchClassroom`。首次启动初始化本机数据库和 Temporal；Windows 如系统缺少 Microsoft Visual C++ x64 运行库，先安装官方运行库。
 
 新建自动化应答项目后点「开始练习」，可先用通用客服专家输入「你好」。如果要练习检索和追问，在「应答设置」点「加载课堂示例」并保存。可输入「蓝松方案多久可以取消？」，再输入「那改期窗口呢？」。示例是可编辑的虚构资料。重复加载保留已经编辑的内容。
+
+在「专家」页选择「上传专家包」，上传含 `SKILL.md` 和可选 Markdown 参考文档的 ZIP。选择所属范围后会生成草稿，检查并启用后可在练习设置里选择。专家详情可下载已保存的包。语料继续在知识库和练习设置中配置。

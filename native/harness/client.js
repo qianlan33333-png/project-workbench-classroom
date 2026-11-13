@@ -1904,6 +1904,7 @@ window.__ModuleLoader__.load({
       const [add,setAdd]=useState(null),[menu,setMenu]=useState(""),[removal,setRemoval]=useState(),[undo,setUndo]=useState();
       const [editor,setEditor]=useState("loading"),[editorKey,setEditorKey]=useState(0),[preview,setPreview]=useState();
       const [sample,setSample]=useState(""),[strategy,setStrategy]=useState(""),[trial,setTrial]=useState();
+      const [deletePackage,setDeletePackage]=useState(false);
       const pending=useRef(false);
       const live=useRef(true);
       const cacheOwner=useRef(Symbol()), copyKey=useRef("");
@@ -2024,6 +2025,18 @@ window.__ModuleLoader__.load({
         if(!input||typeof input!=="object"||Array.isArray(input)){setError("试跑数据需要是一个 JSON 对象");return}
         opsAction("trial",{sample:input});
       };
+      const downloadPackage=()=>act(async()=>{
+        const result=await api(query("/expert-package",{id:item.id,revision:item.revision}));
+        const bytes=Uint8Array.from(atob(result.data),c=>c.charCodeAt(0));
+        const url=URL.createObjectURL(new Blob([bytes],{type:"application/zip"}));
+        const anchor=document.createElement("a");anchor.href=url;anchor.download=result.filename;
+        document.body.append(anchor);anchor.click();anchor.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+        setNotice("专家包已生成");
+      });
+      const removePackage=()=>act(async()=>{
+        await api("/experts",{action:"delete",id:item.id,revision:item.revision,confirmed:true});
+        clearCache();changed();back();
+      });
       const scope=projects.find(p=>p.id===item.projectId)?.name;
       return h("section",{className:"wb-page wb-expert-page","aria-label":"专家明细",onKeyDown:e=>{
         if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="s"){e.preventDefault();if(canSave)void save(item.draft?"save-draft":"update")}
@@ -2080,6 +2093,12 @@ window.__ModuleLoader__.load({
               item.usage?.length>0&&h("p",null,"使用位置："+item.usage.join("、")),
               item.revision&&h("p",null,"修订 "+item.revision),
               openSuperAgent&&button("到 Super Agent 起草",openSuperAgent,{disabled:busy})),
+            hasRefs&&h("div",{className:"wb-actions",style:{marginTop:16}},
+              button("下载专家包",downloadPackage,{disabled:busy||dirty}),
+              item.source==="managed"&&button("删除专家包",()=>setDeletePackage(true),{disabled:busy||dirty})),
+            deletePackage&&h("section",{className:"wb-section","aria-label":"删除专家包确认"},
+              h("p",null,"确认删除「"+expertTitle(item)+"」？删除后不再出现在专家列表。正在使用的专家不能删除。"),
+              h("div",{className:"wb-actions"},button("取消",()=>setDeletePackage(false),{disabled:busy}),button("确认删除",removePackage,{disabled:busy}))),
             !item.draft&&item.source!=="personal"&&(!operations||!local)&&button(operations?"复制为工作台版":"复制专家",copy,{disabled:busy||dirty}),
             item.fixedOutput&&h("p",{className:"wb-muted"},"带固定模板的条目仍由原规则生成。"),
             local&&h("details",{className:"wb-expert-meta"},h("summary",null,"试跑与启用"),
@@ -2113,10 +2132,29 @@ window.__ModuleLoader__.load({
           h("div",{className:"wb-actions"},button("返回专家",back,{disabled:busy}),
             h("button",{type:"submit",className:"wb-primary",disabled:busy||!name.trim()||!description.trim()},busy?"创建中…":"创建"))));
     }
+    function ImportExpert({projects,back,created}) {
+      const [file,setFile]=useState(),[projectId,setProjectId]=useState(""),[error,setError]=useState(""),[busy,setBusy]=useState(false);
+      const pending=useRef(false);
+      const submit=async e=>{
+        e.preventDefault();if(pending.current||!file)return;
+        pending.current=true;setBusy(true);setError("");
+        try {
+          if(file.size>384*1024)throw Error("专家包不能超过 384 KiB");
+          const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]);reader.onerror=()=>reject(Error("文件读取失败"));reader.readAsDataURL(file)});
+          created(await api("/experts",{action:"import-package",data,projectId}));
+        } catch(e) {setError(e.message)} finally {pending.current=false;setBusy(false)}
+      };
+      return h("section",{className:"wb-page"},h("div",{className:"wb-content"},h("h1",null,"上传专家包"),
+        h("form",{className:"wb-form",onSubmit:submit},
+          h("p",{className:"wb-muted"},"选择包含 SKILL.md 和参考文档的 ZIP。上传后保存为草稿，检查并启用后再选择使用。"),
+          field("所属范围",h("select",{value:projectId,disabled:busy,onChange:e=>setProjectId(e.target.value)},h("option",{value:""},"工作台共享"),...projects.map(p=>h("option",{key:p.id,value:p.id},p.name)))),
+          field("专家包文件",h("input",{type:"file",accept:".zip,application/zip",required:true,disabled:busy,onChange:e=>setFile(e.target.files?.[0])})),alert(error),
+          h("div",{className:"wb-actions"},button("取消",back,{disabled:busy}),h("button",{type:"submit",className:"wb-primary",disabled:busy||!file},busy?"上传中…":"上传并查看")))));
+    }
     function ExpertsPage({openSuperAgent}) {
       const {data}=useProjectList();
       const [rows,setRows]=useState(),[item,setItem]=useState(),[creating,setCreating]=useState(()=>requestedExpertProject||false);
-      const [search,setSearch]=useState(""),[error,setError]=useState("");
+      const [search,setSearch]=useState(""),[error,setError]=useState(""),[importing,setImporting]=useState(false);
       const viewport=useRef(null),scroll=useRef(0),request=useRef(0);
       const reload=()=>api("/experts").then(({items,unavailable})=>{setRows(items);setError(unavailable.length?"部分来源暂不可读 · "+unavailable.join("、"):"")}).catch(e=>setError(e.message));
       useEffect(()=>{
@@ -2132,12 +2170,13 @@ window.__ModuleLoader__.load({
         const n=++request.current;setError("");scroll.current=viewport.current?.scrollTop||0;
         try{const loaded=await expertDetails(row.id);if(n===request.current)setItem(loaded)}catch(e){if(n===request.current)setError(e.message)}
       };
+      if(importing)return h(ImportExpert,{projects:data.projects,back:()=>setImporting(false),created:row=>{setImporting(false);setItem(row);reload()}});
       if(item)return h(ExpertDocumentPage,{key:item.id,row:item,projects:data.projects,back:()=>setItem(undefined),changed:reload,openSuperAgent});
       if(creating)return h(NewExpert,{project,back:()=>setCreating(false),created:row=>{setCreating(false);setItem(row);reload()}});
       const filtered=(rows||[]).filter(row=>[expertTitle(row),row.name,row.description,data.projects.find(p=>p.id===row.projectId)?.name]
         .join(" ").toLowerCase().includes(search.trim().toLowerCase()));
       return h("section",{className:"wb-page",ref:viewport},h("div",{className:"wb-content"},
-        h("div",{className:"wb-heading"},h("h1",null,"专家"),button("新建专家",()=>{request.current++;scroll.current=viewport.current?.scrollTop||0;setCreating(true)},{className:"wb-primary"})),
+        h("div",{className:"wb-heading"},h("h1",null,"专家"),h("div",{className:"wb-actions"},button("上传专家包",()=>{request.current++;setImporting(true)}),button("新建专家",()=>{request.current++;scroll.current=viewport.current?.scrollTop||0;setCreating(true)},{className:"wb-primary"}))),
         field("搜索专家",h("input",{type:"search",value:search,onChange:e=>setSearch(e.target.value)})),
         alert(error),!rows&&!error&&h("p",{role:"status"},"正在读取专家…"),
         rows&&!filtered.length&&h("p",{role:"status",className:"wb-muted"},"没有匹配的专家"),

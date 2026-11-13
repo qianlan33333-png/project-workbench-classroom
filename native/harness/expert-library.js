@@ -1,3 +1,4 @@
+import { decodeExpertPackage, encodeExpertPackage } from './expert-package.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
@@ -179,6 +180,12 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
     return { ...doc, id, name, revision, source: 'managed', projectId: scope === 'shared' ? '' : scope, editable: true };
   }
 
+  async function removed(id) {
+    const base = join(managedRoot, ...splitSkillId(id));
+    if (!await optional(() => safeDirectory(base))) return false;
+    return !!await optional(() => localFile(base, 'removed.json', 1024));
+  }
+
   async function managedRows(scope) {
     const dir = await optional(() => safeDirectory(join(managedRoot, scope)));
     const names = dir ? await readdir(dir) : [];
@@ -239,6 +246,7 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
     }
     for (const row of await managedRows('shared')) result.set(row.id, summary(row));
     if (projectId) for (const row of await managedRows(projectId)) result.set(row.id, summary(row));
+    for (const id of result.keys()) if (await removed(id)) result.delete(id);
     return [...result.values()];
   }
 
@@ -256,14 +264,14 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
     const names = [];
     for (const entry of entries) {
       const project = workspaces.find(item => item.id === entry.projectId);
-      if (!project) continue;
-      const matched = entry.expertId === id || entry.expertId.startsWith('legacy:') &&
+      const matched = entry.expertId === id || project && entry.expertId.startsWith('legacy:') &&
         entry.expertId.slice('legacy:'.length) === id.split(':').at(-1) &&
         await resolveLegacy(entry.expertId, project) === id;
       if (!matched) continue;
-      if (entry.sessions) names.push(project.name + ' · 普通会话 ' + entry.sessions);
-      if (entry.customers) names.push(project.name + ' · 客户会话 ' + entry.customers);
-      if (entry.defaultKind) names.push(project.name + (entry.defaultKind === 'reply' ? ' · 新客户默认' : ' · 项目默认'));
+      const projectName = project?.name || entry.projectId;
+      if (entry.sessions) names.push(projectName + ' · 普通会话 ' + entry.sessions);
+      if (entry.customers) names.push(projectName + ' · 客户会话 ' + entry.customers);
+      if (entry.defaultKind) names.push(projectName + (entry.defaultKind === 'reply' ? ' · 新客户默认' : ' · 项目默认'));
     }
     return names;
   }
@@ -312,6 +320,7 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
     } else {
       unavailable.push('自动化运营');
     }
+    for (const id of rows.keys()) if ((id.startsWith('shared:') || id.startsWith('project:')) && await removed(id)) rows.delete(id);
     return {items: [...rows.values()].map(summary).sort((a, b) => a.displayName.localeCompare(b.displayName, 'zh-CN')),
       unavailable: [...new Set(unavailable)]};
   }
@@ -329,6 +338,7 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
     const [scope] = splitSkillId(id);
     const project = scope === 'shared' ? { id: '', workspace: personalPath } : (await projects()).find(item => item.id === scope);
     if (!project) throw fail('所属项目不存在', 404);
+    if (await removed(id)) throw fail('专家已删除', 404);
     const draft = await readDraft(id);
     if (draft) return draft;
     const method = await runtime(id, project);
@@ -337,6 +347,28 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
 
   async function save(input) {
     return serial(async () => {
+      if (input.action === 'import-package') {
+        const doc = decodeExpertPackage(input.data);
+        const projectId = input.projectId || '';
+        const project = projectId ? (await projects()).find(item => item.id === projectId) : {id:'', workspace:personalPath};
+        if (!project) throw fail('所属项目不存在', 404);
+        const id = skillId(projectId, doc.name);
+        if (await removed(id) || await managed(id) || await readDraft(id) || (await listSkills(project.workspace, projectId)).some(row => row.id === id)) throw fail('已存在同名专家，请修改包中的 name 与目录名后上传', 409);
+        return storeDraft(id, validateBody(doc, {invocation:doc.invocation}, true));
+      }
+      if (input.action === 'delete') {
+        if (input.confirmed !== true) throw fail('请确认删除专家');
+        if (!input.id?.startsWith('shared:') && !input.id?.startsWith('project:')) throw fail('该方法不能删除', 403);
+        const item = await detail(input.id);
+        if (item.source !== 'managed') throw fail('随发行包提供的方法不能删除', 403);
+        if (input.revision !== item.revision) throw fail('方法已更新，请重新打开后删除', 409);
+        const locations = await usage(input.id);
+        if (locations.length) throw fail('专家正在使用：' + locations.join('、'), 409);
+        // Keep immutable content for an already admitted turn/binding. The
+        // tombstone also masks same-name filesystem fallback in all pickers.
+        await atomicWrite(join(managedRoot, ...splitSkillId(input.id), 'removed.json'), JSON.stringify({revision:item.revision}));
+        return {id:input.id, deleted:true};
+      }
       if (input.action === 'create-draft') {
         if (typeof input.createKey !== 'string' || !/^[a-f0-9]{32}$/.test(input.createKey)) throw fail('无效的创建编号');
         const projectId = input.projectId || '';
@@ -345,6 +377,7 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
         const name = 'expert-' + input.createKey;
         const id = skillId(projectId, name);
         const doc = validateBody({displayName: input.displayName, description: input.description, content: draftTemplate});
+        if (await removed(id)) throw fail('此专家标识已删除', 409);
         const current = await readDraft(id);
         if (current) {
           if (current.displayName !== doc.displayName || current.description !== doc.description) throw fail('专家创建编号已使用', 409);
@@ -375,6 +408,7 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
         const project = scope ? (await projects()).find(item => item.id === scope) : { id: '', workspace: personalPath };
         if (!project) throw fail('所属项目不存在', 404);
         id = skillId(scope, input.name);
+        if (await removed(id)) throw fail('此专家标识已删除，请使用新的标识', 409);
         const existing = await managed(id);
         if (source && input.revision !== undefined && existing &&
             hash(JSON.stringify(validateBody({...input, name: input.name}, source, true))) === existing.revision) return existing;
@@ -417,7 +451,13 @@ export function expertLibrary({ root, catalog, personalPath, readRule, saveRule,
     });
   }
 
-  return { list, detail, save, listSkills, runtime, resolveLegacy };
+  async function download(id, revision) {
+    const item = await detail(id);
+    if (revision !== item.revision) throw fail('方法已更新，请刷新后下载', 409);
+    return encodeExpertPackage(item);
+  }
+
+  return { list, detail, save, listSkills, runtime, resolveLegacy, download, withBindings: serial };
 }
 
 export function selectProjectExpert(options, configured, requested) {

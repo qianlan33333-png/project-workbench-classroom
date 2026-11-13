@@ -122,3 +122,56 @@ test('deleting a referenced document preserves text, cleans cross-links and comm
   assert.deepEqual((await library.runtime(previous.id,project)).references,result.references);
   await assert.rejects(library.save({id:changed.id,revision:changed.revision,action:'update',content:''}),{status:400});
 });
+
+test('package import creates an unbound draft; duplicates and missing references leave no publication',async t=>{
+ const {library}=await fixture(t);
+ const source=await library.save({...input,name:'original',content:'[方法](references/method.md)',references:[{name:'method.md',content:'方法依据'}]});
+ const {data}=await library.download(source.id,source.revision);
+ const imported=await library.save({action:'import-package',data,projectId:''});
+ assert.equal(imported.draft,true);assert.equal(imported.projectId,'');
+ assert.equal(imported.content,source.content);assert.deepEqual(imported.references,source.references);
+ assert.ok(!(await library.listSkills('/personal')).some(r=>r.id===imported.id));
+ await assert.rejects(library.save({action:'import-package',data}),{status:409});
+ await assert.rejects(library.download(source.id,'stale'),{status:409});
+ await library.save({action:'delete',id:imported.id,revision:imported.revision,confirmed:true});
+ await assert.rejects(library.detail(imported.id),{status:404});
+ assert.ok(!(await library.list()).items.some(r=>r.id===imported.id));
+});
+
+test('deletion checks live usage and revision, masks fallback, retains admitted immutable content',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'expert-removal-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ let entries=[];
+ const underlying={name:'demo',source:'project-dsh',description:'原方法',content:'发行方法',references:[]};
+ const library=expertLibrary({root,personalPath:'/personal',projects:async()=>[project],catalog:async(_w,name,scope)=>name?underlying:scope==='project'?[underlying]:[],call:async(path)=>path==='/experts/usage'?entries:{items:[]}});
+ // A managed edit of a filesystem method must never expose that old method after deletion.
+ const prior=await library.detail('project:'+project.id+':demo');
+ const saved=await library.save({action:'update',id:prior.id,revision:prior.revision,content:'更新方法'});
+ const remove={action:'delete',id:saved.id,revision:saved.revision,confirmed:true};
+ entries=[{projectId:project.id,expertId:saved.id,customers:1}];
+ await assert.rejects(library.save(remove),{status:409});
+ entries=[];
+ await assert.rejects(library.save({...remove,revision:'stale'}),{status:409});
+ await library.save(remove);
+ assert.ok(!(await library.listSkills(project.workspace,project.id)).some(r=>r.id===saved.id));
+ assert.equal((await library.runtime(saved.id,project)).content,saved.content);
+ await assert.rejects(library.save({...input,name:'demo'}),{status:409});
+});
+
+test('binding and deletion share one mutation gate; admitted binding prevents deletion',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'expert-binding-race-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ let entries=[],unlock,entered;
+ const started=new Promise(r=>entered=r), gate=new Promise(r=>unlock=r);
+ const library=expertLibrary({root,personalPath:'/personal',projects:async()=>[project],catalog:async()=>[],call:async path=>path==='/experts/usage'?entries:{items:[]}});
+ const item=await library.save(input);
+ const binding=library.withBindings(async()=>{
+   assert.ok((await library.listSkills(project.workspace,project.id)).some(x=>x.id===item.id));
+   entered();await gate;entries=[{projectId:project.id,expertId:item.id,sessions:1}];
+ });
+ await started;
+ const deleting=library.save({action:'delete',id:item.id,revision:item.revision,confirmed:true});
+ unlock();await binding;await assert.rejects(deleting,{status:409});
+ assert.equal((await library.detail(item.id)).revision,item.revision);
+ entries=[];
+ await library.save({action:'delete',id:item.id,revision:item.revision,confirmed:true});
+ await library.withBindings(async()=>assert.ok(!(await library.listSkills(project.workspace,project.id)).some(x=>x.id===item.id)));
+});

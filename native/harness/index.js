@@ -302,12 +302,14 @@ export async function apply(ctx, rawConfig) {
     return {options, preferred, configured: configured.expertId};
   }
   async function bindProjectExpert(p, project, requested, signal) {
+    return experts.withBindings(async () => {
     const current = await call('/session/expert', p, undefined, signal);
     if (current.expertId && !requested) return current.expertId;
     if (current.expertId && current.expertId !== requested) throw requestError('此会话已绑定其他专家，请新建会话', 409);
     const choices = await expertChoices(project, false, signal);
     const id = selectProjectExpert(choices.options, choices.preferred, requested);
     return (await call('/session/expert', p, {expertId: id}, signal)).expertId;
+    });
   }
   // The native slash picker also reads persisted Sessions with no live Agent.
   ctx.inject(['sessionSkillCatalog', 'sessionQuery'], scope => {
@@ -898,6 +900,7 @@ export async function apply(ctx, rawConfig) {
             if (expertManagement && req.method === 'POST' && path === '/expert-default') {
               if (!sameOrigin(req)) throw requestError('origin rejected', 403);
               const input = await body(req);
+              const result = await experts.withBindings(async () => {
               const [projects, reply, operations] = await Promise.all([syncProjects(), call('/reply-projects'), call('/operations/projects')]);
               const project = projects.find(item => item.id === input.projectId);
               if (!project || operations.includes(project.id)) throw requestError('项目不可配置此专家', 404);
@@ -913,7 +916,9 @@ export async function apply(ctx, rawConfig) {
                   if (ref) legacyRefs[slug] = ref;
                 }
               }
-              json(res, 200, await call(path, owner, {projectId:project.id, expertId:input.expertId, expected:input.expected, legacyRefs}));
+              return call(path, owner, {projectId:project.id, expertId:input.expertId, expected:input.expected, legacyRefs});
+              });
+              json(res, 200, result);
               return;
             }
             if(req.method==='GET'&&path==='/reply-experts'){
@@ -948,6 +953,9 @@ export async function apply(ctx, rawConfig) {
             }
             if (req.method === "GET" && path === "/today-rules") {
               json(res, 200, await Promise.all([...ruleNames].map(readRule))); return;
+            }
+            if (req.method === 'GET' && path === '/expert-package' && expertManagement) {
+              json(res, 200, await experts.download(u.searchParams.get('id'), u.searchParams.get('revision'))); return;
             }
             if (req.method === "GET" && path === "/experts") {
               const id = u.searchParams.get('id');
@@ -1006,6 +1014,7 @@ export async function apply(ctx, rawConfig) {
               if (path === "/today-rules") { json(res, 200, await saveRule(input)); return; }
               if (path === "/experts") {
                 if (expertManagement) {
+                  if (admission.peer !== ctx.connection.browserPeer) throw requestError('请在本人工作台网页操作', 403);
                   const output = await experts.save(input);
                   json(res, 200, output);
                   return;
