@@ -1005,4 +1005,4 @@ Safari 使用本地模型和 MCP 协议替身。验证请求到达输出上限�
 
 正式版 `native-20261113-50-p0p1-setup-recovery`，唯一回滚版 `native-20261113-49-followup-stability`。源码 `32f7110433b28027c5f46fc71aa4a308f8290142`，树 `f7bc35bb3187c028523f7152e7be47f7c4575d8d`，传输包 SHA-256 `349223a78016525f5050638bc7f02b89cc0428262836411846a5bc629b9c8bb0`。发布前在同一发布锁下保存受影响 MySQL 表的一致性备份，发布后读回 `sync_attempt` 为 `INT NOT NULL DEFAULT 0`。版本指针、11 个更新文件摘要、服务和后台消费者状态通过核对。黄小璨 OAuth 白名单未改。
 
-官方 DeepSeek Flash 模型验证返回 `verified`，原正式 SuperAgent `today_5b54bf760cfed53c17d3d885` 收到新问题并在原生会话日志中记录完整回复和测试标记 `WB_RELEASE_50_CHAT_7D2C`。正式 MCP 目录以该会话身份发现 `feishu_cli_read`。原正式飞书应用已生成 CLI 授权二维码，扫码窗口内未取得用户凭证，CLI 仍为 `unlinked`，正式真实读取待本人账号授权后复验。
+官方 DeepSeek Flash 模型验证返回 `verified`，原正式 SuperAgent `today_5b54bf760cfed53c17d3d885` 收到新问题并在原生会话日志中记录完整回复和测试标记 `WB_RELEASE_50_CHAT_7D2C`。正式飞书账号完成 CLI 授权，状态为 `linked`。同一会话调用一次 `feishu_cli_read`，以飞书用户身份执行真实只读文档搜索，合成关键词匹配 0 条。原生会话日志记录成功工具回执、完整回复和测试标记 `WB_RELEASE_50_FEISHU_F31D`，正式 MySQL 读回同会话的一条去重飞书来源记录。正式与回滚版本指针已复核。
