@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/google/uuid"
 	"go.temporal.io/api/enums/v1"
@@ -78,6 +79,12 @@ func (a *Activities) QueueNotifications(ctx context.Context) error {
 			}
 		} else {
 			source, e = a.Store.Run(ctx, p, event.RunID)
+			if errors.Is(e, core.ErrDenied) || core.IsMissing(e) {
+				if e = a.Store.AdvanceNotifications(ctx, event.Sequence); e != nil {
+					return e
+				}
+				continue
+			}
 			if e != nil {
 				return e
 			}

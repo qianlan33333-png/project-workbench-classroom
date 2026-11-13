@@ -161,11 +161,19 @@ type DeliveryStats struct {
 }
 
 func (s *Store) DeliveryStats(ctx context.Context, p Principal, id string) (DeliveryStats, error) {
-	out := DeliveryStats{States: map[string]int{}}
 	run, e := s.Run(ctx, p, id)
+	if e != nil {
+		return DeliveryStats{}, e
+	}
+	out, e := s.runDeliveryStats(ctx, id)
 	if e != nil {
 		return out, e
 	}
+	return out, s.RememberRunRead(ctx, p, run)
+}
+
+func (s *Store) runDeliveryStats(ctx context.Context, id string) (DeliveryStats, error) {
+	out := DeliveryStats{States: map[string]int{}}
 	rows, e := s.DB.QueryContext(ctx, `SELECT state,COUNT(*) FROM wb_deliveries WHERE run_id=? GROUP BY state`, id)
 	if e != nil {
 		return out, e
@@ -180,11 +188,7 @@ func (s *Store) DeliveryStats(ctx context.Context, p Principal, id string) (Deli
 		out.States[state] = count
 		out.Total += count
 	}
-	if e = rows.Err(); e != nil {
-		return out, e
-	}
-	rows.Close()
-	return out, s.RememberRunRead(ctx, p, run)
+	return out, rows.Err()
 }
 func (s *Store) DispatchReview(ctx context.Context, r Run) (Decision, error) {
 	stats, e := s.DeliveryStats(ctx, r.Principal, r.ID)

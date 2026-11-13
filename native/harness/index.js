@@ -1019,7 +1019,11 @@ export async function apply(ctx, config) {
               "/notifications",
             ]);
             if (req.method === "GET" && readPaths.has(path)) {
-              json(res, 200, await call(path + u.search));
+              const disconnect = new AbortController();
+              res.once("close", () => disconnect.abort());
+              const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(30000)]);
+              const value = await call(path + u.search, owner, undefined, signal);
+              if (!res.destroyed) json(res, 200, value);
               return;
             }
             if (req.method === "POST" && writePaths.has(path)) {

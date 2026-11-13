@@ -60,6 +60,7 @@ func TestRealDispatchSurvivesHostRestart(t *testing.T) {
 	s, err := core.Open(ctx, dsn)
 	must(err)
 	defer s.DB.Close()
+	must(s.Migrate(ctx))
 	ns := "dispatch-" + uuid.NewString()
 	c, err := client.Dial(client.Options{HostPort: address, Namespace: ns})
 	must(err)

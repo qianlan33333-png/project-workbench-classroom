@@ -11,6 +11,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"net/http"
+	"sync"
 	"time"
 	"workbench-native/internal/core"
 	"workbench-native/internal/engine"
@@ -106,6 +107,59 @@ func (a *Server) scheduleTools(s *mcp.Server, p core.Principal) {
 		}{id}, e
 	})
 }
+func (a *Server) describeSchedules(ctx context.Context, schedules []scheduleView) {
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	jobs := make(chan int, len(schedules))
+	for i := range schedules {
+		schedules[i].State = "unavailable"
+		jobs <- i
+	}
+	close(jobs)
+	if a.Temporal == nil {
+		return
+	}
+	var readers sync.WaitGroup
+	for range min(4, len(schedules)) {
+		readers.Go(func() {
+			for i := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				a.describeSchedule(ctx, &schedules[i])
+			}
+		})
+	}
+	readers.Wait()
+}
+
+func (a *Server) describeSchedule(ctx context.Context, v *scheduleView) {
+	if v.Strategy != "" {
+		a.originalScheduleEvidence(ctx, v)
+	}
+	d, err := a.Temporal.ScheduleClient().GetHandle(ctx, v.ID).Describe(ctx)
+	if err != nil || d == nil || d.Schedule.State == nil {
+		return
+	}
+	v.State = "ready"
+	v.Paused = d.Schedule.State.Paused
+	v.Next = d.Info.NextActionTimes
+	if v.Strategy != "" && d.Schedule.Spec != nil && len(d.Schedule.Spec.Calendars) == 1 {
+		calendar := d.Schedule.Spec.Calendars[0]
+		if len(calendar.Hour) == 1 && len(calendar.Minute) == 1 {
+			v.Hours = []int{calendar.Hour[0].Start}
+			v.Minute = calendar.Minute[0].Start
+		}
+	}
+	if len(d.Info.RecentActions) > 0 {
+		last := d.Info.RecentActions[len(d.Info.RecentActions)-1]
+		v.Last = last.ActualTime
+		if run := last.StartWorkflowResult; run != nil {
+			v.Result = a.describeOperationsExecution(ctx, run.WorkflowID, run.FirstExecutionRunID)
+		}
+	}
+}
+
 func (a *Server) scheduleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /schedules", func(w http.ResponseWriter, r *http.Request) {
 		if !principal(r.Context()).IsOwner() {
@@ -137,33 +191,7 @@ func (a *Server) scheduleRoutes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
-		for i, v := range out {
-			if v.Strategy != "" {
-				a.originalScheduleEvidence(r.Context(), &out[i])
-			}
-			d, err := a.Temporal.ScheduleClient().GetHandle(r.Context(), v.ID).Describe(r.Context())
-			if err != nil {
-				out[i].State = "unavailable"
-				continue
-			}
-			out[i].State = "ready"
-			out[i].Paused = d.Schedule.State.Paused
-			out[i].Next = d.Info.NextActionTimes
-			if v.Strategy != "" && len(d.Schedule.Spec.Calendars) == 1 {
-				calendar := d.Schedule.Spec.Calendars[0]
-				if len(calendar.Hour) == 1 && len(calendar.Minute) == 1 {
-					out[i].Hours = []int{calendar.Hour[0].Start}
-					out[i].Minute = calendar.Minute[0].Start
-				}
-			}
-			if len(d.Info.RecentActions) > 0 {
-				last := d.Info.RecentActions[len(d.Info.RecentActions)-1]
-				out[i].Last = last.ActualTime
-				if last.StartWorkflowResult != nil {
-					out[i].Result = a.operationsExecution(r.Context(), last.StartWorkflowResult.WorkflowID)
-				}
-			}
-		}
+		a.describeSchedules(r.Context(), out)
 		respond(w, out, nil)
 	})
 	mux.HandleFunc("POST /schedules/pause", func(w http.ResponseWriter, r *http.Request) {

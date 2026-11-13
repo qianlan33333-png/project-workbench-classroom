@@ -126,7 +126,7 @@ func TestMySQLOperationsReviewLocalAndFrozen(t *testing.T) {
 	// The server has no Temporal client in this test. Settled rows must not
 	// attempt to start a receipt workflow, including during the sweep.
 	must((&engine.Activities{Store: s}).QueueOperationsBatchReceipts(ctx))
-	if v := get(today + "?daily=" + parent.ID); !strings.Contains(v, "已发送") || !strings.Contains(v, "CRM 已受理。") ||
+	if v := get(today + "?daily=" + parent.ID); !strings.Contains(v, "CRM 已受理") || !strings.Contains(v, "等待渠道回执。") ||
 		!strings.Contains(v, draft.Message) || strings.Contains(v, draft.Customer) {
 		t.Fatal(v)
 	}

@@ -27,11 +27,20 @@ func TestMySQLMemoryToolReturnsCanonicalRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.DB.Close()
+	t.Cleanup(func() { store.DB.Close() })
 	if err = store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
 	p := core.Principal{Kind: "personal", SessionID: uuid.NewString()}
+	if err = store.BindSession(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.ExecContext(ctx, `INSERT INTO wb_settings(id, body) VALUES('personal', JSON_OBJECT('sessionId', ?))`, p.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.DB.ExecContext(context.Background(), `DELETE FROM wb_settings WHERE id='personal' AND body->>'$.sessionId'=?`, p.SessionID)
+	})
 	server := (&Server{Store: store}).MCP(p)
 	endpoint := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true}))
 	defer endpoint.Close()

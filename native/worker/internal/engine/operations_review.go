@@ -468,19 +468,34 @@ func (a *Activities) QueueOperationsBatchReceipts(ctx context.Context) error {
 		return err
 	}
 	defer rows.Close()
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err = rows.Scan(&id); err != nil {
 			return err
 		}
-		if err := a.StartOperationsBatchDelivery(ctx, id); err != nil {
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	var failed error
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if err := a.StartOperationsBatchDelivery(ctx, id); err != nil {
+			failed = errors.Join(failed, err)
+		}
 	}
-	return rows.Err()
+	return failed
 }
 
 func (a *Activities) StartOperationsBatchDelivery(ctx context.Context, id string) error {
+	if a.Temporal == nil {
+		return errors.New("Temporal client unavailable for operations delivery")
+	}
 	if stopped, e := a.Store.OperationsBatchStopped(ctx, id); e != nil {
 		return e
 	} else if stopped {

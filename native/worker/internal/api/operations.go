@@ -837,12 +837,16 @@ func (a *Server) operationsResults(ctx context.Context, p core.Principal, cfg op
 }
 
 func (a *Server) operationsExecution(ctx context.Context, id string) string {
+	return a.describeOperationsExecution(ctx, id, "")
+}
+
+func (a *Server) describeOperationsExecution(ctx context.Context, id, runID string) string {
 	if a.Temporal == nil {
 		return ""
 	}
 	read, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	state, err := a.Temporal.DescribeWorkflowExecution(read, id, "")
+	state, err := a.Temporal.DescribeWorkflowExecution(read, id, runID)
 	var missing *serviceerror.NotFound
 	if errors.As(err, &missing) {
 		return "NotFound"

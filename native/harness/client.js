@@ -9,11 +9,12 @@ window.__ModuleLoader__.load({
     let requestedResourcePermissions=new URLSearchParams(window.location.search).get("resourcePermissions");
     let requestedBusinessPolicy=new URLSearchParams(window.location.search).get("businessPolicy");
     const css = `.wb-page{height:100%;overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:14px;line-height:1.6}.wb-content{max-width:960px;margin:auto;padding:28px clamp(20px,4vw,48px) 48px}.wb-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}.wb-heading h1{font-size:20px;font-weight:500;margin:0}.wb-page button,.wb-inline{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:6px 12px;cursor:pointer}.wb-short-label{display:none}@media(max-width:600px){.wb-full-label{display:none}.wb-short-label{display:inline}.wb-inline{font-size:12px;padding:4px 6px}}.wb-page button:disabled{opacity:.5;cursor:wait}.wb-page textarea{font:inherit;width:100%;box-sizing:border-box;min-height:88px;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:10px}.wb-page input,.wb-page select{font:inherit;color:inherit;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l3);border-radius:6px;padding:7px 10px;min-width:0;max-width:100%;box-sizing:border-box}.wb-muted{color:var(--dsw-alias-label-secondary)}.wb-list{border-top:1px solid var(--dsw-alias-border-l3)}.wb-row{display:flex;gap:16px;align-items:center;padding:18px 0;border-bottom:1px solid var(--dsw-alias-border-l3);flex-wrap:wrap}.wb-row-main{flex:1;min-width:180px}.wb-row strong{font-weight:500}.wb-tag{font-size:12px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l3);border-radius:6px}.wb-form{padding:20px 0;display:grid;gap:16px}.wb-field{display:grid;gap:6px;min-width:0}.wb-columns{display:grid;grid-template-columns:1fr 1fr;gap:16px}.wb-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start}.wb-form>h2{font-size:16px;font-weight:500;margin:0}.wb-note{padding:12px 0;overflow-wrap:anywhere}.wb-check{display:flex;gap:8px;align-items:center;padding:6px 0}.wb-section{border:1px solid var(--dsw-alias-border-l3);border-radius:10px;padding:16px;margin-top:12px}.wb-section h2{font-size:16px;font-weight:500;margin:0 0 8px}@media(max-width:600px){.wb-columns{grid-template-columns:1fr}.wb-heading{align-items:flex-start}.wb-row-main{min-width:140px}}`;
-    async function api(path, data) {
+    async function api(path, data, signal) {
       const r = await fetch("/workbench-api" + path, {
         method: data === undefined ? "GET" : "POST",
         headers: { "content-type": "application/json" },
         body: data === undefined ? undefined : JSON.stringify(data),
+        signal,
       });
       const text = await r.text();
       let v;try{v=text?JSON.parse(text):{}}catch{v={error:text}}
@@ -1673,7 +1674,7 @@ window.__ModuleLoader__.load({
             h("div",{className:"wb-actions"},button(pane==="rules"?"关注":"配置",pane==="rules"?()=>setPane("follow"):showRules,{className:"wb-inline"}),
               button("收起",()=>setPane(""),{className:"wb-inline","aria-label":"收起SuperAgent 辅助栏"}))),
           h("div",{className:"wb-companion-scroll",hidden:pane!=="follow"},
-            h(SuperAgentWork,{openSession})),
+            h(SuperAgentWork,{openSession,active:pane==="follow"})),
           rulesOpened&&h("div",{className:"wb-companion-scroll",hidden:pane!=="rules"},h(TodayRules))));
     }
     function LegacyExpertsPage() {
@@ -2042,7 +2043,7 @@ window.__ModuleLoader__.load({
               h("div",{className:"wb-row-main"},h("strong",null,tool.name),h("p",{className:"wb-muted"},tool.description)))))))));
     }
     const time = value => value ? new Date(value).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "尚未记录";
-    const stateText = r => r.stats?.failed ? `已保留 ${r.stats.succeeded} 条 · ${r.stats.failed} 条失败` : ({Running:"执行中",Completed:r.published?"结果已发布":"执行已结束",Failed:"执行失败",Canceled:"已停止",Terminated:"已终止",TimedOut:"已超时",Unknown:"状态待核实"}[r.execution]||r.execution);
+    const stateText = r => ({Running:"执行中",Completed:r.published?"结果已发布":"执行已结束",Failed:"执行失败",Canceled:"已停止",Terminated:"已终止",TimedOut:"已超时",Unknown:"状态待核实"}[r.execution]||r.execution);
     const receiptText = r => {const s=r.deliveries?.states;if(!s)return "";return `渠道回执：待提交 ${s.prepared||0} · 已受理 ${s.accepted||0} · 待手机确认 ${s.pending_confirmation||0} · 已发送 ${s.sent||0} · 已送达 ${s.delivered||0} · 失败 ${s.failed||0} · 待核实 ${(s.unknown||0)+(s.submitting||0)}`};
     const scheduleHours=s=>s.hours.map(hour=>String(hour).padStart(2,"0")+":"+String(s.minute).padStart(2,"0")).join("、");
     function ScheduleRows({rows, openSession, act, busy, openPanel}) {
@@ -2068,48 +2069,180 @@ window.__ModuleLoader__.load({
         !s.strategy&&button("查看对话",()=>openSession(s.sessionId)),
         button(s.paused?"恢复":"暂停",()=>act(()=>api("/schedules/pause",{id:s.id,paused:!s.paused})),{disabled:busy||s.state!=="ready"})));
     }
+    function usePanelRead(source, active, interval) {
+      const [result,setResult]=useState();
+      const [revision,refresh]=React.useReducer(value=>value+1,0);
+      useEffect(()=>{
+        if(!active)return;
+        let request,timer;
+        const stop=()=>{
+          clearTimeout(timer);
+          request?.abort();
+          request=undefined;
+        };
+        const read=async()=>{
+          if(document.hidden||request)return;
+          clearTimeout(timer);
+          const controller=new AbortController();
+          request=controller;
+          const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(12000)]);
+          try{
+            const value=typeof source==="string"?await api(source,undefined,signal):await source(signal);
+            if(!controller.signal.aborted)setResult({source,data:value,error:""});
+          }catch(e){
+            if(!controller.signal.aborted)setResult(previous=>({source,
+              data:previous?.source===source?previous.data:undefined,
+              error:signal.aborted?"读取超时，请重试。":e.message}));
+          }finally{
+            if(!controller.signal.aborted){
+              request=undefined;
+              if(interval&&!document.hidden)timer=setTimeout(read,interval);
+            }
+          }
+        };
+        const visibility=()=>{if(document.hidden)stop();else read()};
+        document.addEventListener("visibilitychange",visibility);
+        read();
+        return()=>{document.removeEventListener("visibilitychange",visibility);stop()};
+      },[source,active,interval,revision]);
+      return {data:result?.source===source?result.data:undefined,error:result?.source===source?result.error:"",refresh};
+    }
+    function PanelReadState({read,loading}) {
+      if(read.error)return h("div",null,
+        h("p",{role:"alert"},read.data===undefined?read.error:"刷新失败，显示上次读取结果。"+read.error),
+        button("重试",read.refresh));
+      if(read.data===undefined)return h("p",{role:"status"},loading);
+      return null;
+    }
     function SchedulesPage({openSession,openPanel}) {
-      const [rows,setRows]=useState(null),[error,setError]=useState(""),[busy,setBusy]=useState(false);
-      const load=()=>api("/schedules").then(setRows);
-      useEffect(()=>{let live=true;const refresh=()=>load().catch(e=>{if(live)setError(e.message)});refresh();
-        const timer=setInterval(refresh,15000);return()=>{live=false;clearInterval(timer)}},[]);
-      const act=async fn=>{setBusy(true);setError("");try{await fn();await load()}catch(e){setError(e.message)}finally{setBusy(false)}};
+      const schedules=usePanelRead("/schedules",true,15000);
+      const [error,setError]=useState(""),[busy,setBusy]=useState(false);
+      const act=async fn=>{
+        setBusy(true);setError("");
+        try{await fn();schedules.refresh()}catch(e){setError(e.message)}finally{setBusy(false)}
+      };
       return h("section",{className:"wb-page"},h("style",null,css),h("div",{className:"wb-content"},
         h("div",{className:"wb-heading"},h("h1",null,"定时任务")),alert(error),
-        !rows?h("p",{role:"status"},"正在读取定时任务…"):
-          rows.length?h(ScheduleRows,{rows,openSession,act,busy,openPanel}):h("p",{className:"wb-muted"},"暂无定时任务。")));
+        h(PanelReadState,{read:schedules,loading:"正在读取定时任务…"}),
+        schedules.data&&(schedules.data.length?h(ScheduleRows,{rows:schedules.data,openSession,act,busy,openPanel}):
+          h("p",{className:"wb-muted"},"暂无定时任务。"))));
     }
-    function SuperAgentWork({ openSession }) {
-      const [data,setData]=useState(),[error,setError]=useState(""),[notice,setNotice]=useState(""),[busy,setBusy]=useState(false),[edit,setEdit]=useState(),[answers,setAnswers]=useState({}),[settings,setSettings]=useState(),[notifications,setNotifications]=useState();
-      const load=async()=>{const [runs,decisions,memory,config,notify,targets,schedules]=await Promise.all([api("/runs"),api("/decisions"),api("/memory"),api("/personal/settings"),api("/notifications"),api("/notification-targets"),api("/schedules")]);setError("");setData({runs,decisions,memory,config,targets,schedules});setSettings(v=>v||config);setNotifications(v=>v||{...notify,sessionId:config.sessionId,targets:notify.targets||[]})};
-      useEffect(()=>{let live=true;const refresh=()=>load().catch(e=>{if(live)setError(e.message)});refresh();const id=setInterval(refresh,15000);return()=>{live=false;clearInterval(id)}},[]);
-      const act=async fn=>{setBusy(true);setError("");setNotice("");try{await fn();await load();setNotice("已保存")}catch(e){setError(e.message)}finally{setBusy(false)}};
+    const sameNotificationTarget=(left,right)=>left.connectionId===right.connectionId&&
+      left.target.conversationId===right.target.conversationId&&left.target.actorId===right.target.actorId;
+    const loadNotificationSettings=async signal=>{
+      const [settings,targets,personal]=await Promise.all([
+        api("/notifications",undefined,signal),
+        api("/notification-targets",undefined,signal),
+        api("/personal/settings",undefined,signal),
+      ]);
+      return {settings:{...settings,sessionId:personal.sessionId,targets:settings.targets||[]},
+        targets:targets.filter(target=>target.sessionId===personal.sessionId)};
+    };
+    function SuperAgentWork({openSession,active}) {
+      const [expanded,setExpanded]=useState({});
+      const [error,setError]=useState(""),[notice,setNotice]=useState(""),[busy,setBusy]=useState(false);
+      const [edit,setEdit]=useState(),[answers,setAnswers]=useState({});
+      const [settingsDraft,setSettings]=useState(),[notificationDraft,setNotifications]=useState();
+      const writing=useRef(false);
+      const decisions=usePanelRead("/decisions",active,15000);
+      const runs=usePanelRead("/runs",active,15000);
+      const memory=usePanelRead("/memory",active&&!!expanded.memory);
+      const schedules=usePanelRead("/schedules",active&&!!expanded.schedules,15000);
+      const notify=usePanelRead(loadNotificationSettings,active&&!!expanded.notifications);
+      const personal=usePanelRead("/personal/settings",active&&!!expanded.personal);
+      const settings=settingsDraft||personal.data;
+      const notifications=notificationDraft||notify.data?.settings;
+      const toggle=key=>e=>{
+        const open=e.currentTarget.open;
+        setExpanded(value=>({...value,[key]:open}));
+      };
+      const act=async (fn,refresh)=>{
+        if(writing.current)return;
+        writing.current=true;setBusy(true);setError("");setNotice("");
+        try{await fn();refresh?.();setNotice("已保存")}
+        catch(e){setError(e.message)}
+        finally{writing.current=false;setBusy(false)}
+      };
       return h("section",{className:"wb-page"},h("style",null,css),h("div",{className:"wb-content"},
-        error&&h("p",{role:"alert"},error),notice&&h("p",{role:"status"},notice),!data&&h("p",{role:"status"},"正在核对任务与待决定事项…"),
-        data&&h("div",{className:"wb-section"},h("h2",null,`等待你决定 · ${data.decisions.length}`),
-          data.decisions.length===0?h("p",{className:"wb-muted"},"暂无待决定事项。"):
-          data.decisions.map(d=>h("form",{key:d.id,className:"wb-form",onSubmit:e=>{e.preventDefault();act(async()=>{await api("/decisions/answer",{...d,answer:answers[d.id]});setAnswers(v=>({...v,[d.id]:""}))})}},
-            h("p",{className:"wb-note",style:{whiteSpace:"pre-wrap"}},d.question),field("你的决定",h("textarea",{required:true,value:answers[d.id]||"",onChange:e=>setAnswers({...answers,[d.id]:e.target.value})})),h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:busy},"确认并继续原事项"))))),
-        data&&h("div",{className:"wb-section"},h("h2",null,"近期工作"),h("p",{className:"wb-muted"},"执行状态直接核对后台任务；发送与送达以渠道回执为准。"),data.runs.length===0&&h("p",null,"暂无任务。"),
-          data.runs.map(r=>h("div",{key:r.id,className:"wb-row"},h("div",{className:"wb-row-main"},h("strong",null,r.title),h("div",{className:"wb-muted"},`${time(r.createdAt)} 开始${r.closedAt?" · "+time(r.closedAt)+" 结束":""}`),h("div",null,stateText(r)),r.stats?.total>0&&h("div",{className:"wb-muted"},`${r.stats.total} 条 · 成功 ${r.stats.succeeded} · 失败 ${r.stats.failed} · 待处理 ${r.stats.pending}`),r.deliveries&&h("div",{className:"wb-note"},receiptText(r))),button("查看对话",()=>openSession(r.sessionId))))),
-        data&&h("details",{className:"wb-section"},h("summary",null,`个人规则与记忆 · ${data.memory.length}`),
-          h("p",{className:"wb-muted"},"可以纠正或忘记；推断与本人确认分别保存。"),button("添加个人规则",()=>setEdit({id:"memory_"+crypto.randomUUID(),revision:0,text:"",source:"本人在 SuperAgent 设置中填写",confirmed:true,forgotten:false})),
-          data.memory.map(m=>h("div",{key:m.id,className:"wb-row"},h("div",{className:"wb-row-main"},h("p",null,m.text),h("div",{className:"wb-muted"},`${m.confirmed?"本人确认":"待确认"} · ${m.source}`)),button("纠正",()=>setEdit({...m})),button("忘记",()=>act(()=>api("/memory",{...m,forgotten:true})),{disabled:busy}))),
-          edit&&h("form",{className:"wb-form",onSubmit:e=>{e.preventDefault();act(async()=>{await api("/memory",{...edit,confirmed:true});setEdit(undefined)})}},field("记忆内容",h("textarea",{required:true,value:edit.text,onChange:e=>setEdit({...edit,text:e.target.value})})),field("来源",h("input",{required:true,value:edit.source,onChange:e=>setEdit({...edit,source:e.target.value})})),h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:busy},"确认保存"),button("取消",()=>setEdit(undefined))))),
-        data&&h("details",{className:"wb-section"},h("summary",null,`定时工作 · ${data.schedules.length}`),
+        alert(error),notice&&h("p",{role:"status"},notice),
+        h("div",{className:"wb-section"},
+          h("h2",null,decisions.data?`等待你决定 · ${decisions.data.length}`:"等待你决定"),
+          h(PanelReadState,{read:decisions,loading:"正在读取待决定事项…"}),
+          decisions.data?.length===0&&h("p",{className:"wb-muted"},"暂无待决定事项。"),
+          decisions.data?.map(d=>h("form",{key:d.id,className:"wb-form",onSubmit:e=>{
+            e.preventDefault();
+            act(async()=>{
+              await api("/decisions/answer",{...d,answer:answers[d.id]});
+              setAnswers(v=>({...v,[d.id]:""}));
+            },decisions.refresh);
+          }},
+            h("p",{className:"wb-note",style:{whiteSpace:"pre-wrap"}},d.question),
+            field("你的决定",h("textarea",{required:true,value:answers[d.id]||"",onChange:e=>setAnswers({...answers,[d.id]:e.target.value})})),
+            h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:busy},"确认并继续原事项"))))),
+        h("div",{className:"wb-section"},
+          h("h2",null,"近期工作"),
+          h("p",{className:"wb-muted"},"执行状态直接核对后台任务；发送与送达以渠道回执为准。"),
+          h(PanelReadState,{read:runs,loading:"正在核对近期工作…"}),
+          runs.data?.length===0&&h("p",null,"暂无任务。"),
+          runs.data?.map(r=>h("div",{key:r.id,className:"wb-row"},
+            h("div",{className:"wb-row-main"},h("strong",null,r.title),
+              h("div",{className:"wb-muted"},time(r.createdAt)+(r.closedAt?" · "+time(r.closedAt)+" 结束":"")),
+              h("div",null,stateText(r)),
+              r.stats?.total>0&&h("div",{className:"wb-muted"},`${r.stats.total} 条 · 成功 ${r.stats.succeeded} · 失败 ${r.stats.failed} · 待处理 ${r.stats.pending}`),
+              r.deliveries&&h("div",{className:"wb-note"},receiptText(r))),
+            button("查看对话",()=>openSession(r.sessionId))))),
+        h("details",{className:"wb-section",onToggle:toggle("memory")},
+          h("summary",null,memory.data?`个人规则与记忆 · ${memory.data.length}`:"个人规则与记忆"),
+          h(PanelReadState,{read:memory,loading:"正在读取个人规则与记忆…"}),
+          memory.data&&h(React.Fragment,null,
+            h("p",{className:"wb-muted"},"可以纠正或忘记；推断与本人确认分别保存。"),
+            button("添加个人规则",()=>setEdit({id:"memory_"+crypto.randomUUID(),revision:0,text:"",source:"本人在 SuperAgent 设置中填写",confirmed:true,forgotten:false})),
+            memory.data.map(m=>h("div",{key:m.id,className:"wb-row"},
+              h("div",{className:"wb-row-main"},h("p",null,m.text),h("div",{className:"wb-muted"},`${m.confirmed?"本人确认":"待确认"} · ${m.source}`)),
+              button("纠正",()=>setEdit({...m})),
+              button("忘记",()=>act(()=>api("/memory",{...m,forgotten:true}),memory.refresh),{disabled:busy}))),
+            edit&&h("form",{className:"wb-form",onSubmit:e=>{
+              e.preventDefault();
+              act(async()=>{await api("/memory",{...edit,confirmed:true});setEdit(undefined)},memory.refresh);
+            }},
+              field("记忆内容",h("textarea",{required:true,value:edit.text,onChange:e=>setEdit({...edit,text:e.target.value})})),
+              field("来源",h("input",{required:true,value:edit.source,onChange:e=>setEdit({...edit,source:e.target.value})})),
+              h("div",{className:"wb-actions"},h("button",{type:"submit",disabled:busy},"确认保存"),button("取消",()=>setEdit(undefined)))))),
+        h("details",{className:"wb-section",onToggle:toggle("schedules")},
+          h("summary",null,schedules.data?`定时工作 · ${schedules.data.length}`:"定时工作"),
           h("p",{className:"wb-muted"},"在项目对话中说明资料、方法和执行时间即可配置；每次结果回到原对话，上一轮未结束时跳过重叠执行。"),
-          h(ScheduleRows,{rows:data.schedules,openSession,act,busy})),
-        notifications&&data&&h("details",{className:"wb-section"},h("summary",null,"本人消息通知"),
- h("p",{className:"wb-muted"},"只通知有实质结果、异常和需要你决定的事项；不会因此重新执行原任务。"),
- data.targets.length===0?h("p",null,"尚未连接本人微信或飞书。完成绑定后，可在这里选择通知渠道。"):
- h("form",{className:"wb-form",onSubmit:e=>{e.preventDefault();act(()=>api("/notifications",notifications))}},
- h("label",{className:"wb-check"},h("input",{type:"checkbox",checked:notifications.enabled,onChange:e=>setNotifications({...notifications,enabled:e.target.checked})}),"开启本人通知"),
- ...data.targets.map(t=>h("label",{key:t.connectionId,className:"wb-check"},h("input",{type:"checkbox",checked:notifications.targets.some(n=>n.connectionId===t.connectionId),onChange:e=>setNotifications({...notifications,targets:e.target.checked?[...notifications.targets,{connectionId:t.connectionId,target:t.target}]:notifications.targets.filter(n=>n.connectionId!==t.connectionId)})}),t.name)),
- h("button",{type:"submit",disabled:busy},"保存通知设置"))),
- settings&&h("details",{className:"wb-section"},h("summary",null,"每日安排时间"),h("form",{className:"wb-form",onSubmit:e=>{e.preventDefault();act(()=>api("/personal/settings",settings))}},
-          field("北京时间",h("input",{type:"time",required:true,value:String(settings.hour).padStart(2,"0")+":"+String(settings.minute).padStart(2,"0"),onChange:e=>{const [hour,minute]=e.target.value.split(":").map(Number);setSettings({...settings,hour,minute})}})),
-          h("label",{className:"wb-check"},h("input",{type:"checkbox",checked:settings.paused,onChange:e=>setSettings({...settings,paused:e.target.checked})}),"暂停每日汇总"),h("button",{type:"submit",disabled:busy},"保存安排")))
-      ));
+          h(PanelReadState,{read:schedules,loading:"正在读取定时工作…"}),
+          schedules.data?.length===0&&h("p",{className:"wb-muted"},"暂无定时任务。"),
+          schedules.data&&h(ScheduleRows,{rows:schedules.data,openSession,act:fn=>act(fn,schedules.refresh),busy})),
+        h("details",{className:"wb-section",onToggle:toggle("notifications")},
+          h("summary",null,"本人消息通知"),
+          h("p",{className:"wb-muted"},"只通知有实质结果、异常和需要你决定的事项；不会因此重新执行原任务。"),
+          h(PanelReadState,{read:notify,loading:"正在读取通知设置…"}),
+          notify.data&&(notify.data.targets.length===0?h("p",null,"尚未连接本人微信或飞书。完成绑定后，可在这里选择通知渠道。"):
+            h("form",{className:"wb-form",onSubmit:e=>{
+              e.preventDefault();act(()=>api("/notifications",{
+                ...notifications,targets:notifications.targets.filter(n=>notify.data.targets.some(t=>sameNotificationTarget(n,t))),
+              }),notify.refresh);
+            }},
+              h("label",{className:"wb-check"},
+                h("input",{type:"checkbox",checked:notifications.enabled,onChange:e=>setNotifications({...notifications,enabled:e.target.checked})}),"开启本人通知"),
+              notify.data.targets.map(t=>h("label",{key:t.connectionId,className:"wb-check"},
+                h("input",{type:"checkbox",checked:notifications.targets.some(n=>sameNotificationTarget(n,t)),
+                  onChange:e=>setNotifications({...notifications,targets:e.target.checked?
+                    [...notifications.targets.filter(n=>n.connectionId!==t.connectionId),{connectionId:t.connectionId,target:t.target}]:
+                    notifications.targets.filter(n=>n.connectionId!==t.connectionId)})}),t.name)),
+              h("button",{type:"submit",disabled:busy},"保存通知设置")))),
+        h("details",{className:"wb-section",onToggle:toggle("personal")},
+          h("summary",null,"每日安排时间"),
+          h(PanelReadState,{read:personal,loading:"正在读取每日安排时间…"}),
+          settings&&h("form",{className:"wb-form",onSubmit:e=>{
+            e.preventDefault();act(()=>api("/personal/settings",settings),personal.refresh);
+          }},
+            field("北京时间",h("input",{type:"time",required:true,value:String(settings.hour).padStart(2,"0")+":"+String(settings.minute).padStart(2,"0"),
+              onChange:e=>{const [hour,minute]=e.target.value.split(":").map(Number);setSettings({...settings,hour,minute})}})),
+            h("label",{className:"wb-check"},h("input",{type:"checkbox",checked:settings.paused,
+              onChange:e=>setSettings({...settings,paused:e.target.checked})}),"暂停每日汇总"),
+            h("button",{type:"submit",disabled:busy},"保存安排")))));
     }
 
     let replyProject="";
@@ -2143,11 +2276,12 @@ window.__ModuleLoader__.load({
     const replyCSS=`.ar-root{height:100%;min-height:0;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);font:14px/1.6 system-ui,-apple-system,"PingFang SC",sans-serif}.ar-top{min-height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-bottom:1px solid var(--dsw-alias-border-l3)}.ar-top h1{font-size:20px;margin:0;font-weight:600}.ar-layout{position:relative;display:grid;grid-template-columns:300px minmax(0,1fr);min-height:0;flex:1}.ar-layout[data-settings=true]{grid-template-columns:300px minmax(0,1fr)450px}.ar-list{border-right:1px solid var(--dsw-alias-border-l3);min-height:0;display:flex;flex-direction:column}.ar-search{margin:18px 14px 12px;position:relative}.ar-search input{width:100%;padding:11px 12px;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:inherit;box-sizing:border-box;font:inherit}.ar-contacts{overflow:auto;flex:1;padding:0 8px}.ar-contact{width:100%;display:flex;text-align:left;gap:12px;align-items:center;padding:16px 12px;background:transparent;border:0;border-bottom:1px solid var(--dsw-alias-border-l3);font:inherit;color:inherit;cursor:pointer}.ar-contact[aria-current=true]{background:var(--dsw-alias-primary-soft,#edf3ff);border-radius:8px}.ar-avatar{display:grid;place-items:center;flex:none;width:38px;height:38px;border-radius:50%;background:var(--dsw-alias-primary-soft,#e9effa);color:var(--dsw-alias-label-primary);font-size:17px}.ar-contact-main{min-width:0;flex:1}.ar-contact-main strong{font-weight:550}.ar-contact-line{display:flex;gap:6px;justify-content:space-between}.ar-contact-preview{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-size:13px}.ar-time{color:var(--dsw-alias-label-secondary);font-size:12px;white-space:nowrap}.ar-btn,.ar-link,.ar-icon{font:inherit;cursor:pointer;color:inherit;background:transparent;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:7px 12px;display:inline-flex;gap:6px;align-items:center;justify-content:center}.ar-link{color:var(--dsw-alias-primary,#1769ff);border:0;padding:2px;white-space:nowrap}.ar-icon{padding:7px;border:0}.ar-btn:disabled,.ar-link:disabled,.ar-icon:disabled{opacity:.45;cursor:default}.ar-chat{min-width:0;min-height:0;display:flex;flex-direction:column}.ar-chat-head{padding:18px 24px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--dsw-alias-border-l3)}.ar-chat-head strong{font-size:17px}.ar-chat-title{flex:1;min-width:0}.ar-stream{padding:20px 24px;overflow:auto;flex:1;min-height:0;scrollbar-gutter:stable}.ar-day{text-align:center;color:var(--dsw-alias-label-secondary);font-size:12px;margin:10px 0 25px}.ar-message{display:flex;gap:12px;margin-bottom:25px;align-items:flex-start}.ar-message.out{flex-direction:row-reverse}.ar-message.out .ar-message-main{align-items:flex-end}.ar-message-main{display:flex;flex-direction:column;gap:6px;min-width:0;max-width:min(82%,720px);font-size:15px}.ar-bubble{padding:12px 16px;border-radius:14px;background:var(--dsw-alias-bg-l2,#f3f4f6);white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}.ar-message.out .ar-bubble{background:var(--dsw-alias-primary-soft,#e7efff)}.ar-evidence{white-space:normal;border-top:1px solid var(--dsw-alias-border-l3);margin-top:10px;padding-top:6px;font-size:12px}.ar-evidence>button{padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer}.ar-evidence ol{padding-left:20px;max-width:100%;margin:10px 0}.ar-evidence pre{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto}.ar-composer{margin:14px 22px 22px;border:1px solid var(--dsw-alias-border-l3);border-radius:12px;padding:12px 14px;flex:none}.ar-composer textarea{width:100%;box-sizing:border-box;resize:vertical;min-height:52px;max-height:180px;border:0;outline:none;background:transparent;color:inherit;font:inherit}.ar-compose-bar{display:flex;justify-content:space-between;align-items:center;min-height:35px}.ar-send{width:36px;height:36px;display:grid;place-items:center;border:0;border-radius:50%;color:#fff;background:var(--dsw-alias-primary,#1468ff);cursor:pointer}.ar-send:disabled{opacity:.45;cursor:default}.ar-settings{border-left:1px solid var(--dsw-alias-border-l3);min-width:0;overflow:auto;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base);padding:0 24px 24px}.ar-settings-head{display:flex;justify-content:space-between;align-items:center;padding:20px 0}.ar-settings-head h2{font-size:18px;margin:0}.ar-settings form{display:flex;flex-direction:column;flex:1;gap:0}.ar-setting{padding:22px 0;border-bottom:1px solid var(--dsw-alias-border-l3)}.ar-setting label>span,.ar-setting-title{font-weight:550;display:block;margin-bottom:13px}.ar-select-row{display:flex;align-items:center;gap:12px}.ar-select-row select{min-width:0;flex:1;width:100%;color:inherit;background:transparent;font:inherit;border:1px solid var(--dsw-alias-border-l3);padding:10px;border-radius:8px}.ar-account-info{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--dsw-alias-label-secondary);font-size:12px;margin-top:8px;overflow-wrap:anywhere}.ar-toggle{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:22px 0;border-bottom:1px solid var(--dsw-alias-border-l3)}.ar-save{margin-top:auto;padding-top:36px}.ar-primary{width:100%;border:0;color:#fff;background:var(--dsw-alias-primary,#1468ff);padding:12px;border-radius:8px;font:inherit;cursor:pointer}.ar-error{margin:0;padding:10px 20px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-l2,#f5f5f5);overflow-wrap:anywhere}.ar-placeholder{display:grid;place-content:center;text-align:center;color:var(--dsw-alias-label-secondary);padding:24px;flex:1}.ar-pager{display:flex;justify-content:space-between;align-items:center;padding:12px;gap:6px;font-size:12px}.ar-modal{width:min(900px,100%);max-width:900px;max-height:100%}.ar-modal-content{min-height:0;flex:1}.ar-modal-content>div:last-child{min-height:0;overflow:auto}.ar-modal-content>div:first-child{flex:none}.ar-library{display:grid;gap:15px}.ar-library-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--dsw-alias-border-l3)}.ar-method{line-height:1.8;overflow-wrap:anywhere}.ar-back{display:none}.ar-native{height:65vh;min-height:200px}.ar-toast{font-size:12px;color:var(--dsw-alias-label-secondary)}.ar-switch{transform:scale(1.25);transform-origin:right center}.ar-switch[aria-checked=true]{background:var(--dsw-alias-state-business-primary,#1468ff)}@media(max-width:1400px){.ar-layout[data-settings=true]{grid-template-columns:230px minmax(0,1fr)}.ar-settings{position:absolute;inset:0 0 0 auto;width:min(360px,100%);box-sizing:border-box;z-index:5;box-shadow:-8px 0 28px #0001}.ar-layout{grid-template-columns:230px minmax(0,1fr)}}@media(max-width:650px){.ar-top{padding:0 14px;min-height:54px}.ar-layout,.ar-layout[data-settings=true]{display:flex;flex:1}.ar-list{width:100%}.ar-layout[data-selected=true]>.ar-list{display:none}.ar-chat{width:100%;flex:1}.ar-layout[data-selected=false]>.ar-chat{display:none}.ar-back{display:inline-flex}.ar-chat-head{padding:12px}.ar-stream{padding:12px}.ar-message{gap:7px}.ar-message-main{max-width:86%}.ar-avatar{width:30px;height:30px;font-size:14px}.ar-composer{margin:10px 12px 16px}.ar-settings{width:100%;padding:0 20px 20px}.ar-bubble{padding:10px 13px}.ar-chat-head strong{font-size:16px}}`;
     const timelineOrder=(a,b)=>a.at.replace(/(?:\.(\d+))?Z$/,(_,f='')=>'.'+f.padEnd(6,'0')+'Z').localeCompare(b.at.replace(/(?:\.(\d+))?Z$/,(_,f='')=>'.'+f.padEnd(6,'0')+'Z'))||a.key.localeCompare(b.key);
     function ReplyEvidence({sessionId,runId}){
-      const [open,setOpen]=useState(false),[data,setData]=useState(),[error,setError]=useState('');
-      useEffect(()=>{if(!open)return;let current=true;const load=async()=>{try{const value=await api('/reply-evidence?'+new URLSearchParams({sessionId,runId}));if(current){setData(value);setError('')}}catch(e){if(current)setError(e.message)}};load();const timer=setInterval(load,5000);return()=>{current=false;clearInterval(timer)}},[open,sessionId,runId]);
+      const [open,setOpen]=useState(false);
+      const read=usePanelRead(query("/reply-evidence",{sessionId,runId}),open,5000);
+      const {data}=read;
       const toggle=()=>setOpen(v=>!v);
       const label=name=>name==='skill'?'加载专家方法':/context$/.test(name)?'读取客户上下文':/search$/.test(name)?'检索资料':/read$|excerpt$/.test(name)?'读取来源原文':/check$|validate$/.test(name)?'核对回答依据':/reply$/.test(name)?'提交回复':/receipt$/.test(name)?'核对发送回执':name.split('__').pop();
-      return h('div',{className:'ar-evidence'},button(open?'收起处理明细':'查看依据与处理明细',toggle,{'aria-expanded':open}),open&&h('div',null,error&&h('p',{role:'alert'},error),!data&&!error&&h('p',null,'正在读取本轮记录…'),data&&h('ol',null,...data.calls.map(c=>h('li',{key:c.id},h('strong',null,label(c.name)),c.failed&&' · 未完成',h('details',null,h('summary',null,'查看记录'),h('pre',null,c.output||c.input))))),data?.calls.length===0&&h('p',null,'此轮暂无可读取的工具记录。')));
+      return h('div',{className:'ar-evidence'},button(open?'收起处理明细':'查看依据与处理明细',toggle,{'aria-expanded':open}),open&&h('div',null,h(PanelReadState,{read,loading:'正在读取本轮记录…'}),data&&h('ol',null,...data.calls.map(c=>h('li',{key:c.id},h('strong',null,label(c.name)),c.failed&&' · 未完成',h('details',null,h('summary',null,'查看记录'),h('pre',null,c.output||c.input))))),data?.calls.length===0&&h('p',null,'此轮暂无可读取的工具记录。')));
     }
     function ReplyPage({openSession,sessionId='',selectedProject=''}){
       const UI=require('@deepseek-ai/dsh-client-ui-primitives'),{Switch,Modal,MarkdownText,IconSettingsOutlineRegular,IconCloseOutlineRegular,IconPaperPlaneOutlineRegular,IconChevronLeftOutlineRegular,IconAgentPresetOutlineRegular}=UI;
@@ -2434,7 +2568,7 @@ window.__ModuleLoader__.load({
               const result=await api(path("source-package-status",{id:sourceSubmission}));
               if(!live)return;
               if(result.state==="Completed"){
-                setCopyMessage(result.result==="source_changed"?"名单、稿件或发送入口有变化，请重新核对。":"已确认发送，可在本包查看逐人进度。");
+                setCopyMessage(result.result==="source_changed"?"名单、稿件或发送入口有变化，请重新核对。":"本次确认已记录，可在本包查看提交进度与逐人回执。");
                 setSourceSubmission("");
               }else if(["Failed","Canceled","Terminated","TimedOut"].includes(result.state)){
                 setCopyMessage("本次确认未完成，请查看包内状态。");

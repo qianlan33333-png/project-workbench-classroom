@@ -23,30 +23,30 @@ func (a *Activities) DailySummary(ctx context.Context, id string, p core.Princip
 	if e := a.Store.SaveRun(ctx, r); e != nil {
 		return failure(e)
 	}
-	projects, e := a.Store.Projects(ctx)
-	if e != nil {
-		return e
-	}
-	runs, e := Overview(ctx, a.Store, a.Temporal, p)
-	if e != nil {
-		return e
-	}
-	decisions, e := a.Store.Decisions(ctx, p)
-	if e != nil {
-		return e
-	}
-	memories, e := a.Store.Memories(ctx, p)
-	if e != nil {
-		return e
-	}
-	zone, _ := time.LoadLocation("Asia/Shanghai")
-	facts := map[string]any{"asOf": time.Now().In(zone).Format(time.RFC3339), "timeZone": "Asia/Shanghai", "projects": projects, "recentRuns": runs, "waitingForOwner": decisions, "personalRules": memories}
 	checkpoint, e := a.Store.Checkpoint(ctx, r, "daily-input")
 	if core.IsMissing(e) {
+		projects, err := a.Store.Projects(ctx)
+		if err != nil {
+			return err
+		}
+		runs, err := overview(ctx, a.Store, a.Temporal, p, r.ID)
+		if err != nil {
+			return err
+		}
+		decisions, err := a.Store.Decisions(ctx, p)
+		if err != nil {
+			return err
+		}
+		memories, err := a.Store.Memories(ctx, p)
+		if err != nil {
+			return err
+		}
 		refs, err := a.Store.SessionSources(ctx, p)
 		if err != nil {
 			return err
 		}
+		zone := time.FixedZone("Asia/Shanghai", 8*60*60)
+		facts := map[string]any{"asOf": time.Now().In(zone).Format(time.RFC3339), "timeZone": "Asia/Shanghai", "projects": projects, "recentRuns": runs, "waitingForOwner": decisions, "personalRules": memories}
 		checkpoint, e = a.Store.FreezeCheckpoint(ctx, r, "daily-input", core.Checkpoint{Refs: refs, Input: facts})
 	}
 	if e != nil {

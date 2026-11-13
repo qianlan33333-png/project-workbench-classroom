@@ -2,8 +2,12 @@ package engine
 
 import (
 	"context"
-	"go.temporal.io/sdk/client"
+	"errors"
+	"sync"
 	"time"
+
+	"go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/client"
 	"workbench-native/internal/core"
 )
 
@@ -22,71 +26,76 @@ type RunOverview struct {
 	Deliveries  *core.DeliveryStats `json:"deliveries,omitempty"`
 }
 
-// The business catalog is not proof of execution. Temporal supplies the current
-// lifecycle; a separately checked snapshot supplies publication status.
+const (
+	overviewWorkers      = 8
+	overviewFactReaders  = 4
+	overviewStatusBudget = 3 * time.Second
+)
+
+// MySQL supplies the business catalog and counters. Temporal supplies execution
+// evidence within a shared deadline so an unavailable backend cannot stall the list.
 func Overview(ctx context.Context, s *core.Store, c client.Client, p core.Principal) ([]RunOverview, error) {
-	runs, e := s.RunCatalog(ctx, p)
-	if e != nil {
-		return nil, e
+	return overview(ctx, s, c, p, "")
+}
+
+func overview(ctx context.Context, s *core.Store, c client.Client, p core.Principal, exclude string) ([]RunOverview, error) {
+	catalog, err := s.RunCatalog(ctx, p, exclude)
+	if err != nil {
+		return nil, err
 	}
-	out := make([]RunOverview, 0, len(runs))
-	for _, r := range runs {
-		v, err := InspectRun(ctx, s, c, p, r.ID)
-		if err != nil {
-			return nil, err
+	type row struct {
+		view RunOverview
+		err  error
+	}
+	facts := make([]row, len(catalog))
+	readOverviewRows(ctx, len(catalog), overviewFactReaders, func(i int) {
+		run := catalog[i]
+		facts[i].view, facts[i].err = readRunOverview(ctx, s, p, run.Run, run.CreatedAt)
+	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]RunOverview, 0, len(catalog))
+	runs := make([]core.Run, 0, len(catalog))
+	for i, fact := range facts {
+		if errors.Is(fact.err, core.ErrDenied) || core.IsMissing(fact.err) {
+			continue
 		}
-		out = append(out, v)
+		if fact.err != nil {
+			return nil, fact.err
+		}
+		runs = append(runs, catalog[i].Run)
+		out = append(out, fact.view)
 	}
-	return out, nil
+	if c != nil {
+		readOverviewExecutions(ctx, c, runs, out, overviewStatusBudget)
+	}
+	return out, ctx.Err()
 }
 
 func InspectRun(ctx context.Context, s *core.Store, c client.Client, p core.Principal, id string) (RunOverview, error) {
-	r, e := s.Run(ctx, p, id)
-	if e != nil {
-		return RunOverview{}, e
+	r, err := s.Run(ctx, p, id)
+	if err != nil {
+		return RunOverview{}, err
 	}
-	if e = s.RememberRunRead(ctx, p, r); e != nil {
-		return RunOverview{}, e
+	var created time.Time
+	if err = s.DB.QueryRowContext(ctx, `SELECT created_at FROM wb_runs WHERE id=?`, r.ID).Scan(&created); err != nil {
+		return RunOverview{}, err
 	}
+	v, err := readRunOverview(ctx, s, p, r, created)
+	if err == nil && c != nil {
+		readRunExecution(ctx, c, r, &v)
+	}
+	return v, err
+}
 
-	v := RunOverview{ID: r.ID, Title: r.Title, Operation: r.Operation, SessionID: r.Principal.SessionID, ProjectID: r.Principal.ProjectID, Execution: "Unknown", Destination: r.Destination}
-	if e = s.DB.QueryRowContext(ctx, `SELECT created_at FROM wb_runs WHERE id=?`, r.ID).Scan(&v.CreatedAt); e != nil {
-		return RunOverview{}, e
-	}
-	v.Stats, e = s.Stats(ctx, p, r.ID)
-	if e != nil {
-		return RunOverview{}, e
-	}
-	if r.Operation == "dispatch_batch" || r.Operation == "message" || r.Operation == "reply" {
-		stats, err := s.DeliveryStats(ctx, p, r.ID)
-		if err != nil {
-			return RunOverview{}, err
-		}
-		v.Deliveries = &stats
-	}
-	if c != nil {
-		read, cancel := context.WithTimeout(ctx, 2*time.Second)
-		desc, err := c.DescribeWorkflowExecution(read, r.ExecutionID(), "")
-		cancel()
-		if err == nil && desc.WorkflowExecutionInfo != nil {
-			info := desc.WorkflowExecutionInfo
-			if info.StartTime != nil {
-				v.CreatedAt = info.StartTime.AsTime()
-			}
-			if first := info.GetFirstRunId(); first != "" && first != info.GetExecution().GetRunId() {
-				read, cancel := context.WithTimeout(ctx, 2*time.Second)
-				initial, firstErr := c.DescribeWorkflowExecution(read, r.ExecutionID(), first)
-				cancel()
-				if firstErr == nil && initial.GetWorkflowExecutionInfo().GetStartTime() != nil {
-					v.CreatedAt = initial.GetWorkflowExecutionInfo().GetStartTime().AsTime()
-				}
-			}
-			v.Execution = info.Status.String()
-			if info.CloseTime != nil {
-				at := info.CloseTime.AsTime()
-				v.ClosedAt = &at
-			}
-		}
+func readRunOverview(ctx context.Context, s *core.Store, p core.Principal, r core.Run, created time.Time) (RunOverview, error) {
+	v := RunOverview{ID: r.ID, Title: r.Title, Operation: r.Operation, SessionID: r.Principal.SessionID,
+		ProjectID: r.Principal.ProjectID, CreatedAt: created, Execution: "Unknown", Destination: r.Destination}
+	var err error
+	v.Stats, v.Deliveries, err = s.RunOverviewFacts(ctx, p, r)
+	if err != nil {
+		return v, err
 	}
 	if r.Destination != "" {
 		version := r.ID
@@ -97,4 +106,60 @@ func InspectRun(ctx context.Context, s *core.Store, c client.Client, p core.Prin
 		v.Published = err == nil && snap.State == "published"
 	}
 	return v, nil
+}
+
+func readOverviewExecutions(ctx context.Context, c client.Client, runs []core.Run, out []RunOverview, budget time.Duration) {
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	readOverviewRows(ctx, len(runs), overviewWorkers, func(i int) {
+		readRunExecution(ctx, c, runs[i], &out[i])
+	})
+}
+
+func readOverviewRows(ctx context.Context, count, concurrency int, read func(int)) {
+	jobs := make(chan int, count)
+	for i := range count {
+		jobs <- i
+	}
+	close(jobs)
+	var readers sync.WaitGroup
+	for range min(count, concurrency) {
+		readers.Go(func() {
+			for i := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				read(i)
+			}
+		})
+	}
+	readers.Wait()
+}
+
+func readRunExecution(ctx context.Context, c client.Client, r core.Run, v *RunOverview) {
+	read, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	// Scheduled daily summaries store the execution's run ID as their business
+	// ID. A later trigger sharing the Workflow ID must not relabel old summaries.
+	executionRunID := r.ExecutionRunID()
+	desc, err := c.DescribeWorkflowExecution(read, r.ExecutionID(), executionRunID)
+	info := desc.GetWorkflowExecutionInfo()
+	if err != nil || info == nil || info.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED {
+		return
+	}
+	v.Execution = info.Status.String()
+	if started := info.GetStartTime(); started != nil {
+		v.CreatedAt = started.AsTime()
+	}
+	if first := info.GetFirstRunId(); executionRunID == "" && first != "" && first != info.GetExecution().GetRunId() {
+		initial, err := c.DescribeWorkflowExecution(read, r.ExecutionID(), first)
+		if started := initial.GetWorkflowExecutionInfo().GetStartTime(); err == nil && started != nil {
+			v.CreatedAt = started.AsTime()
+		}
+	}
+	if closed := info.GetCloseTime(); closed != nil {
+		at := closed.AsTime()
+		v.ClosedAt = &at
+	}
 }

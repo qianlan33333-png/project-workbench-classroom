@@ -323,10 +323,14 @@ func operationsDeliveryLabel(head core.OperationsReview, receipt core.Operations
 		return "待核对", row.Progress
 	}
 	switch receipt.State {
-	case "sent", "delivered":
+	case "sent":
 		return "已发送", receipt.At
-	case "accepted", "pending_confirmation":
-		return "已发送", "CRM 已受理。"
+	case "delivered":
+		return "已送达", receipt.At
+	case "accepted":
+		return "CRM 已受理", "等待渠道回执。"
+	case "pending_confirmation":
+		return "待手机确认", "CRM 已受理，等待发送员工确认。"
 	case "failed":
 		return "发送失败", receipt.Error
 	case "unknown":

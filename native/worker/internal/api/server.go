@@ -452,7 +452,7 @@ func (a *Server) MCP(bound core.Principal) *mcp.Server {
 			}
 			_ = a.Temporal.CancelWorkflow(ctx, r.ID+"-delivery", "")
 		}
-		e = a.Temporal.CancelWorkflow(ctx, r.ExecutionID(), "")
+		e = a.Temporal.CancelWorkflow(ctx, r.ExecutionID(), r.ExecutionRunID())
 		return nil, in, e
 	})
 	return s
@@ -475,15 +475,6 @@ func (a *Server) runStatus(ctx context.Context, p core.Principal, id string) (Ru
 		}
 		out.Selection = &info
 	}
-	v, e := a.Temporal.DescribeWorkflowExecution(ctx, r.ExecutionID(), "")
-	var missing *serviceerror.NotFound
-	if errors.As(e, &missing) {
-		return out, nil
-	}
-	if e != nil {
-		return out, e
-	}
-	out.Execution = v.WorkflowExecutionInfo.Status.String()
 	version := r.ID
 	if r.Operation == "pipeline" {
 		version = uuid.NewSHA1(uuid.NameSpaceURL, []byte(r.ID+"/generate")).String()
@@ -491,6 +482,22 @@ func (a *Server) runStatus(ctx context.Context, p core.Principal, id string) (Ru
 	if r.Destination != "" {
 		snap, err := a.Store.Snapshot(ctx, r.Destination, version)
 		out.Published = err == nil && snap.State == "published"
+	}
+	if a.Temporal == nil {
+		return out, nil
+	}
+	read, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	v, e := a.Temporal.DescribeWorkflowExecution(read, r.ExecutionID(), r.ExecutionRunID())
+	var missing *serviceerror.NotFound
+	if errors.As(e, &missing) {
+		return out, nil
+	}
+	if e != nil {
+		return out, e
+	}
+	if info := v.GetWorkflowExecutionInfo(); info != nil && info.GetStatus() != enums.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED {
+		out.Execution = info.Status.String()
 	}
 	return out, nil
 }

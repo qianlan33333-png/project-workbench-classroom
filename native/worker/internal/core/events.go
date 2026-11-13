@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"time"
 )
 
 func (s *Store) PendingEvents(ctx context.Context, p Principal, after uint64) ([]RunEvent, error) {
@@ -58,47 +60,70 @@ func (s *Store) AckEvent(ctx context.Context, p Principal, id string) error {
 	_, e := s.DB.ExecContext(ctx, `UPDATE wb_events SET delivered=TRUE WHERE id=?`, id)
 	return e
 }
-func (s *Store) RunCatalog(ctx context.Context, p Principal) ([]Run, error) {
+
+type CatalogRun struct {
+	Run
+	CreatedAt time.Time
+}
+
+func (s *Store) RunCatalog(ctx context.Context, p Principal, exclude string) ([]CatalogRun, error) {
 	if e := p.Validate(); e != nil {
 		return nil, e
 	}
-	q := `SELECT body FROM wb_runs WHERE JSON_EXTRACT(body,'$.parentRunId') IS NULL`
+	q := `SELECT body, created_at FROM wb_runs WHERE JSON_EXTRACT(body,'$.parentRunId') IS NULL`
 	args := []any{}
 	if p.Kind == "project" {
-		q += ` AND project_id=?`
-		args = append(args, p.ProjectID)
+		q += ` AND project_id=? AND session_id=?`
+		args = append(args, p.ProjectID, p.SessionID)
 	}
-	q += ` ORDER BY created_at DESC LIMIT 100`
+	if exclude != "" {
+		q += ` AND id<>?`
+		args = append(args, exclude)
+	}
+	q += ` ORDER BY created_at DESC, id DESC LIMIT 100`
 	rows, e := s.DB.QueryContext(ctx, q, args...)
 	if e != nil {
 		return nil, e
 	}
 	defer rows.Close()
-	all := []Run{}
+	all := []CatalogRun{}
 	for rows.Next() {
-		r, err := scanJSON[Run](rows)
-		if err != nil {
-			return nil, err
+		var item CatalogRun
+		var raw []byte
+		if e := rows.Scan(&raw, &item.CreatedAt); e != nil {
+			return nil, e
 		}
-		all = append(all, r)
+		if e := json.Unmarshal(raw, &item.Run); e != nil {
+			return nil, e
+		}
+		all = append(all, item)
 	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
+	if e := rows.Err(); e != nil {
 		return nil, e
 	}
-	out := []Run{}
-	for _, r := range all {
-		if _, e = s.Run(ctx, p, r.ID); e == nil {
-			if e = s.RememberRunRead(ctx, p, r); e != nil {
-				return nil, e
-			}
-			r.Method.Instructions = ""
-			out = append(out, r)
-		}
-	}
-	return out, nil
+	return all, nil
 }
+
+func (s *Store) RunOverviewFacts(ctx context.Context, p Principal, r Run) (RunStats, *DeliveryStats, error) {
+	if !r.visibleTo(p) {
+		return RunStats{}, nil, ErrDenied
+	}
+	if e := s.RememberRunRead(ctx, p, r); e != nil {
+		return RunStats{}, nil, e
+	}
+	stats, e := s.runStats(ctx, p, r)
+	if e != nil {
+		return RunStats{}, nil, e
+	}
+	switch r.Operation {
+	case "dispatch_batch", "message", "reply":
+		delivery, e := s.runDeliveryStats(ctx, r.ID)
+		return stats, &delivery, e
+	default:
+		return stats, nil, nil
+	}
+}
+
 func (s *Store) Decisions(ctx context.Context, p Principal) ([]Decision, error) {
 	if !p.IsOwner() && p.Kind != "personal" {
 		return nil, ErrDenied
@@ -120,14 +145,19 @@ func (s *Store) Decisions(ctx context.Context, p Principal) ([]Decision, error) 
 		return nil, e
 	}
 	rows.Close()
+	visible := out[:0]
 	for _, d := range out {
-		r, e := s.Run(ctx, p, d.RunID)
+		r, e := scanJSON[Run](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_runs WHERE id=?`, d.RunID))
+		if e == nil {
+			e = s.RememberRunRead(ctx, p, r)
+		}
+		if errors.Is(e, ErrDenied) || IsMissing(e) {
+			continue
+		}
 		if e != nil {
 			return nil, e
 		}
-		if e = s.RememberRunRead(ctx, p, r); e != nil {
-			return nil, e
-		}
+		visible = append(visible, d)
 	}
-	return out, nil
+	return visible, nil
 }

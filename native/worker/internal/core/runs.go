@@ -68,6 +68,14 @@ func (r Run) ExecutionID() string {
 	return r.ID
 }
 
+// A daily summary's business ID is the execution run ID recorded by Daily.
+func (r Run) ExecutionRunID() string {
+	if r.Operation == "daily" && r.WorkflowID != "" {
+		return r.ID
+	}
+	return ""
+}
+
 // PipelinePlan configures the inputs of one ordinary Temporal SDK program. It
 // is not an expression language or an arbitrary workflow graph.
 type ResourceSelection struct {
@@ -232,6 +240,10 @@ func (s *Store) SaveRun(ctx context.Context, r Run) error {
 	}
 	return nil
 }
+func (r Run) visibleTo(p Principal) bool {
+	return p.Kind != "project" || p.ProjectID == r.Principal.ProjectID && p.SessionID == r.Principal.SessionID
+}
+
 func (s *Store) Run(ctx context.Context, p Principal, id string) (Run, error) {
 	if e := p.Validate(); e != nil {
 		return Run{}, e
@@ -240,7 +252,7 @@ func (s *Store) Run(ctx context.Context, p Principal, id string) (Run, error) {
 	if e != nil {
 		return r, e
 	}
-	if p.Kind == "project" && (p.ProjectID != r.Principal.ProjectID || p.SessionID != r.Principal.SessionID) {
+	if !r.visibleTo(p) {
 		return Run{}, ErrDenied
 	}
 	actual, e := s.ActualRunSources(ctx, r.ID)
@@ -333,6 +345,10 @@ func (s *Store) Stats(ctx context.Context, p Principal, run string) (RunStats, e
 	if e = s.RememberRunRead(ctx, p, r); e != nil {
 		return RunStats{}, e
 	}
+	return s.runStats(ctx, p, r)
+}
+
+func (s *Store) runStats(ctx context.Context, p Principal, r Run) (RunStats, error) {
 	if r.Operation == "pipeline" {
 		child, e := scanJSON[Run](s.DB.QueryRowContext(ctx, `SELECT body FROM wb_runs WHERE JSON_UNQUOTE(JSON_EXTRACT(body,'$.parentRunId'))=? AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.operation'))='generate' LIMIT 1`, r.ID))
 		if IsMissing(e) {
@@ -358,7 +374,7 @@ func (s *Store) Stats(ctx context.Context, p Principal, run string) (RunStats, e
 			stats.Total = info.SelectedCount
 		}
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT state,COUNT(*) FROM wb_items WHERE run_id=? GROUP BY state`, run)
+	rows, e := s.DB.QueryContext(ctx, `SELECT state,COUNT(*) FROM wb_items WHERE run_id=? GROUP BY state`, r.ID)
 	if e != nil {
 		return stats, e
 	}
